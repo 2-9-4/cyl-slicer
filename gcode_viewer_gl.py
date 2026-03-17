@@ -218,7 +218,9 @@ class GcodeViewer:
             opacity=1.0,
             showscale=False,
             hoverinfo='skip',
-            showlegend=False,
+            showlegend=True,
+            legendgroup='Occluder',
+            name='Occluder (toggle off to check alignment)',
             lighting=dict(ambient=0.9, diffuse=0.2, roughness=0.9),
             lightposition=dict(x=0, y=0, z=0)
         ))

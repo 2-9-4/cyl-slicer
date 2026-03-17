@@ -678,7 +678,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
-plot = False  # Disabled - use gcode_viewer_gl.py for visualization
+plot = True  # Disabled - use gcode_viewer_gl.py for visualization
 plot_3d = False 
 ax = None
 if plot_3d:
@@ -709,16 +709,28 @@ for i in sorted(layer_data.keys()):
         return shapely.transform(x,lambda p: p * [current_r,1])
     def do_transform_inverse(x):
         return shapely.transform(x,lambda p: p * [1/current_r,1])
-    
+    if plot:
+        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),add_points=False,color="blue")
     final_perimeter = do_transform(layer_data[i]["external_peris"])
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
         internal_perimeter = do_transform(layer_data[i]["external_peris"]).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
+        if plot:
+            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),add_points=False,color="green")
         layer_data[i]["internal_peris"].append(do_transform_inverse(internal_perimeter))
         final_perimeter = internal_perimeter
 
+
+    
     final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    if plot:
+        plot_polygon(final_top_surface,add_points=False,color="indigo")
     layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot)
+
+    if "needs_support" in layer_data[i] and plot:
+        plot_polygon(do_transform(layer_data[i]["needs_support"]),add_points=False,color="red")
+
+    # plt.savefig(f"frames/{i}.png",dpi=600)
 
     shape_to_infill = do_transform_inverse(final_perimeter-final_top_surface)
 
@@ -727,6 +739,8 @@ for i in sorted(layer_data.keys()):
     layer_data[i]["radial_infill"] = radial_infill
     layer_data[i]["axial_infill"] = axial_infill
     print(f"LAYER {i}")
+    if plot:
+        plt.show()
 
     traces = []
     # app.use_app('pyqt6')
