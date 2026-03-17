@@ -78,20 +78,19 @@ def shift_polygon(poly, dx):
     return shapely.transform(poly,lambda x: x + [dx,0])
 
 def build_hierarchy(polygons, period=2 * np.pi):
-
+    from shapely import STRtree
     hierarchy = [[] for _ in polygons]
+    if len(polygons) < 2:
+        return hierarchy
+    tree = STRtree(polygons)
     for i, outer_poly in enumerate(polygons):
-        outer_shifts = [
-            shift_polygon(outer_poly, 0),
-            shift_polygon(outer_poly, -period),
-            shift_polygon(outer_poly, +period)
-        ]
-        for j, inner_poly in enumerate(polygons):
-            if i == j:
-                continue
-            # If the inner poly is contained in any of the shifted variants of the outer
-            if any(outer.contains(inner_poly) for outer in outer_shifts):
-                hierarchy[i].append(j)
+        seen = set()
+        for shift in [0, -period, period]:
+            shifted = shift_polygon(outer_poly, shift) if shift != 0 else outer_poly
+            for j in tree.query(shifted, predicate='contains'):
+                if j != i and j not in seen:
+                    seen.add(j)
+                    hierarchy[i].append(j)
     return hierarchy
 
 def unwrap_polygon(polygon, period=2*np.pi):
@@ -418,6 +417,8 @@ def densify_cylindrical(coords, max_angle_step=np.pi / 36):
     cylinder surface instead of cutting through it as a chord.
     max_angle_step: maximum angular gap between consecutive plotted points (radians).
     """
+    if len(coords) == 0:
+        return coords
     result = [coords[0]]
     for i in range(len(coords) - 1):
         t0, z0 = coords[i]
@@ -431,58 +432,23 @@ def densify_cylindrical(coords, max_angle_step=np.pi / 36):
 
 def remove_collinear_points_angle(coords, angle_tolerance=1e-6):
     """
-    Remove collinear points using angle change method.
-    More intuitive tolerance setting.
-    
-    Args:
-        coords: List/array of (x, y) coordinates
-        angle_tolerance: Tolerance in radians for angle change
-    
-    Returns:
-        Simplified list of coordinates
+    Remove collinear points using angle change method (vectorized).
     """
-    # plt.plot(coords[:,0],coords[:,1],"o-")
     coords = np.asarray(coords)
     if len(coords) <= 2:
         return coords.tolist()
-    
-    keep = [True]  # Always keep first point
-    last_kept = coords[0]
-    for i in range(1, len(coords) - 1):
-        p1 = last_kept
-        p2 = coords[i]
-        p3 = coords[i+1]
-        
-        # Calculate vectors
-        v1 = p2 - p1
-        v2 = p3 - p2
-        
-        # Calculate angle between vectors
-        # Handle zero-length vectors
-        norm1 = np.linalg.norm(v1)
-        norm2 = np.linalg.norm(v2)
-        
-        if norm1 < 1e-10 or norm2 < 1e-10:
-            keep.append(False)  # Remove duplicate/near-duplicate points
-            continue
-            
-        # Normalize vectors
-        v1_norm = v1 / norm1
-        v2_norm = v2 / norm2
 
-        # Calculate angle change (0 = straight line, π/2 = right angle, etc.)
-        dot_product = np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)
-        angle_change = np.arccos(abs(dot_product))
-        # Keep point if angle change is significant
-        keep.append(angle_change > angle_tolerance)
-        if keep[-1]:
-            last_kept = coords[i]
-    
-    keep.append(True)  # Always keep last point
-    # plt.plot(coords[keep,0],coords[keep,1],"o-")
-    # plt.gca().set_aspect('equal') 
-    # plt.title(f"{angle_tolerance*180/np.pi:.2f} degrees")
-    # plt.show()
+    v = np.diff(coords, axis=0)                          # (n-1, 2)
+    norms = np.linalg.norm(v, axis=1)                    # (n-1,)
+    safe = norms > 1e-10
+    v_norm = v / np.where(norms[:, None] > 1e-10, norms[:, None], 1.0)
+
+    dots = np.sum(v_norm[:-1] * v_norm[1:], axis=1)     # (n-2,)
+    dots = np.clip(dots, -1.0, 1.0)
+    angle_changes = np.arccos(np.abs(dots))
+
+    keep_middle = (angle_changes > angle_tolerance) & safe[:-1] & safe[1:]
+    keep = np.concatenate([[True], keep_middle, [True]])
     return coords[keep].tolist()
 
 
@@ -511,7 +477,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
         print(f"\nSliced {sliced_layer_count} layers, stopping.")
         break
     
-    times = []
+    times = [(time.perf_counter(), "")]
     sections = 1000
     cyl = trimesh.creation.cylinder(
         radius=current_r,
@@ -520,7 +486,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     )
     cyl.apply_translation([0,0,part_height*0.5+min_z])
     assert(cyl.is_volume)
-    times.append((time.perf_counter(),""))
+    times.append((time.perf_counter(), "cylinder creation"))
     good = False
     print(f"{current_r/(np.max(pts[:,0])-1e-3)*100:.2f}%")
     while not good:
@@ -657,11 +623,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     times.append((time.perf_counter(),"form poly with holes"))
     
     print(mapping)
-    final = external_perimeters[0]
-
-    for pi,p in enumerate(external_perimeters[1:]):
-        final = final.union(p)
-
+    final = shapely.unary_union(external_perimeters)
     layer_data[layer_i]["external_peris"] = final
     times.append((time.perf_counter(),"full union"))
 
@@ -695,7 +657,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
-plot_3d = True       # live combined 3D figure (non-blocking)
+plot_3d = False       # live combined 3D figure (non-blocking)
 plot_per_layer = False  # show blocking per-layer 2D+3D window; set False for full gcode runs
 ax_3d = None
 
