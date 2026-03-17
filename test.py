@@ -333,6 +333,8 @@ def polygon_to_wrapped_lines(poly: Polygon, lower=0.0, upper=2*math.pi):
     and interiors. If an interior gets clipped, the pieces are wrapped
     around the seam and stitched together.
     """
+    if poly is None or (hasattr(poly, 'is_empty') and poly.is_empty):
+        return []
     if isinstance(poly,list):
         ret = []
         for each in poly:
@@ -344,6 +346,12 @@ def polygon_to_wrapped_lines(poly: Polygon, lower=0.0, upper=2*math.pi):
             ret += polygon_to_wrapped_lines(each,lower,upper)
         return ret
     
+    if isinstance(poly, shapely.GeometryCollection) and not isinstance(poly, (Polygon, shapely.MultiPolygon)):
+        ret = []
+        for geom in poly.geoms:
+            ret += polygon_to_wrapped_lines(geom, lower, upper)
+        return ret
+
     if not isinstance(poly, Polygon):
         print(poly)
         print(type(poly))
