@@ -477,6 +477,7 @@ slicing_params = {
     "travel_mm_per_min" : 6000,
     "extrusion_per_mm" : 0.05
 }
+max_real_layers = 8  # Limit for testing
 mesh = trimesh.load_mesh("test.stl")
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
@@ -486,7 +487,13 @@ part_height = (max_z-min_z)
 
 # for current_r in np.arange(max_r-layer_height*35,max_r,layer_height):
 layer_data = {}
+sliced_layer_count = 0
 for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["layer_height"],np.max(pts[:,0])-1e-3,slicing_params["layer_height"])):
+    # Limit slicing to 8 layers for testing
+    if sliced_layer_count >= max_real_layers:
+        print(f"\nSliced {sliced_layer_count} layers, stopping.")
+        break
+    
     times = []
     sections = 1000
     cyl = trimesh.creation.cylinder(
@@ -494,7 +501,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
         height=part_height*1.2,
         sections=sections
     )
-    cyl.apply_translation([0,0,part_height*0.5+min_z]) 
+    cyl.apply_translation([0,0,part_height*0.5+min_z])
     assert(cyl.is_volume)
     times.append((time.perf_counter(),""))
     good = False
@@ -502,7 +509,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     while not good:
         cut_mesh = cyl.intersection(mesh,engine="manifold")
         cut_mesh = fix_mesh(cut_mesh)
-        good = cut_mesh.is_volume 
+        good = cut_mesh.is_volume
         if not good:
             #this bs makes intersections behave better
             current_r+=np.random.uniform(-1e-3,1e-3)
@@ -511,12 +518,13 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
                 height=part_height*1.2,
                 sections=sections
             )
-            cyl.apply_translation([0,0,part_height*0.5+min_z]) 
+            cyl.apply_translation([0,0,part_height*0.5+min_z])
             cyl = cyl.apply_transform(trimesh.transformations.rotation_matrix(np.random.uniform(0,2*np.pi/sections), [0,0,1]))
 
             print(f"retrying intersection on {layer_i}")
 
     layer_data[layer_i] = {"radius": current_r}
+    sliced_layer_count += 1
     
 
     times.append((time.perf_counter(),"intersection"))
@@ -670,8 +678,8 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
-plot = False
-plot_3d = False
+plot = False  # Disabled - use gcode_viewer_gl.py for visualization
+plot_3d = False 
 ax = None
 if plot_3d:
     # canvas = scene.SceneCanvas(keys='interactive', bgcolor='white', show=True)
@@ -683,36 +691,34 @@ if plot_3d:
 gcodes = []
 last_pos = [0,0]
 last_e = 0
+real_layer_count = 0
+print(f"\n=== LIMITING TO {max_real_layers} REAL LAYERS FOR TESTING ===\n")
 with open("output.gcode","w") as f:
     f.write(";start of slice\n")
-for i in layer_data:
+for i in sorted(layer_data.keys()):
+    # Exit after 8 real layers for testing
+    real_layer_count += 1
+    if real_layer_count > max_real_layers:
+        print(f"\nReached {max_real_layers} real layers, exiting.")
+        break
+    
+    print(f"\n>>> Processing real layer {real_layer_count}/{max_real_layers} (layer_data key: {i})")
+    
     current_r = layer_data[i]["radius"]
     def do_transform(x):
         return shapely.transform(x,lambda p: p * [current_r,1])
     def do_transform_inverse(x):
         return shapely.transform(x,lambda p: p * [1/current_r,1])
-    if plot:
-        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),add_points=True,color="blue")
+    
     final_perimeter = do_transform(layer_data[i]["external_peris"])
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
         internal_perimeter = do_transform(layer_data[i]["external_peris"]).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
-        if plot:
-            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),add_points=False,color="green")
         layer_data[i]["internal_peris"].append(do_transform_inverse(internal_perimeter))
         final_perimeter = internal_perimeter
 
-
-    
     final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
-    if plot:
-        plot_polygon(final_top_surface,add_points=False,color="indigo")
     layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot)
-
-    if "needs_support" in layer_data[i] and plot:
-        plot_polygon(do_transform(layer_data[i]["needs_support"]),add_points=False,color="red")
-
-    # plt.savefig(f"frames/{i}.png",dpi=600)
 
     shape_to_infill = do_transform_inverse(final_perimeter-final_top_surface)
 
@@ -721,28 +727,32 @@ for i in layer_data:
     layer_data[i]["radial_infill"] = radial_infill
     layer_data[i]["axial_infill"] = axial_infill
     print(f"LAYER {i}")
-    if plot:
-        plt.show()
 
     traces = []
     # app.use_app('pyqt6')
-    order = ["external_peris","internal_peris","solid_infill","fully_radial_infill","radial_infill","axial_infill"]
+    # Section names and colors for G-code comments and visualization
+    sections = [
+        ("external_peris", "EXTERNAL_PERIMETER"),
+        ("internal_peris", "INTERNAL_PERIMETER"),
+        ("solid_infill", "SOLID_INFILL"),
+        ("fully_radial_infill", "INFILL_RADIAL_FULL"),
+        ("radial_infill", "INFILL_RADIAL"),
+        ("axial_infill", "INFILL_AXIAL")
+    ]
     with open("output.gcode","a") as f:
-        f.write(f";LAYER:{i}\n")    
-        f.write(f";Z:{current_r}\n")   
-        f.write(f"G0 Z{current_r}\n")    
-        
-        for subsection_i, subsection in enumerate(order):
-            if subsection_i < 2:
+        f.write(f";LAYER:{i}\n")
+        f.write(f";Z:{current_r}\n")
+        f.write(f"G0 Z{current_r}\n")
+
+        for subsection, section_name in sections:
+            if subsection == "external_peris" or subsection == "internal_peris":
                 gcode_paths = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
             else:
                 gcode_paths = shapely_to_paths(layer_data[i][subsection], current_r)
             for path in gcode_paths:
-                # path.plot("lime",ax)
-                # traces.append(path.plot_vis("lime",view.scene))
-                # traces.append(path.get_pts_3d())
                 if path is None:
                     continue
+                f.write(f";TYPE:{section_name}\n")
                 g,last_pos,last_e = path.to_gcode(slicing_params,last_pos,last_e)
                 f.write(g)
     # for each

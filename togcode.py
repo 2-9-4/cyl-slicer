@@ -102,12 +102,16 @@ class PathObject:
             self.dist(current_pos[1], pts[-1,1], current_pos[0], pts[-1,0]) <
             self.dist(current_pos[1], pts[0,1], current_pos[0], pts[0,0])):
             pts = pts[::-1]
-        
-        # Travel move to start
+
+        # Travel move to start - use continuous theta for Marlin compatibility
         t0, x0 = pts[0]
+        # Calculate offset to make theta continuous from current position
         t_offset = (current_pos[0] - t0 + np.pi) % (2*np.pi) - np.pi
-        
-        g = [";start of path\n",f"G0 X{x0:.3f} Y{(t0+t_offset)*180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
+        # Output Y as continuous angle in degrees (can exceed 360)
+        t0_cont = t0 + t_offset
+        t0_deg = t0_cont * 180 / np.pi
+
+        g = [";start of path\n",f"G0 X{x0:.3f} Y{t0_deg:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
         
         if len(pts) == 1:
             g.append(";end of path\n")
@@ -140,21 +144,21 @@ class PathObject:
         e_vals = np.cumsum(e_incr) + current_e
         fvals = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
         
-        # Pre-calculate angle conversions
-        angles_deg = (p2[:,0] + t_offset) * 180/np.pi
-        
+        # Pre-calculate angle conversions - continuous theta for Marlin
+        angles_deg = (p2[:,0] + t_offset) * 180 / np.pi
+
         # Build G-code strings efficiently
         gcode_lines = []
         for i, ((t, x), e_val, fval, angle_deg) in enumerate(zip(p2, e_vals, fvals, angles_deg)):
             gcode_lines.append(f"G1 X{x:.3f} Y{angle_deg:.3f} E{e_val:.5f} F{fval:.1f}")
-        
+
         g.extend(gcode_lines)
-        
+
         # Handle closed path
         if self.closed and len(pts) > 1:
             t1, x1 = pts[-1]
             t2, x2 = pts[0]
-            
+
             # Only add closing segment if endpoints are different
             if not np.allclose([t1, x1], [t2, x2], atol=1e-10):
                 real_dist_close = self.dist(x2, x1, t2, t1)
@@ -162,7 +166,8 @@ class PathObject:
                     current_e = e_vals[-1] + real_dist_close * slicing_params["extrusion_per_mm"]
                     fake_dist_close = np.sqrt((x2-x1)**2 + ((t2-t1)*180/np.pi)**2)
                     fval_close = slicing_params["feed_mm_per_min"] * fake_dist_close / real_dist_close
-                    g.append(f"G1 X{x2:.3f} Y{(t2+t_offset)*180/np.pi:.3f} E{current_e:.5f} F{fval_close:.1f}")
+                    t2_cont = t2 + t_offset
+                    g.append(f"G1 X{x2:.3f} Y{t2_cont*180/np.pi:.3f} E{current_e:.5f} F{fval_close:.1f}")
                     last = (t2, x2)
                 else:
                     last = (t1, x1)
@@ -175,8 +180,7 @@ class PathObject:
             current_e = e_vals[-1] if len(e_vals) else current_e
         g.append(";end of path\n")
         return "\n".join(g) + "\n", last, current_e
-    def to_interpolated():
-        pass
+    
     def plot(self,color,ax): 
         if not len(self.points):
             return
@@ -208,7 +212,6 @@ class PathObject:
 def shapely_to_paths(geom, radius, max_seg_len=0.5) -> List[PathObject]:
     """Convert a shapely geometry to a list of PathObjects (densified)."""
 
-
     def densify(coords, closed):
         if(len(coords) == 0):
             return []
@@ -227,9 +230,7 @@ def shapely_to_paths(geom, radius, max_seg_len=0.5) -> List[PathObject]:
         if closed and out[-1] != out[0]:
             out.append(out[0])
         return out
-    def densify(c,c2):
-        return c
-    
+
     paths = []
     if isinstance(geom, Polygon):
         paths.append(PathObject(densify(list(geom.exterior.coords), True), True, "polygon_exterior", radius))
