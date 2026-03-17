@@ -97,86 +97,88 @@ class PathObject:
             if len(pts) < 2:
                 return "", current_pos, current_e
         
-        # If open path, ensure we start closest to current_pos
+        # current_pos[0] is the printer's ACCUMULATED Y in radians (never resets to
+        # canonical [0,2π) — it only increases).  This lets Marlin always move forward.
+        # The viewer recovers canonical position with Y_gcode % 360.
+
+        # For the closest-endpoint check use canonical current angle.
+        current_canonical = current_pos[0] % (2 * np.pi)
         if (not self.closed and len(pts) >= 2 and
-            self.dist(current_pos[1], pts[-1,1], current_pos[0], pts[-1,0]) <
-            self.dist(current_pos[1], pts[0,1], current_pos[0], pts[0,0])):
+            self.dist(current_pos[1], pts[-1,1], current_canonical, pts[-1,0]) <
+            self.dist(current_pos[1], pts[0,1], current_canonical, pts[0,0])):
             pts = pts[::-1]
 
-        # Travel move to start - use continuous theta for Marlin compatibility
-        t0, x0 = pts[0]
-        # Calculate offset to make theta continuous from current position
-        t_offset = (current_pos[0] - t0 + np.pi) % (2*np.pi) - np.pi
-        # Output Y as continuous angle in degrees (can exceed 360)
-        t0_cont = t0 + t_offset
-        t0_deg = t0_cont * 180 / np.pi
+        # --- Travel (G0) to path start ---
+        # Advance by the shortest FORWARD arc from current accumulated Y to t0.
+        t0_canonical = pts[0, 0]            # canonical radians [0, 2π)
+        accum_y      = current_pos[0]       # printer's accumulated Y (radians)
+        dt           = ((t0_canonical - accum_y) + np.pi) % (2 * np.pi) - np.pi  # shortest-path, [-π, π)
+        t0_accum     = accum_y + dt
+        x0           = pts[0, 1]
+        g = [";start of path\n",
+             f"G0 X{x0:.3f} Y{t0_accum * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
 
-        g = [";start of path\n",f"G0 X{x0:.3f} Y{t0_deg:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
-        
         if len(pts) == 1:
             g.append(";end of path\n")
-            return "\n".join(g) + "\n", tuple(pts[0]), current_e
-        
-        # Vectorized segment calculations
+            return "\n".join(g) + "\n", (t0_accum, x0), current_e
+
+        # --- Unwrap canonical thetas within the path ---
+        # np.unwrap removes >π jumps (handles seam crossings inside a path),
+        # then shift so the sequence starts at t0_accum.
+        canon_thetas  = pts[:, 0]
+        unwrapped     = np.unwrap(canon_thetas)                       # still starts near t0_canonical
+        accum_thetas  = unwrapped + (t0_accum - unwrapped[0])        # shift to match t0_accum
+
         p1 = pts[:-1]
         p2 = pts[1:]
-        
-        # Calculate all real distances in one vectorized call if possible
-        # (This assumes self.dist can be vectorized - if not, keep the loop)
+
+        # Real distances use canonical thetas (correct arc length regardless of accumulation)
         try:
-            # Try vectorized version first
             real_dist = self.dist(p2[:,1], p1[:,1], p2[:,0], p1[:,0])
         except (TypeError, AttributeError):
-            # Fall back to loop if self.dist doesn't support vectorization
             real_dist = np.array([self.dist(p2[i,1], p1[i,1], p2[i,0], p1[i,0])
-                                for i in range(len(p1))])
-        
-        # Vectorized calculations
-        dt = (p2[:,0] - p1[:,0]) * 180/np.pi
-        dx = p2[:,1] - p1[:,1]
-        fake_dist = np.sqrt(dx*dx + dt*dt)
-        
-        # Avoid division by zero
+                                  for i in range(len(p1))])
+
+        # fake_dist uses ACCUMULATED deltas so seam-crossing segments get the
+        # correct (small) angular delta for Marlin feed-rate scaling, not the
+        # large canonical wrap-around value.
+        dt_accum  = np.diff(accum_thetas) * 180 / np.pi   # degrees, accumulated
+        dx        = p2[:,1] - p1[:,1]
+        fake_dist = np.sqrt(dx*dx + dt_accum*dt_accum)
+
         safe_real_dist = np.where(real_dist > 1e-10, real_dist, 1e-10)
-        
-        # Extrusion and feed calculations
-        e_incr = real_dist * slicing_params["extrusion_per_mm"]
-        e_vals = np.cumsum(e_incr) + current_e
-        fvals = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
-        
-        # Pre-calculate angle conversions - continuous theta for Marlin
-        angles_deg = (p2[:,0] + t_offset) * 180 / np.pi
+        e_incr  = real_dist * slicing_params["extrusion_per_mm"]
+        e_vals  = np.cumsum(e_incr) + current_e
+        fvals   = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
 
-        # Build G-code strings efficiently
+        angles_deg = accum_thetas[1:] * 180 / np.pi   # accumulated degrees for G1
+
         gcode_lines = []
-        for i, ((t, x), e_val, fval, angle_deg) in enumerate(zip(p2, e_vals, fvals, angles_deg)):
+        for (t, x), e_val, fval, angle_deg in zip(p2, e_vals, fvals, angles_deg):
             gcode_lines.append(f"G1 X{x:.3f} Y{angle_deg:.3f} E{e_val:.5f} F{fval:.1f}")
-
         g.extend(gcode_lines)
 
-        # Handle closed path
+        # Handle closed path closing segment
         if self.closed and len(pts) > 1:
-            t1, x1 = pts[-1]
-            t2, x2 = pts[0]
-
-            # Only add closing segment if endpoints are different
-            if not np.allclose([t1, x1], [t2, x2], atol=1e-10):
-                real_dist_close = self.dist(x2, x1, t2, t1)
-                if real_dist_close > 1e-10:  # Only if there's actual distance
+            t1_canon, x1 = pts[-1]
+            t2_canon, x2 = pts[0]
+            if not np.allclose([t1_canon, x1], [t2_canon, x2], atol=1e-10):
+                real_dist_close = self.dist(x2, x1, t2_canon, t1_canon)
+                if real_dist_close > 1e-10:
                     current_e = e_vals[-1] + real_dist_close * slicing_params["extrusion_per_mm"]
-                    fake_dist_close = np.sqrt((x2-x1)**2 + ((t2-t1)*180/np.pi)**2)
-                    fval_close = slicing_params["feed_mm_per_min"] * fake_dist_close / real_dist_close
-                    t2_cont = t2 + t_offset
-                    g.append(f"G1 X{x2:.3f} Y{t2_cont*180/np.pi:.3f} E{current_e:.5f} F{fval_close:.1f}")
-                    last = (t2, x2)
+                    dt_close  = (accum_thetas[0] - accum_thetas[-1]) * 180 / np.pi
+                    fval_close = (slicing_params["feed_mm_per_min"]
+                                  * np.sqrt((x2-x1)**2 + dt_close**2) / real_dist_close)
+                    g.append(f"G1 X{x2:.3f} Y{accum_thetas[0]*180/np.pi:.3f} E{current_e:.5f} F{fval_close:.1f}")
+                    last = (accum_thetas[0], x2)
                 else:
-                    last = (t1, x1)
+                    last = (accum_thetas[-1], x1)
                     current_e = e_vals[-1] if len(e_vals) else current_e
             else:
-                last = (t1, x1)
+                last = (accum_thetas[-1], x1)
                 current_e = e_vals[-1] if len(e_vals) else current_e
         else:
-            last = tuple(pts[-1])
+            last = (accum_thetas[-1], pts[-1, 1])
             current_e = e_vals[-1] if len(e_vals) else current_e
         g.append(";end of path\n")
         return "\n".join(g) + "\n", last, current_e

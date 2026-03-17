@@ -1,3 +1,4 @@
+import sys
 import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
@@ -230,7 +231,7 @@ def fix_mesh(mesh1):
     mesh1.merge_vertices()
     return mesh1.process(validate=True)
 
-def do_solid_infill(peri,slicing_params,current_r,plot_infill=False):
+def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
     if peri.is_empty:
         return
     def do_transform(x):
@@ -252,7 +253,7 @@ def do_solid_infill(peri,slicing_params,current_r,plot_infill=False):
         if geoms is not None:
             for line_segment in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),color="greenyellow",add_points=False)
+                    plot_line(do_transform(line_segment),ax=ax,color="greenyellow",add_points=False)
                 infill.append(line_segment)
         else:
             if(type(inter) == shapely.geometry.multipoint.MultiPoint):
@@ -260,12 +261,12 @@ def do_solid_infill(peri,slicing_params,current_r,plot_infill=False):
                 shapely.plotting.plot_points(do_transform(inter),color="greenyellow")
             else:
                 if plot_infill:
-                    plot_line(do_transform(inter),color="greenyellow",add_points=False)
+                    plot_line(do_transform(inter),ax=ax,color="greenyellow",add_points=False)
                 infill.append(inter)
 
     return infill
 
-def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False):
+def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False,ax=None):
     if innermost_peri.is_empty:
         return [],[],[]
     def do_transform(x):
@@ -294,7 +295,7 @@ def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False):
         if geoms is not None:
             for line_segment in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),color="orange",add_points=False)
+                    plot_line(do_transform(line_segment),ax=ax,color="orange",add_points=False)
                 radial_infill.append(line_segment)
         else:
             if(type(inter) == shapely.geometry.multipoint.MultiPoint):
@@ -302,7 +303,7 @@ def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False):
                 shapely.plotting.plot_points(do_transform(inter),color="red")
             else:
                 if plot_infill:
-                    plot_line(do_transform(inter),color="red",add_points=False)
+                    plot_line(do_transform(inter),ax=ax,color="red",add_points=False)
                 fully_radial_infill.append(inter)
     for current_line_h in np.arange(0,2*np.pi,slicing_params["infill_spacing"]/current_r):
         lp_x,lp_y = [current_line_h,current_line_h],[lowest,highest]
@@ -313,15 +314,15 @@ def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False):
             geoms = inter.geoms
         elif type(inter) == shapely.geometry.collection.GeometryCollection:
             geoms = inter.geoms
-        
+
         if geoms is not None:
             for line_segment in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),color="darkviolet",add_points=False)
+                    plot_line(do_transform(line_segment),ax=ax,color="darkviolet",add_points=False)
                 axial_infill.append(line_segment)
         else:
             if plot_infill:
-                plot_line(do_transform(inter),color="darkviolet",add_points=False)
+                plot_line(do_transform(inter),ax=ax,color="darkviolet",add_points=False)
             axial_infill.append(inter)
     return fully_radial_infill, radial_infill, axial_infill
 from shapely.geometry import Polygon, LineString, box, MultiLineString
@@ -411,6 +412,23 @@ def sum_poly(p):
     return f
 
 
+def densify_cylindrical(coords, max_angle_step=np.pi / 36):
+    """
+    Insert intermediate points along each segment so that arcs follow the
+    cylinder surface instead of cutting through it as a chord.
+    max_angle_step: maximum angular gap between consecutive plotted points (radians).
+    """
+    result = [coords[0]]
+    for i in range(len(coords) - 1):
+        t0, z0 = coords[i]
+        t1, z1 = coords[i + 1]
+        n = max(2, int(np.ceil(abs(t1 - t0) / max_angle_step)) + 1)
+        thetas = np.linspace(t0, t1, n)
+        zs = np.linspace(z0, z1, n)
+        result.extend(zip(thetas[1:], zs[1:]))
+    return np.array(result)
+
+
 def remove_collinear_points_angle(coords, angle_tolerance=1e-6):
     """
     Remove collinear points using angle change method.
@@ -477,7 +495,7 @@ slicing_params = {
     "travel_mm_per_min" : 6000,
     "extrusion_per_mm" : 0.05
 }
-max_real_layers = 8  # Limit for testing
+max_real_layers = None  # Set to an int to cap layers for testing, None for full print
 mesh = trimesh.load_mesh("test.stl")
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
@@ -489,8 +507,7 @@ part_height = (max_z-min_z)
 layer_data = {}
 sliced_layer_count = 0
 for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["layer_height"],np.max(pts[:,0])-1e-3,slicing_params["layer_height"])):
-    # Limit slicing to 8 layers for testing
-    if sliced_layer_count >= max_real_layers:
+    if max_real_layers is not None and sliced_layer_count >= max_real_layers:
         print(f"\nSliced {sliced_layer_count} layers, stopping.")
         break
     
@@ -678,73 +695,161 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
-plot = True  # Disabled - use gcode_viewer_gl.py for visualization
-plot_3d = False 
-ax = None
+plot_3d = True       # live combined 3D figure (non-blocking)
+plot_per_layer = False  # show blocking per-layer 2D+3D window; set False for full gcode runs
+ax_3d = None
+
+def on_key(event):
+    """Ctrl-C or Q in any plot window exits the program cleanly."""
+    if event.key in ('ctrl+c', 'q', 'escape'):
+        plt.close('all')
+        sys.exit(0)
+
 if plot_3d:
-    # canvas = scene.SceneCanvas(keys='interactive', bgcolor='white', show=True)
-    # view = canvas.central_widget.add_view()
-    # view.camera = 'turntable'  # 3D interactive camera
-    ax = plt.figure().add_subplot(projection='3d')
+    fig_combined = plt.figure(figsize=(8, 8))
+    ax_3d = fig_combined.add_subplot(1, 1, 1, projection='3d')
+    fig_combined.canvas.mpl_connect('key_press_event', on_key)
+    plt.ion()
 
 # output_scad = solid2.cube()
 gcodes = []
 last_pos = [0,0]
 last_e = 0
 real_layer_count = 0
-print(f"\n=== LIMITING TO {max_real_layers} REAL LAYERS FOR TESTING ===\n")
+if max_real_layers is not None:
+    print(f"\n=== CAPPED AT {max_real_layers} LAYERS FOR TESTING ===\n")
 with open("output.gcode","w") as f:
     f.write(";start of slice\n")
 for i in sorted(layer_data.keys()):
-    # Exit after 8 real layers for testing
     real_layer_count += 1
-    if real_layer_count > max_real_layers:
-        print(f"\nReached {max_real_layers} real layers, exiting.")
+    if max_real_layers is not None and real_layer_count > max_real_layers:
+        print(f"\nReached {max_real_layers} layer cap, exiting.")
         break
-    
-    print(f"\n>>> Processing real layer {real_layer_count}/{max_real_layers} (layer_data key: {i})")
-    
+
+    total = len(layer_data)
+    print(f"\n>>> Layer {real_layer_count}/{total} (layer_data key: {i})")
+
+    # Per-layer figure: 2D on left, 3D on right (only when plot_per_layer)
+    ax_2d_layer = None
+    ax_3d_layer = None
+    if plot_per_layer:
+        fig_layer = plt.figure(figsize=(14, 6))
+        ax_2d_layer = fig_layer.add_subplot(1, 2, 1)
+        ax_3d_layer = fig_layer.add_subplot(1, 2, 2, projection='3d')
+        fig_layer.canvas.mpl_connect('key_press_event', on_key)
+
     current_r = layer_data[i]["radius"]
     def do_transform(x):
         return shapely.transform(x,lambda p: p * [current_r,1])
     def do_transform_inverse(x):
         return shapely.transform(x,lambda p: p * [1/current_r,1])
-    if plot:
-        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),add_points=False,color="blue")
+    if plot_per_layer:
+        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),ax=ax_2d_layer,add_points=False,color="blue")
     final_perimeter = do_transform(layer_data[i]["external_peris"])
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
         internal_perimeter = do_transform(layer_data[i]["external_peris"]).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
-        if plot:
-            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),add_points=False,color="green")
+        if plot_per_layer:
+            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),ax=ax_2d_layer,add_points=False,color="green")
         layer_data[i]["internal_peris"].append(do_transform_inverse(internal_perimeter))
         final_perimeter = internal_perimeter
 
 
-    
-    final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
-    if plot:
-        plot_polygon(final_top_surface,add_points=False,color="indigo")
-    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot)
 
-    if "needs_support" in layer_data[i] and plot:
-        plot_polygon(do_transform(layer_data[i]["needs_support"]),add_points=False,color="red")
+    final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    if plot_per_layer:
+        plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
+    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
+
+    if "needs_support" in layer_data[i] and plot_per_layer:
+        plot_polygon(do_transform(layer_data[i]["needs_support"]),ax=ax_2d_layer,add_points=False,color="red")
 
     # plt.savefig(f"frames/{i}.png",dpi=600)
 
     shape_to_infill = do_transform_inverse(final_perimeter-final_top_surface)
 
-    fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot)
+    fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
     layer_data[i]["fully_radial_infill"] = fully_radial_infill
     layer_data[i]["radial_infill"] = radial_infill
     layer_data[i]["axial_infill"] = axial_infill
     print(f"LAYER {i}")
-    if plot:
-        plt.show()
 
+    # 3D plotting helpers
+    def plot_lines_3d(shapely_obj, ax, color, linewidth, label=None):
+        """Polygon/MultiPolygon: clip to [0,2pi], densify arcs, convert cylindrical -> Cartesian."""
+        lines = polygon_to_wrapped_lines(shapely_obj)
+        for k, line in enumerate(lines):
+            coords = densify_cylindrical(np.array(line.coords))
+            x = current_r * np.cos(coords[:, 0])
+            y = current_r * np.sin(coords[:, 0])
+            ax.plot(x, y, coords[:, 1], color=color, linewidth=linewidth,
+                    label=label if k == 0 else None)
+
+    def plot_linelist_3d(line_list, ax, color, linewidth, label=None):
+        """List of LineStrings already in (theta, z) space — densify arcs before plotting."""
+        if not line_list:
+            return
+        for k, line in enumerate(line_list):
+            if line is None or line.is_empty:
+                continue
+            coords = densify_cylindrical(np.array(line.coords))
+            x = current_r * np.cos(coords[:, 0])
+            y = current_r * np.sin(coords[:, 0])
+            ax.plot(x, y, coords[:, 1], color=color, linewidth=linewidth,
+                    label=label if k == 0 else None)
+
+    def set_equal_aspect_3d(ax):
+        limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+        spans = limits[:, 1] - limits[:, 0]
+        spans = np.where(spans > 0, spans, 1.0)
+        ax.set_box_aspect(spans / spans.max())
+
+    top_surf = layer_data[i].get("top_surfaces")
+
+    # --- Per-layer 3D (only when plot_per_layer) ---
+    if plot_3d and plot_per_layer:
+        plot_lines_3d(layer_data[i]["external_peris"], ax_3d_layer, 'blue', 2, label='Ext Peri')
+        for j, int_peri in enumerate(layer_data[i].get("internal_peris", [])):
+            plot_lines_3d(int_peri, ax_3d_layer, 'green', 1.5, label='Int Peri' if j == 0 else None)
+        if top_surf is not None and not top_surf.is_empty:
+            plot_lines_3d(top_surf, ax_3d_layer, 'red', 1.5, label='Top Surf')
+        plot_linelist_3d(layer_data[i].get("solid_infill", []),        ax_3d_layer, 'greenyellow', 0.8, label='Solid Infill')
+        plot_linelist_3d(layer_data[i].get("radial_infill", []),       ax_3d_layer, 'orange',      0.8, label='Radial Infill')
+        plot_linelist_3d(layer_data[i].get("axial_infill", []),        ax_3d_layer, 'darkviolet',  0.8, label='Axial Infill')
+        plot_linelist_3d(layer_data[i].get("fully_radial_infill", []), ax_3d_layer, 'orangered',   0.8, label='Full Radial')
+        set_equal_aspect_3d(ax_3d_layer)
+        ax_3d_layer.set_xlabel('X'); ax_3d_layer.set_ylabel('Y'); ax_3d_layer.set_zlabel('Z')
+        ax_3d_layer.set_title(f'Layer {i} (r={current_r:.2f})')
+        ax_3d_layer.legend()
+
+    # --- Combined 3D (always when plot_3d, non-blocking live update) ---
+    if plot_3d:
+        plot_lines_3d(layer_data[i]["external_peris"], ax_3d, 'blue', 2, label=f'Ext Peri L{i}')
+        for j, int_peri in enumerate(layer_data[i].get("internal_peris", [])):
+            plot_lines_3d(int_peri, ax_3d, 'green', 1.5, label=f'Int Peri L{i}' if j == 0 else None)
+        if top_surf is not None and not top_surf.is_empty:
+            plot_lines_3d(top_surf, ax_3d, 'red', 1.5, label=f'Top Surf L{i}')
+        plot_linelist_3d(layer_data[i].get("solid_infill", []),        ax_3d, 'greenyellow', 0.8, label=f'Solid Infill L{i}')
+        plot_linelist_3d(layer_data[i].get("radial_infill", []),       ax_3d, 'orange',      0.8, label=f'Radial Infill L{i}')
+        plot_linelist_3d(layer_data[i].get("axial_infill", []),        ax_3d, 'darkviolet',  0.8, label=f'Axial Infill L{i}')
+        plot_linelist_3d(layer_data[i].get("fully_radial_infill", []), ax_3d, 'orangered',   0.8, label=f'Full Radial L{i}')
+        set_equal_aspect_3d(ax_3d)
+        ax_3d.set_title(f'Up to layer {i} (r={current_r:.2f})')
+        fig_combined.canvas.draw()
+        plt.pause(0.001)
+
+    # --- Finalize and show per-layer figure (blocks until closed) ---
+    if plot_per_layer:
+        ax_2d_layer.set_title(f'Layer {i}')
+        ax_2d_layer.set_aspect('equal')
+        fig_layer.tight_layout()
+        fig_layer.canvas.draw()
+        print(f"Close layer {i} window to continue...")
+        while plt.fignum_exists(fig_layer.number):
+            plt.pause(0.1)
+
+    # G-code generation
     traces = []
-    # app.use_app('pyqt6')
-    # Section names and colors for G-code comments and visualization
     sections = [
         ("external_peris", "EXTERNAL_PERIMETER"),
         ("internal_peris", "INTERNAL_PERIMETER"),
@@ -769,7 +874,7 @@ for i in sorted(layer_data.keys()):
                 f.write(f";TYPE:{section_name}\n")
                 g,last_pos,last_e = path.to_gcode(slicing_params,last_pos,last_e)
                 f.write(g)
-    # for each
+
     # traces = [trace for trace in traces if trace is not None]
     # traces = np.vstack(traces)
     # for each in traces:
@@ -787,10 +892,17 @@ for i in sorted(layer_data.keys()):
     # fig = go.Figure(data=traces)
     # fig.show()
 # set_axes_equal(ax)
-# plt.show()
     # plt.clf()
-# if plot_3d:
-#     canvas.app.run()
+
+if plot_3d and ax_3d:
+    ax_3d.set_xlabel('X')
+    ax_3d.set_ylabel('Y')
+    ax_3d.set_zlabel('Z (height)')
+    ax_3d.set_title('All Layers')
+    ax_3d.legend()
+    plt.ioff()
+    fig_combined.tight_layout()
+    plt.show()
 
 # mesh.show()
 # output_scad.save_as_scad()
