@@ -230,6 +230,63 @@ def fix_mesh(mesh1):
     mesh1.merge_vertices()
     return mesh1.process(validate=True)
 
+def _collect_lines(geom, result):
+    """Append all non-empty LineStrings from any geometry type into result."""
+    if geom is None or geom.is_empty:
+        return
+    if isinstance(geom, shapely.LineString):
+        result.append(geom)
+    elif hasattr(geom, 'geoms'):
+        for g in geom.geoms:
+            _collect_lines(g, result)
+
+def do_support_infill(support_geom, slicing_params, current_r, is_interface=False):
+    """
+    Generate support infill in (θ,z) space.
+
+    Interface layers (top/bottom of a support column):
+        axial lines (constant θ) + radial lines (constant z) at support_interface_spacing.
+    Body layers (interior of a support column):
+        axial lines only (constant θ) at support_body_spacing.
+
+    Returns a list of Shapely LineStrings.
+    """
+    if support_geom is None or support_geom.is_empty:
+        return []
+
+    result = []
+    bounds = shapely.bounds(support_geom)
+    z_min, z_max = bounds[1], bounds[3]
+
+    # Anchor θ positions to r_base so lines stay at the same physical angles on every layer,
+    # matching the strategy used by do_sparse_infill.
+    r_base = slicing_params["r_base"]
+
+    if is_interface:
+        spacing = slicing_params["support_interface_spacing"]
+        thetas = np.arange(0, 2 * np.pi, spacing / r_base)
+
+        # Axial lines (constant θ, varying z)
+        for theta in thetas:
+            ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
+            _collect_lines(shapely.intersection(ls, support_geom), result)
+
+        # Radial lines (constant z, varying θ)
+        z_lo = np.floor(z_min / spacing) * spacing
+        for z in np.arange(z_lo, z_max + spacing, spacing):
+            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+            _collect_lines(shapely.intersection(ls, support_geom), result)
+    else:
+        spacing = slicing_params["support_body_spacing"]
+        thetas = np.arange(0, 2 * np.pi, spacing / r_base)
+
+        # Axial lines only (constant θ, varying z)
+        for theta in thetas:
+            ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
+            _collect_lines(shapely.intersection(ls, support_geom), result)
+
+    return result
+
 def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
     if peri.is_empty:
         return
@@ -539,9 +596,11 @@ slicing_params = {
     "wall_count": 3,
     "feed_mm_per_min" : 6000,
     "travel_mm_per_min" : 6000,
+    "support_interface_spacing": 2,  # mm — grid spacing for top/bottom surfaces of support
+    "support_body_spacing": 3,       # mm — axial-line spacing for support interior
 }
 printer_params = {
-    "bed_radius": 1.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+    "bed_radius": 15.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
     "max_radius": 25.0,    # mm — maximum printable radius; slicing stops here
     "axial_length": 150.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
@@ -849,7 +908,10 @@ with open("output.gcode","w") as f:
 for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
     layer_num = gap_layer_idx - len(gap_support_layers)   # e.g. -5, -4, …, -1
     r = gap_layer["radius"]
-    support_infill = do_solid_infill(gap_layer["support"], slicing_params, r) or []
+    n_gap = len(gap_support_layers)
+    # First and last gap layers are the bottom/top interfaces; the rest are body.
+    is_interface = (n_gap <= 2) or (gap_layer_idx == 0 or gap_layer_idx == n_gap - 1)
+    support_infill = do_support_infill(gap_layer["support"], slicing_params, r, is_interface=is_interface)
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
@@ -909,12 +971,24 @@ for i in sorted(layer_data.keys()):
     bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
     layer_data[i]["solid_infill"] += bottom_solid_infill
 
-    # Support infill: solid fill in areas where outer-layer overhangs need a platform
+    # Support infill: interface (top/bottom of column) gets a grid; body gets axial lines only.
     support_geom = layer_data[i].get("support", shapely.GeometryCollection())
     if not support_geom.is_empty:
-        layer_data[i]["support_infill"] = do_solid_infill(support_geom, slicing_params, current_r, plot_per_layer, ax=ax_2d_layer) or []
+        # Detect top interface: support here but NOT in the next (outer) layer
+        next_support = layer_data.get(i + 1, {}).get("support", shapely.GeometryCollection())
+        top_interface = support_geom.difference(next_support)
+        # Detect bottom interface: support here but NOT in the previous (inner) layer
+        prev_support = layer_data.get(i - 1, {}).get("support", shapely.GeometryCollection())
+        bottom_interface = support_geom.difference(prev_support)
+
+        interface = top_interface.union(bottom_interface)
+        body = support_geom.difference(interface)
+
+        layer_data[i]["support_infill"] = (
+            do_support_infill(interface, slicing_params, current_r, is_interface=True) +
+            do_support_infill(body,      slicing_params, current_r, is_interface=False)
+        )
         if plot_per_layer:
-            # plot support area in magenta so it's visually distinct
             plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
     else:
         layer_data[i]["support_infill"] = []
