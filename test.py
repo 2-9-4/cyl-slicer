@@ -539,8 +539,24 @@ slicing_params = {
     "wall_count": 3,
     "feed_mm_per_min" : 6000,
     "travel_mm_per_min" : 6000,
-    "extrusion_per_mm" : 0.05
 }
+printer_params = {
+    "bed_radius": 20.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+    "max_radius": 25.0,    # mm — maximum printable radius; slicing stops here
+    "axial_length": 150.0, # mm — printable length along the cylinder axis
+    "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
+}
+# printer_params = {
+#     "bed_radius": 60.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+#     "max_radius": 160.0,    # mm — maximum printable radius; slicing stops here
+#     "axial_length": 150.0, # mm — printable length along the cylinder axis
+#     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
+# }
+# Derived: how many mm of filament per mm of real travel
+slicing_params["extrusion_per_mm"] = (
+    slicing_params["nozzle_size"] * slicing_params["layer_height"]
+    / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
+)
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
 mesh = trimesh.load_mesh("test.stl")
 pts = cartesian_to_cylindrical(mesh.vertices)
@@ -548,14 +564,22 @@ max_z = np.max(pts[:,2])
 min_z = np.min(pts[:,2])
 part_height = (max_z-min_z)
 
+# Z bounds of the printable volume in the same coordinate space as the mesh
+z_clip_min = min_z
+z_clip_max = min_z + printer_params["axial_length"]
+
+# layer (θ,z)-space clipping box — wide enough to cover all θ shifts (±2π copies)
+axial_clip_box = box(-2*np.pi, z_clip_min, 4*np.pi, z_clip_max)
 
 # for current_r in np.arange(max_r-layer_height*35,max_r,layer_height):
 layer_data = {}
 sliced_layer_count = 0
 # Store the innermost shell radius once so do_sparse_infill can anchor its
 # axial-line grid at a fixed θ-step that never drifts across layers.
-slicing_params["r_base"] = np.min(pts[:,0]) + slicing_params["layer_height"]
-for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["layer_height"],np.max(pts[:,0])-1e-3,slicing_params["layer_height"])):
+r_start = max(np.min(pts[:,0]) + slicing_params["layer_height"], printer_params["bed_radius"])
+r_end   = min(np.max(pts[:,0]) - 1e-3, printer_params["max_radius"])
+slicing_params["r_base"] = r_start
+for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["layer_height"])):
     if max_real_layers is not None and sliced_layer_count >= max_real_layers:
         print(f"\nSliced {sliced_layer_count} layers, stopping.")
         break
@@ -697,6 +721,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
             plot_polygon(do_transform(poly_with_holes),add_points=False,facecolor=(0, 0, 0, 0))
 
         poly_with_holes = do_transform_inverse(do_transform(poly_with_holes).buffer(-slicing_params["nozzle_size"]/2,join_style="mitre"))
+        poly_with_holes = poly_with_holes.intersection(axial_clip_box)
         external_perimeters.append(poly_with_holes)
         if poly_i not in mapping:
             external_perimeters.append(shift_polygon(poly_with_holes,2*np.pi))
@@ -711,6 +736,7 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     times.append((time.perf_counter(),"full union"))
 
     if layer_i == 0:
+        layer_data[layer_i]["bottom_surfaces"] = layer_data[layer_i]["external_peris"]
         continue
 
     e = do_transform(final)
@@ -718,12 +744,12 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     e -= do_transform(layer_data[layer_i-1]["external_peris"]).buffer(slicing_params["nozzle_size"]/2)
     e -= do_transform(shift_polygon(layer_data[layer_i-1]["external_peris"],-np.pi*2)).buffer(slicing_params["nozzle_size"]/2)
 
-    
+
     layer_data[layer_i]["needs_support"] = do_transform_inverse(e)
     times.append((time.perf_counter(),"support check"))
 
     e = do_transform(layer_data[layer_i-1]["external_peris"])
-        
+
     e = e.buffer(-slicing_params["nozzle_size"],join_style="mitre")# shrink the area of the top layer so we don't flag slicing_params["wall_count"] as needing top layers, TODO tweak this metric slicing_params["nozzle_size"]*slicing_params["wall_count"] is probably too little overlap between slicing_params["wall_count"]
     e = do_transform_inverse(e)
 
@@ -732,6 +758,15 @@ for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["l
     times.append((time.perf_counter(),"top surface check"))
 
     layer_data[layer_i-1]["top_surfaces"] = e
+
+    # Bottom surfaces of current layer: areas not covered by the layer below
+    e = do_transform(final)
+    e = e.buffer(-slicing_params["nozzle_size"], join_style="mitre")
+    e = do_transform_inverse(e)
+    e -= layer_data[layer_i-1]["external_peris"]
+    e -= shift_polygon(layer_data[layer_i-1]["external_peris"], np.pi*2)
+    layer_data[layer_i]["bottom_surfaces"] = e
+    times.append((time.perf_counter(), "bottom surface check"))
     for i in range(1,len(times)):
         print(f"{times[i][1]} took {times[i][0]-times[i-1][0]:.2f} seconds")
 
@@ -804,14 +839,20 @@ for i in sorted(layer_data.keys()):
     final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
-    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
+    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
+
+    final_bottom_surface = do_transform(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection())).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    if plot_per_layer:
+        plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
+    bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
+    layer_data[i]["solid_infill"] += bottom_solid_infill
 
     if "needs_support" in layer_data[i] and plot_per_layer:
         plot_polygon(do_transform(layer_data[i]["needs_support"]),ax=ax_2d_layer,add_points=False,color="red")
 
     # plt.savefig(f"frames/{i}.png",dpi=600)
 
-    shape_to_infill = do_transform_inverse(final_perimeter-final_top_surface)
+    shape_to_infill = do_transform_inverse(final_perimeter - final_top_surface - final_bottom_surface)
 
     fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
     layer_data[i]["fully_radial_infill"] = fully_radial_infill
