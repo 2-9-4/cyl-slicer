@@ -265,49 +265,118 @@ def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
 
     return infill
 
-def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False,ax=None):
-    if innermost_peri.is_empty:
-        return [],[],[]
-    def do_transform(x):
-        return shapely.transform(x,lambda p: p * [current_r,1])
-    def do_transform_inverse(x):
-        return shapely.transform(x,lambda p: p * [1/current_r,1])
-    fully_radial_infill = []
-    radial_infill = []
-    axial_infill = []
-    lowest = shapely.bounds(innermost_peri)[1]
-    lowest /= slicing_params["infill_spacing"]
-    lowest = np.floor(lowest) * slicing_params["infill_spacing"]
-    highest = shapely.bounds(innermost_peri)[3]
-    highest /= slicing_params["infill_spacing"]
-    highest = np.ceil(highest) * slicing_params["infill_spacing"]
+def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=False, ax=None):
+    """
+    Generate sparse grid infill for the interior of a cylindrical shell layer.
 
-    for current_line_v in np.arange(lowest,highest+1,slicing_params["infill_spacing"]):
-        lp_x,lp_y = [0,2*np.pi],[current_line_v,current_line_v]
-        ls = shapely.LineString(np.array([lp_x,lp_y]).swapaxes(0,1))
-        inter = shapely.intersection(ls,innermost_peri)
+    Works in (θ, z) space (theta in radians, z in mm). The grid has two families
+    of lines:
+      - "Radial" lines  → constant-z horizontal lines in (θ,z) space, i.e. the
+                          printer rotates while extruding — these become arcs on
+                          the cylinder surface.
+      - "Axial" lines   → constant-θ vertical lines in (θ,z) space, i.e. the
+                          printhead moves along the cylinder axis while extruding.
+
+    Axial lines are anchored to a fixed θ-grid derived from r_base (the innermost
+    shell). The first n_base lines land at the same θ positions on every layer.
+    Extra lines beyond n_base are "spawned" fresh when the radius grows enough to
+    fit them; they are arc-aligned but have no counterpart on inner layers.
+
+    Returns three lists of Shapely LineString segments (all in raw (θ,z) space):
+      fully_radial_infill — radial lines that span the full interior in one shot
+                            (no multi-part intersection; single connected segment)
+      radial_infill       — radial line segments clipped to the interior polygon
+                            (multi-part intersections produce multiple entries)
+      axial_infill        — axial line segments clipped to the interior polygon
+    """
+    if innermost_peri.is_empty:
+        return [], [], []
+
+    # Scale θ axis by current_r to convert arc-length → mm for plotting only.
+    def do_transform(x):
+        return shapely.transform(x, lambda p: p * [current_r, 1])
+    def do_transform_inverse(x):
+        return shapely.transform(x, lambda p: p * [1/current_r, 1])
+
+    fully_radial_infill = []  # single-segment radial lines (full crossing)
+    radial_infill = []        # multi-segment radial lines (partial crossings)
+    axial_infill = []         # axial (constant-θ) line segments
+
+    # ── Snap the z bounding-box to the infill grid spacing ──────────────────
+    # Floor the bottom z-bound and ceil the top so grid lines always start/end
+    # outside the polygon, guaranteeing full coverage without partial first/last gaps.
+    lowest = shapely.bounds(innermost_peri)[1]          # min z of the polygon
+    lowest /= slicing_params["infill_spacing"]
+    lowest = np.floor(lowest) * slicing_params["infill_spacing"]   # snap down
+
+    highest = shapely.bounds(innermost_peri)[3]         # max z of the polygon
+    highest /= slicing_params["infill_spacing"]
+    highest = np.ceil(highest) * slicing_params["infill_spacing"]  # snap up
+
+    # ── Pass 1: Radial infill (constant-z lines, θ = 0 → 2π) ───────────────
+    # Sweep horizontal lines from lowest to highest z, spaced by infill_spacing.
+    for current_line_v in np.arange(lowest, highest + 1, slicing_params["infill_spacing"]):
+        # Build a full-width horizontal line at this z value across the whole θ range.
+        lp_x, lp_y = [0, 2*np.pi], [current_line_v, current_line_v]
+        ls = shapely.LineString(np.array([lp_x, lp_y]).swapaxes(0, 1))
+
+        # Clip the line to the interior polygon.
+        inter = shapely.intersection(ls, innermost_peri)
+
         geoms = None
         if type(inter) == shapely.MultiLineString:
+            # The line crossed the interior in multiple disjoint segments —
+            # collect each segment individually.
             geoms = inter.geoms
         elif type(inter) == shapely.geometry.collection.GeometryCollection:
+            # Mixed geometry result (can include points + lines); iterate all.
             geoms = inter.geoms
+
         if geoms is not None:
+            # Multiple disjoint segments → partial crossings (radial_infill).
             for line_segment in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),ax=ax,color="orange",add_points=False)
+                    plot_line(do_transform(line_segment), ax=ax, color="orange", add_points=False)
                 radial_infill.append(line_segment)
         else:
-            if(type(inter) == shapely.geometry.multipoint.MultiPoint):
+            if type(inter) == shapely.geometry.multipoint.MultiPoint:
+                # Degenerate: line only grazed polygon vertices — skip, just log.
                 print("got MultiPoint")
-                shapely.plotting.plot_points(do_transform(inter),color="red")
+                shapely.plotting.plot_points(do_transform(inter), color="red")
             else:
+                # Single continuous segment spanning the full interior crossing.
                 if plot_infill:
-                    plot_line(do_transform(inter),ax=ax,color="red",add_points=False)
+                    plot_line(do_transform(inter), ax=ax, color="red", add_points=False)
                 fully_radial_infill.append(inter)
-    for current_line_h in np.arange(0,2*np.pi,slicing_params["infill_spacing"]/current_r):
-        lp_x,lp_y = [current_line_h,current_line_h],[lowest,highest]
-        ls = shapely.LineString(np.array([lp_x,lp_y]).swapaxes(0,1))
-        inter = shapely.intersection(ls,innermost_peri)
+
+    # ── Pass 2: Axial infill (constant-θ lines, z = lowest → highest) ───────
+    # Strategy: anchor the entire grid at r_base (the innermost shell radius,
+    # fixed for the whole print). This gives a constant θ-step that never
+    # changes, so the first n_base lines land at exactly the same θ positions
+    # on every layer. As the radius grows, floor(2π * current_r / infill_spacing)
+    # eventually exceeds n_base — any extra lines are "spawned" fresh on that
+    # layer at their natural positions (arc-aligned but not previously visited).
+    r_base = slicing_params["r_base"]
+    fixed_step = slicing_params["infill_spacing"] / r_base     # never changes
+    n_base = int(np.floor(2 * np.pi / fixed_step))             # lines inherited from every prior layer
+
+    angular_step = slicing_params["infill_spacing"] / current_r
+    n_total = int(np.floor(2 * np.pi / angular_step))          # total lines this layer can hold
+
+    # Inherited lines (k < n_base): 100% same θ on all layers — no drift ever.
+    # Spawned lines (k ≥ n_base): new this layer, placed at their arc-aligned θ.
+    inherited_thetas = np.arange(n_base) * fixed_step                    # shape (n_base,)
+    spawned_thetas   = np.arange(n_base, n_total) * angular_step         # shape (0 or more,)
+    all_thetas = np.concatenate([inherited_thetas, spawned_thetas])
+
+    for current_line_h in all_thetas:
+        # Build a vertical line in (θ,z) space at this fixed θ value.
+        lp_x, lp_y = [current_line_h, current_line_h], [lowest, highest]
+        ls = shapely.LineString(np.array([lp_x, lp_y]).swapaxes(0, 1))
+
+        # Clip the line to the interior polygon.
+        inter = shapely.intersection(ls, innermost_peri)
+
         geoms = None
         if type(inter) == shapely.MultiLineString:
             geoms = inter.geoms
@@ -315,14 +384,17 @@ def do_sparse_infill(innermost_peri,slicing_params,current_r,plot_infill=False,a
             geoms = inter.geoms
 
         if geoms is not None:
+            # Multiple disjoint segments (line crossed a hollow region mid-way).
             for line_segment in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),ax=ax,color="darkviolet",add_points=False)
+                    plot_line(do_transform(line_segment), ax=ax, color="darkviolet", add_points=False)
                 axial_infill.append(line_segment)
         else:
+            # Single segment — straightforward full crossing at this θ.
             if plot_infill:
-                plot_line(do_transform(inter),ax=ax,color="darkviolet",add_points=False)
+                plot_line(do_transform(inter), ax=ax, color="darkviolet", add_points=False)
             axial_infill.append(inter)
+
     return fully_radial_infill, radial_infill, axial_infill
 from shapely.geometry import Polygon, LineString, box, MultiLineString
 from shapely.ops import linemerge
@@ -480,6 +552,9 @@ part_height = (max_z-min_z)
 # for current_r in np.arange(max_r-layer_height*35,max_r,layer_height):
 layer_data = {}
 sliced_layer_count = 0
+# Store the innermost shell radius once so do_sparse_infill can anchor its
+# axial-line grid at a fixed θ-step that never drifts across layers.
+slicing_params["r_base"] = np.min(pts[:,0]) + slicing_params["layer_height"]
 for layer_i,current_r in enumerate( np.arange(np.min(pts[:,0])+slicing_params["layer_height"],np.max(pts[:,0])-1e-3,slicing_params["layer_height"])):
     if max_real_layers is not None and sliced_layer_count >= max_real_layers:
         print(f"\nSliced {sliced_layer_count} layers, stopping.")
