@@ -541,7 +541,7 @@ slicing_params = {
     "travel_mm_per_min" : 6000,
 }
 printer_params = {
-    "bed_radius": 20.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+    "bed_radius": 1.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
     "max_radius": 25.0,    # mm — maximum printable radius; slicing stops here
     "axial_length": 150.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
@@ -775,6 +775,49 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
+# ═══════════════════════════════════════════════════════════════════════
+# Support propagation: backward pass (outer → inner)
+# ═══════════════════════════════════════════════════════════════════════
+sorted_layer_keys = sorted(layer_data.keys())
+# Clip box for support: exactly one rotation wide so do_solid_infill's 0→2π sweep covers it
+theta_clip_box = box(0, z_clip_min, 2 * np.pi, z_clip_max)
+
+for i in sorted_layer_keys:
+    layer_data[i]["support"] = shapely.GeometryCollection()
+
+support_needed = shapely.GeometryCollection()   # (θ,z) regions needing a support column below
+
+for i in reversed(sorted_layer_keys):
+    current_ext = layer_data[i]["external_peris"]
+
+    # Ground: any pending support that this layer's model already covers needs no extra material
+    support_needed = support_needed.difference(current_ext)
+
+    # Record what this layer must print as support (in space not occupied by the model)
+    if not support_needed.is_empty:
+        layer_data[i]["support"] = support_needed.intersection(theta_clip_box)
+
+    # Add this layer's overhangs so inner layers know to support them
+    if "needs_support" in layer_data[i]:
+        support_needed = support_needed.union(layer_data[i]["needs_support"])
+
+# ── Gap layers: model floating above the bed ────────────────────────────
+# If the innermost model layer is above bed_radius, print support shells
+# from bed_radius up to the first model layer.
+gap_support_layers = []
+first_r = layer_data[sorted_layer_keys[0]]["radius"]
+if first_r > printer_params["bed_radius"] + slicing_params["layer_height"]:
+    # Union the accumulated ungrounded support with the full first-layer footprint
+    # (the entire first layer floats, so all of it needs a support base)
+    gap_footprint = support_needed.union(
+        layer_data[sorted_layer_keys[0]]["external_peris"]
+    ).intersection(theta_clip_box)
+    if not gap_footprint.is_empty:
+        for r in np.arange(printer_params["bed_radius"],
+                           first_r,
+                           slicing_params["layer_height"]):
+            gap_support_layers.append({"radius": r, "support": gap_footprint})
+
 plot_3d = False       # live combined 3D figure (non-blocking)
 plot_per_layer = False  # show blocking per-layer 2D+3D window; set False for full gcode runs
 ax_3d = None
@@ -800,6 +843,25 @@ if max_real_layers is not None:
     print(f"\n=== CAPPED AT {max_real_layers} LAYERS FOR TESTING ===\n")
 with open("output.gcode","w") as f:
     f.write(";start of slice\n")
+
+# Write gap support layers (printed before the model, from bed outward).
+# Use negative layer numbers (-N … -1) so the viewer layer slider includes them.
+for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
+    layer_num = gap_layer_idx - len(gap_support_layers)   # e.g. -5, -4, …, -1
+    r = gap_layer["radius"]
+    support_infill = do_solid_infill(gap_layer["support"], slicing_params, r) or []
+    with open("output.gcode", "a") as f:
+        f.write(f";LAYER:{layer_num}\n")
+        f.write(f";Z:{r:.4f}\n")
+        f.write(f"G0 Z{r:.4f}\n")
+        gcode_paths = shapely_to_paths(support_infill, r)
+        for path in gcode_paths:
+            if path is None:
+                continue
+            f.write(";TYPE:SUPPORT\n")
+            g, last_pos, last_e = path.to_gcode(slicing_params, last_pos, last_e)
+            f.write(g)
+
 for i in sorted(layer_data.keys()):
     real_layer_count += 1
     if max_real_layers is not None and real_layer_count > max_real_layers:
@@ -846,6 +908,16 @@ for i in sorted(layer_data.keys()):
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
     bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
     layer_data[i]["solid_infill"] += bottom_solid_infill
+
+    # Support infill: solid fill in areas where outer-layer overhangs need a platform
+    support_geom = layer_data[i].get("support", shapely.GeometryCollection())
+    if not support_geom.is_empty:
+        layer_data[i]["support_infill"] = do_solid_infill(support_geom, slicing_params, current_r, plot_per_layer, ax=ax_2d_layer) or []
+        if plot_per_layer:
+            # plot support area in magenta so it's visually distinct
+            plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
+    else:
+        layer_data[i]["support_infill"] = []
 
     if "needs_support" in layer_data[i] and plot_per_layer:
         plot_polygon(do_transform(layer_data[i]["needs_support"]),ax=ax_2d_layer,add_points=False,color="red")
@@ -940,6 +1012,7 @@ for i in sorted(layer_data.keys()):
         ("external_peris", "EXTERNAL_PERIMETER"),
         ("internal_peris", "INTERNAL_PERIMETER"),
         ("solid_infill", "SOLID_INFILL"),
+        ("support_infill", "SUPPORT"),
         ("fully_radial_infill", "INFILL_RADIAL_FULL"),
         ("radial_infill", "INFILL_RADIAL"),
         ("axial_infill", "INFILL_AXIAL")
@@ -953,7 +1026,7 @@ for i in sorted(layer_data.keys()):
             if subsection == "external_peris" or subsection == "internal_peris":
                 gcode_paths = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
             else:
-                gcode_paths = shapely_to_paths(layer_data[i][subsection], current_r)
+                gcode_paths = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
             for path in gcode_paths:
                 if path is None:
                     continue

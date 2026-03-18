@@ -24,13 +24,13 @@
 enum SType {
     ST_EXTERNAL = 0, ST_INTERNAL, ST_SOLID_INFILL,
     ST_RADIAL_FULL,  ST_RADIAL,   ST_AXIAL,
-    ST_TRAVEL,       ST_UNKNOWN,  ST_COUNT
+    ST_SUPPORT,      ST_TRAVEL,   ST_UNKNOWN, ST_COUNT
 };
 
 static const char* kNames[ST_COUNT] = {
     "External Perimeter", "Internal Perimeter", "Solid Infill",
     "Infill Radial Full", "Infill Radial",      "Infill Axial",
-    "Travel",             "Unknown",
+    "Support",            "Travel",             "Unknown",
 };
 
 // RGB in [0,1]
@@ -41,12 +41,13 @@ static const float kColors[ST_COUNT][3] = {
     {0.800f, 0.000f, 0.800f},  // RADIAL_FULL   #CC00CC
     {1.000f, 0.400f, 0.000f},  // RADIAL        #FF6600
     {0.400f, 0.000f, 0.800f},  // AXIAL         #6600CC
+    {0.000f, 0.800f, 0.800f},  // SUPPORT       #00CCCC cyan
     {1.000f, 0.200f, 0.200f},  // TRAVEL        red
     {0.533f, 0.533f, 0.533f},  // UNKNOWN       #888888
 };
 
 static const float kAlpha[ST_COUNT] = {
-    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.10f, 0.6f
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.10f, 0.6f
 };
 
 SType parse_stype(const std::string& s) {
@@ -56,6 +57,7 @@ SType parse_stype(const std::string& s) {
     if (s == "INFILL_RADIAL_FULL") return ST_RADIAL_FULL;
     if (s == "INFILL_RADIAL")      return ST_RADIAL;
     if (s == "INFILL_AXIAL")       return ST_AXIAL;
+    if (s == "SUPPORT")            return ST_SUPPORT;
     return ST_UNKNOWN;
 }
 
@@ -134,9 +136,13 @@ GcodeData load_gcode(const char* path) {
         if (line[0] == ';') {
             if (line.rfind(";LAYER:", 0) == 0) {
                 close_layer();
-                cur_layer = std::stoi(line.substr(7));
-                d.layer_min = std::min(d.layer_min, cur_layer);
-                d.layer_max = std::max(d.layer_max, cur_layer);
+                std::string layer_str = line.substr(7);
+                // Accept integers (positive or negative); skip non-numeric identifiers
+                if (!layer_str.empty() && (std::isdigit(layer_str[0]) || layer_str[0] == '-')) {
+                    cur_layer = std::stoi(layer_str);
+                    d.layer_min = std::min(d.layer_min, cur_layer);
+                    d.layer_max = std::max(d.layer_max, cur_layer);
+                }
                 in_ext = false;
             } else if (line.rfind(";Z:", 0) == 0) {
                 radius = std::stof(line.substr(3));
