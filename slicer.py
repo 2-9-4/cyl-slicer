@@ -765,7 +765,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh("offset_cube.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "offset_cube.stl")
 pts = cartesian_to_cylindrical(mesh.vertices)
 # Shift mesh so its axial start aligns with min_x_pos + min_x_margin
 _z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
