@@ -117,7 +117,9 @@ class PathObject:
         x0           = pts[0, 1]
         _retract_mm    = slicing_params.get("retract_mm", 0.0)
         _retract_speed = slicing_params.get("retract_speed_mm_per_min", 1800)
-        if _retract_mm > 0:
+        _min_retract   = slicing_params.get("min_retract_travel_mm", 0.0)
+        travel_dist    = self.dist(current_pos[1], x0, current_pos[0], t0_accum)
+        if _retract_mm > 0 and travel_dist >= _min_retract:
             g = [";start of path\n",
                  f"G1 E{current_e - _retract_mm:.5f} F{_retract_speed:.1f}",
                  f"G0 X{x0:.3f} Y{t0_accum * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}",

@@ -710,8 +710,9 @@ slicing_params = {
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
     "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
     "support_xy_distance_mm": 0.3,   # mm — lateral gap between support and model walls
-    "retract_mm": 1.0,               # mm — retraction distance on travel moves
+    "retract_mm": 2.0,               # mm — retraction distance on travel moves
     "retract_speed_mm_per_min": 1800, # mm/min — retraction speed (30 mm/s)
+    "min_retract_travel_mm": 6.0,    # mm — skip retraction for travel moves shorter than this
     "flow_rate": 1.0,                # multiplier on extrusion_per_mm (tune for over/underextrusion)
     "first_layer_speed_factor": 0.5, # fraction of feed/travel speeds for the first model layer
     "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
