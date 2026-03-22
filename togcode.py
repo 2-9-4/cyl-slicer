@@ -6,6 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from vispy import scene
 from vispy.scene import Line
+from scipy.spatial import cKDTree
 Coord = Tuple[float, float]
 def cylinder_to_cartesian(theta, z, r):
     """
@@ -238,57 +239,90 @@ def optimize_path_order(paths: List[PathObject], current_pos) -> List[PathObject
     current_pos is (accumulated_theta_radians, x_mm) — the printer's position
     before this section starts.  Open paths may be traversed in either
     direction; closed paths are left in their original orientation.
+
+    Uses a cKDTree for O(n log n) average complexity instead of O(n²).
+    Theta is scaled by radius to convert arc-length to mm for distance queries.
+    Three theta wraps (±2π) are included so seam-crossing paths are found correctly.
     """
     if len(paths) <= 1:
         return paths
 
-    remaining = list(range(len(paths)))
-    result = []
-    canon_theta = current_pos[0] % (2 * np.pi)
-    x = current_pos[1]
+    n = len(paths)
+    TWO_PI = 2 * np.pi
+    canon_theta = current_pos[0] % TWO_PI
+    cur_x = current_pos[1]
+    r = next((p.radius for p in paths if p.points), 1.0)
 
-    while remaining:
-        best_idx = None
-        best_dist = float("inf")
-        best_reversed = False
+    # Build KD-tree over scaled (theta*r, x) coordinates.
+    # Each path contributes up to 6 points: start+end × 3 wraps.
+    kd_pts = []
+    kd_path_idx = []  # path index for each kd point
+    kd_is_end = []    # True if this kd point represents the end endpoint
 
-        for idx in remaining:
-            path = paths[idx]
-            if not path.points:
-                continue
-            pts = np.asarray(path.points)
-            s = pts[0]   # (theta, x)
-            e = pts[-1]  # (theta, x)
-            r = path.radius
+    for i, path in enumerate(paths):
+        if not path.points:
+            continue
+        pts = np.asarray(path.points)
+        s_tr = (pts[0, 0] % TWO_PI) * r
+        s_x  = pts[0, 1]
+        e_tr = (pts[-1, 0] % TWO_PI) * r
+        e_x  = pts[-1, 1]
+        for wrap_r in (-TWO_PI * r, 0.0, TWO_PI * r):
+            kd_pts.append([s_tr + wrap_r, s_x])
+            kd_path_idx.append(i)
+            kd_is_end.append(False)
+            if not path.closed:
+                kd_pts.append([e_tr + wrap_r, e_x])
+                kd_path_idx.append(i)
+                kd_is_end.append(True)
 
-            d_start = _travel_dist(r, x, canon_theta, s[1], s[0] % (2 * np.pi))
-            if path.closed:
-                d, rev = d_start, False
-            else:
-                d_end = _travel_dist(r, x, canon_theta, e[1], e[0] % (2 * np.pi))
-                if d_end < d_start:
-                    d, rev = d_end, True
-                else:
-                    d, rev = d_start, False
+    if not kd_pts:
+        return paths
 
-            if d < best_dist:
-                best_dist = d
-                best_idx = idx
-                best_reversed = rev
+    kd_pts_arr = np.array(kd_pts)
+    kd_path_idx = np.array(kd_path_idx)
+    kd_is_end   = np.array(kd_is_end, dtype=bool)
+    tree = cKDTree(kd_pts_arr)
 
-        if best_idx is None:
-            for idx in remaining:
-                result.append(paths[idx])
+    visited = np.zeros(n, dtype=bool)
+    result  = []
+    cur_pt  = np.array([canon_theta * r, cur_x])
+
+    for step in range(n):
+        # Query with progressively larger k until we find an unvisited path.
+        # k=6 covers one path in the best case; multiply up through 24, 96, then
+        # fall back to a full linear scan only as a last resort.
+        chosen_pi  = -1
+        chosen_rev = False
+        for k_try in (6, 24, 96, len(kd_pts_arr)):
+            k = min(k_try, len(kd_pts_arr))
+            _, idxs = tree.query(cur_pt, k=k)
+            if np.isscalar(idxs):
+                idxs = (idxs,)
+            for ki in idxs:
+                pi = kd_path_idx[ki]
+                if not visited[pi]:
+                    chosen_pi  = pi
+                    chosen_rev = bool(kd_is_end[ki])
+                    break
+            if chosen_pi >= 0:
+                break
+
+        if chosen_pi < 0:
+            # Should never happen, but guard anyway
+            for i in range(n):
+                if not visited[i]:
+                    result.append(paths[i])
+                    visited[i] = True
             break
 
-        remaining.remove(best_idx)
-        result.append(paths[best_idx])
+        visited[chosen_pi] = True
+        result.append(paths[chosen_pi])
 
-        # Advance position to the endpoint we'll finish at.
-        pts = np.asarray(paths[best_idx].points)
-        end_pt = pts[0] if best_reversed else pts[-1]
-        canon_theta = end_pt[0] % (2 * np.pi)
-        x = end_pt[1]
+        # Advance to the endpoint we'll finish at after to_gcode reversal logic.
+        pts = np.asarray(paths[chosen_pi].points)
+        end_pt = pts[0] if chosen_rev else pts[-1]
+        cur_pt = np.array([(end_pt[0] % TWO_PI) * r, end_pt[1]])
 
     return result
 

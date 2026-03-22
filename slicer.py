@@ -15,6 +15,7 @@ import time
 import math
 from vispy.scene import visuals
 from togcode import shapely_to_paths, optimize_path_order
+from concurrent.futures import ThreadPoolExecutor
 from plotutil import set_axes_equal
 
 from vispy import scene
@@ -185,6 +186,43 @@ def is_full_circle(polygon, tol=0.1):
     return np.isclose(total_theta_sweep(polygon), 2*np.pi, atol=tol)
 
 
+def cylindrical_cross_section(mesh, radius):
+    """
+    Compute the cross-section of mesh at cylindrical radius using marching triangles.
+    Works on any mesh regardless of manifold status — no boolean ops needed.
+    Returns (pts_cartesian, edges) where pts_cartesian is (N,3) Cartesian points
+    at r≈radius and edges is a list of (i,j) index pairs forming closed loops.
+    """
+    verts = mesh.vertices
+    r_vals = np.sqrt(verts[:, 0]**2 + verts[:, 1]**2)
+
+    pts = []
+    edges = []
+    edge_cache = {}
+
+    def get_crossing(vi, vj):
+        key = (min(vi, vj), max(vi, vj))
+        if key not in edge_cache:
+            ri, rj = r_vals[vi], r_vals[vj]
+            t = (radius - ri) / (rj - ri)
+            edge_cache[key] = len(pts)
+            pts.append(verts[vi] + t * (verts[vj] - verts[vi]))
+        return edge_cache[key]
+
+    for v0, v1, v2 in mesh.faces:
+        inside = [r_vals[v] < radius for v in (v0, v1, v2)]
+        if all(inside) or not any(inside):
+            continue
+        crossing = []
+        for a, b in [(v0, v1), (v1, v2), (v2, v0)]:
+            if (r_vals[a] < radius) != (r_vals[b] < radius):
+                crossing.append(get_crossing(a, b))
+        if len(crossing) == 2:
+            edges.append(tuple(crossing))
+
+    return (np.array(pts) if pts else np.empty((0, 3))), edges
+
+
 def fast_extract_faces(cut_mesh, mask):
     mask = np.asarray(mask)
     mask_set = set(mask)
@@ -316,12 +354,14 @@ def fold_to_canonical(geom, clip_box, period=2 * np.pi):
     """Fold (θ,z)-space geometry into [0, 2π] by unioning ±period shifted copies, then clipping."""
     if geom is None or geom.is_empty:
         return geom
+    geom = shapely.make_valid(geom)
+    geom = shapely.set_precision(geom, 1e-8)
     folded = shapely.unary_union([
         geom,
         shift_polygon(geom, period),
         shift_polygon(geom, -period),
     ])
-    return folded.intersection(clip_box)
+    return shapely.set_precision(folded, 1e-8).intersection(clip_box)
 
 
 def _make_sine_wave_ls(theta_center, z_min, z_max, amplitude_rad, period_mm, pts_per_period=24):
@@ -796,61 +836,30 @@ print(f"Slicing range:     {r_start:.2f} – {r_end:.2f} mm  ({max(0, (r_end-r_s
 if r_start >= r_end:
     raise ValueError(f"bed_radius ({printer_params['bed_radius']} mm) is at or beyond the mesh max radius ({np.max(pts[:,0]):.2f} mm) — nothing to slice.")
 slicing_params["r_base"] = r_start
+_total_layers = max(0, int((r_end - r_start) / slicing_params["layer_height"]))
+print(f"\nPass 1 — slicing geometry ({_total_layers} layers, r={r_start:.2f}–{r_end:.2f} mm)")
 for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["layer_height"])):
     if max_real_layers is not None and sliced_layer_count >= max_real_layers:
         print(f"\nSliced {sliced_layer_count} layers, stopping.")
         break
-    
-    times = [(time.perf_counter(), "")]
-    sections = 1000
-    cyl = trimesh.creation.cylinder(
-        radius=current_r,
-        height=part_height*1.2,
-        sections=sections
-    )
-    cyl.apply_translation([0,0,part_height*0.5+min_z])
-    assert(cyl.is_volume)
-    times.append((time.perf_counter(), "cylinder creation"))
-    good = False
-    print(f"{current_r/(np.max(pts[:,0])-1e-3)*100:.2f}%")
-    while not good:
-        cut_mesh = cyl.intersection(mesh,engine="manifold")
-        cut_mesh = fix_mesh(cut_mesh)
-        good = cut_mesh.is_volume
-        if not good:
-            #this bs makes intersections behave better
-            current_r+=np.random.uniform(-1e-3,1e-3)
-            cyl = trimesh.creation.cylinder(
-                radius=current_r,
-                height=part_height*1.2,
-                sections=sections
-            )
-            cyl.apply_translation([0,0,part_height*0.5+min_z])
-            cyl = cyl.apply_transform(trimesh.transformations.rotation_matrix(np.random.uniform(0,2*np.pi/sections), [0,0,1]))
 
-            print(f"retrying intersection on {layer_i}")
+    times = [(time.perf_counter(), "")]
+    print(f"  [{sliced_layer_count+1}/{_total_layers}] r={current_r:.3f} mm", end="\r", flush=True)
+    cross_pts_cart, outer_edges = cylindrical_cross_section(mesh, current_r)
+    if len(cross_pts_cart) < 3:
+        print(f"empty layer for {layer_i}")
+        continue
 
     layer_data[layer_i] = {"radius": current_r}
     sliced_layer_count += 1
-    
 
-    times.append((time.perf_counter(),"intersection"))
-    assert( len(cut_mesh.vertices))
-    layer_pts = cartesian_to_cylindrical(cut_mesh.vertices)
-    mask = np.argwhere(np.isclose(layer_pts[:,0],current_r,1e-5)).squeeze()
-    if(len(mask) < 3):
-        print(f"empty layer for {layer_i}")
-        continue
-    times.append((time.perf_counter(),"mask generation"))
+    times.append((time.perf_counter(), "intersection"))
+    layer_pts = cartesian_to_cylindrical(cross_pts_cart)
+    triangles = []
+    times.append((time.perf_counter(), "mask generation"))
 
-
-    triangles = fast_extract_faces(cut_mesh,mask)
-    triangles = [tri for tri in triangles if tri[0] != tri[1] and tri[0] != tri[2] and tri[1] != tri[2]]
-    times.append((time.perf_counter(),"tri list"))
-
-    outer_edges = find_boundary_edges(triangles)
     # try:
-    poly_idxs = find_polygons(outer_edges,len(layer_pts))
+    poly_idxs = find_polygons(outer_edges, len(layer_pts))
     # except Exception as e:
     #     print(e)
     #     cut_mesh.show()
@@ -870,7 +879,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     # plt.show()
     full_circles = [is_full_circle(poly) for poly in poly_pts]
     full_circle_pairs = find_connected_shapes([poly for i,poly in enumerate(poly_idxs) if full_circles[i]],triangles)
-    full_circle_pairs = np.array([np.argwhere(full_circles)[each].squeeze() for each in full_circle_pairs])
+    full_circle_pairs = [np.argwhere(full_circles)[each].squeeze() for each in full_circle_pairs if len(each) >= 2]
+    full_circle_pairs = np.array(full_circle_pairs) if full_circle_pairs else np.empty((0, 2), dtype=int)
     polys = [Polygon(p) for i,p in enumerate(poly_pts) if not full_circles[i]]
     mapping = []
     for pair in full_circle_pairs:
@@ -913,22 +923,20 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
 
     plot_perimeters = False
-    
+    def do_transform(x):
+        return shapely.transform(x, lambda p: p * [current_r, 1])
+    def do_transform_inverse(x):
+        return shapely.transform(x, lambda p: p * [1/current_r, 1])
+
     for poly_i,sub_polys in enumerate(hier):
         if levels[poly_i] % 2 == 1:
             continue
-        # if not len(sub_polys):
-        #     continue
-        # plt.plot(np.array(polys[poly_i].exterior.coords)[:,0],np.array(polys[poly_i].exterior.coords)[:,1])
-        # plt.show()
-        def do_transform(x):
-            return shapely.transform(x,lambda p: p * [current_r,1])
-        def do_transform_inverse(x):
-            return shapely.transform(x,lambda p: p * [1/current_r,1])
         sub_poly_list = [np.array(polys[sub_poly].exterior.coords).astype(float) for sub_poly in sub_polys if levels[sub_poly] == levels[poly_i]+1]
         sub_poly_list = [[each - [2*np.pi,0],each,each + [2*np.pi,0]] for each in sub_poly_list]
         sub_poly_list = [remove_collinear_points_angle(each2*np.array([current_r,1]),0.01)*np.array([1/current_r,1]) for each in sub_poly_list for each2 in each]
         poly_exterior = remove_collinear_points_angle(polys[poly_i].exterior.coords*np.array([current_r,1]),0.01)*np.array([1/current_r,1])
+        if len(poly_exterior) < 4:
+            continue
         if not len(sub_poly_list):
             poly_with_holes = Polygon(poly_exterior)
         else:
@@ -947,7 +955,6 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             plot_polygon(do_transform(external_perimeters[-1]),add_points=False,color="green",facecolor=(0, 0, 0, 0))
     times.append((time.perf_counter(),"form poly with holes"))
     
-    print(mapping)
     final = shapely.unary_union(external_perimeters)
     layer_data[layer_i]["external_peris"] = final
     times.append((time.perf_counter(),"full union"))
@@ -998,18 +1005,20 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     e -= shift_polygon(layer_data[layer_i-1]["external_peris"], np.pi*2)
     layer_data[layer_i]["bottom_surfaces"] = e
     times.append((time.perf_counter(), "bottom surface check"))
-    for i in range(1,len(times)):
-        print(f"{times[i][1]} took {times[i][0]-times[i-1][0]:.2f} seconds")
+    # for i in range(1,len(times)):
+    #     print(f"{times[i][1]} took {times[i][0]-times[i-1][0]:.2f} seconds")
 
 
 
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
+print(f"\nPass 1 complete — {sliced_layer_count} layers sliced.")
 
 # ═══════════════════════════════════════════════════════════════════════
 # Support propagation: backward pass (outer → inner)
 # ═══════════════════════════════════════════════════════════════════════
 sorted_layer_keys = sorted(layer_data.keys())
+print(f"Pass 1.5 — support propagation (backward pass over {len(sorted_layer_keys)} layers)...")
 
 for i in sorted_layer_keys:
     layer_data[i]["support"] = shapely.GeometryCollection()
@@ -1067,12 +1076,15 @@ for i in reversed(sorted_layer_keys):
             merge_gap_mm=merge_gap,
         )
 
+print("Support propagation complete.")
+
 # ── Gap layers: model floating above the bed ────────────────────────────
 # If the innermost model layer is above bed_radius, print support shells
 # from bed_radius up to the first model layer.
 gap_support_layers = []
 first_r = layer_data[sorted_layer_keys[0]]["radius"]
 if first_r > printer_params["bed_radius"]:
+    print(f"Gap support: model starts at r={first_r:.2f} mm (bed r={printer_params['bed_radius']:.2f} mm) — generating gap layers...")
     # Union the accumulated ungrounded support with the full first-layer footprint
     # (the entire first layer floats, so all of it needs a support base)
     gap_footprint = support_needed.union(
@@ -1144,6 +1156,7 @@ if plot_3d:
     plt.ion()
 
 # output_scad = solid2.cube()
+print(f"\nPass 2 — generating G-code ({len(gap_support_layers)} gap support + {len(sorted_layer_keys)} model layers)...")
 gcodes = []
 last_pos = [0,0]
 last_e = 0
@@ -1176,6 +1189,8 @@ with open("output.gcode","w") as f:
 
 # Write gap support layers (printed before the model, from bed outward).
 # Use negative layer numbers (-N … -1) so the viewer layer slider includes them.
+if gap_support_layers:
+    print(f"  Writing {len(gap_support_layers)} gap support layer(s)...")
 first_model_ext = fold_to_canonical(
     layer_data[sorted_layer_keys[0]]["external_peris"], theta_clip_box
 ) if sorted_layer_keys else shapely.GeometryCollection()
@@ -1221,7 +1236,7 @@ for i in sorted(layer_data.keys()):
         break
 
     total = len(layer_data)
-    print(f"\n>>> Layer {real_layer_count}/{total} (layer_data key: {i})")
+    print(f">>> Layer {real_layer_count}/{total} (layer_data key: {i})", end="\r",flush=True)
 
     # Per-layer figure: 2D on left, 3D on right (only when plot_per_layer)
     ax_2d_layer = None
@@ -1305,7 +1320,6 @@ for i in sorted(layer_data.keys()):
     layer_data[i]["fully_radial_infill"] = fully_radial_infill
     layer_data[i]["radial_infill"] = radial_infill
     layer_data[i]["axial_infill"] = axial_infill
-    print(f"LAYER {i}")
 
     # 3D plotting helpers
     def plot_lines_3d(shapely_obj, ax, color, linewidth, label=None):
@@ -1436,14 +1450,24 @@ for i in sorted(layer_data.keys()):
             f.write("M106 S255 ; part cooling fan on\n")
         f.write(f"G0 Z{current_r - _bed_r:.4f}\n")
 
-        for subsection, section_name in sections:
-            if subsection == "external_peris" or subsection == "internal_peris":
-                gcode_paths = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
+        # Precompute shapely_to_paths + optimize_path_order for all sections in
+        # parallel. All sections get the same last_pos snapshot (start of layer);
+        # actual last_pos is then updated sequentially below during to_gcode.
+        _snap_pos = last_pos
+        def _prep_section(subsection):
+            if subsection in ("external_peris", "internal_peris"):
+                raw = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
             else:
-                gcode_paths = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
-            gcode_paths = [p for p in gcode_paths if p is not None]
-            gcode_paths = optimize_path_order(gcode_paths, last_pos)
-            for path in gcode_paths:
+                raw = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
+            paths = [p for p in raw if p is not None]
+            return optimize_path_order(paths, _snap_pos)
+
+        with ThreadPoolExecutor() as _ex:
+            _futs = {s: _ex.submit(_prep_section, s) for s, _ in sections}
+            _prepped = {s: _futs[s].result() for s, _ in sections}
+
+        for subsection, section_name in sections:
+            for path in _prepped[subsection]:
                 f.write(f";TYPE:{section_name}\n")
                 g,last_pos,last_e = path.to_gcode(_layer_params,last_pos,last_e)
                 f.write(g)
@@ -1521,6 +1545,7 @@ with open("output.gcode", "a") as f:
         "M84 ; disable steppers\n"
         ";end of slice\n"
     )
+print(f"\nDone. Wrote {real_layer_count} model layer(s) to output.gcode.")
 
 if plot_3d and ax_3d:
     ax_3d.set_xlabel('X')
