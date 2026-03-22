@@ -527,18 +527,15 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
     # on every layer. As the radius grows, floor(2π * current_r / infill_spacing)
     # eventually exceeds n_base — any extra lines are "spawned" fresh on that
     # layer at their natural positions (arc-aligned but not previously visited).
+    # Fixed axial grid anchored at r_base — same lines on every layer, no spawning.
+    # Spawning extra lines as radius grows creates unsupported strands (spaghetti):
+    # each spawned midpoint is ~half the infill arc-gap from its nearest inner support.
+    # 30° slope limit: supportable only if arctan(half_gap / layer_height) ≤ 30°,
+    # i.e. half_gap ≤ layer_height·tan(30°) ≈ 0.115mm — far below typical arc-gaps.
     r_base = slicing_params["r_base"]
     fixed_step = slicing_params["infill_spacing"] / r_base     # never changes
-    n_base = int(np.floor(2 * np.pi / fixed_step))             # lines inherited from every prior layer
-
-    angular_step = slicing_params["infill_spacing"] / current_r
-    n_total = int(np.floor(2 * np.pi / angular_step))          # total lines this layer can hold
-
-    # Inherited lines (k < n_base): 100% same θ on all layers — no drift ever.
-    # Spawned lines (k ≥ n_base): new this layer, placed at their arc-aligned θ.
-    inherited_thetas = np.arange(n_base) * fixed_step                    # shape (n_base,)
-    spawned_thetas   = np.arange(n_base, n_total) * angular_step         # shape (0 or more,)
-    all_thetas = np.concatenate([inherited_thetas, spawned_thetas])
+    n_base = int(np.floor(2 * np.pi / fixed_step))             # same on every layer
+    all_thetas = np.arange(n_base) * fixed_step
 
     for current_line_h in all_thetas:
         # Build a vertical line in (θ,z) space at this fixed θ value.
