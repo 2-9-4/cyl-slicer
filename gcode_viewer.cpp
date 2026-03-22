@@ -30,13 +30,13 @@ static const float kDefaultLineWidth   = 0.4f;
 enum SType {
     ST_EXTERNAL = 0, ST_INTERNAL, ST_SOLID_INFILL,
     ST_RADIAL_FULL,  ST_RADIAL,   ST_AXIAL,
-    ST_SUPPORT,      ST_TRAVEL,   ST_UNKNOWN, ST_COUNT
+    ST_SUPPORT,      ST_TRAVEL,   ST_RETRACT, ST_UNKNOWN, ST_COUNT
 };
 
 static const char* kNames[ST_COUNT] = {
     "External Perimeter", "Internal Perimeter", "Solid Infill",
     "Infill Radial Full", "Infill Radial",      "Infill Axial",
-    "Support",            "Travel",             "Unknown",
+    "Support",            "Travel",             "Retraction",  "Unknown",
 };
 
 // RGB in [0,1]
@@ -49,11 +49,12 @@ static const float kColors[ST_COUNT][3] = {
     {0.400f, 0.000f, 0.800f},  // AXIAL         #6600CC
     {0.000f, 0.800f, 0.800f},  // SUPPORT       #00CCCC cyan
     {1.000f, 0.200f, 0.200f},  // TRAVEL        red
+    {1.000f, 0.900f, 0.000f},  // RETRACT       yellow
     {0.533f, 0.533f, 0.533f},  // UNKNOWN       #888888
 };
 
 static const float kAlpha[ST_COUNT] = {
-    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.10f, 0.6f
+    1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.10f, 1.0f, 0.6f
 };
 
 SType parse_stype(const std::string& s) {
@@ -195,6 +196,36 @@ static void build_tube(
     }
 }
 
+// ── Octahedron marker (retraction point) ─────────────────────────────────────
+
+static void build_sphere_marker(
+    std::vector<Vert>&     verts,
+    std::vector<uint32_t>& idx,
+    Vec3 center, float r)
+{
+    Vec3 pts[6] = {
+        {center.x + r, center.y,     center.z    },
+        {center.x - r, center.y,     center.z    },
+        {center.x,     center.y + r, center.z    },
+        {center.x,     center.y - r, center.z    },
+        {center.x,     center.y,     center.z + r},
+        {center.x,     center.y,     center.z - r},
+    };
+    int faces[8][3] = {
+        {0,2,4}, {0,4,3}, {0,3,5}, {0,5,2},
+        {1,4,2}, {1,3,4}, {1,5,3}, {1,2,5},
+    };
+    for (auto& f : faces) {
+        Vec3 a = pts[f[0]], b = pts[f[1]], c = pts[f[2]];
+        Vec3 n = v3norm(v3cross(v3sub(b, a), v3sub(c, a)));
+        uint32_t base = (uint32_t)verts.size();
+        verts.push_back({a.x, a.y, a.z, n.x, n.y, n.z});
+        verts.push_back({b.x, b.y, b.z, n.x, n.y, n.z});
+        verts.push_back({c.x, c.y, c.z, n.x, n.y, n.z});
+        idx.push_back(base); idx.push_back(base + 1); idx.push_back(base + 2);
+    }
+}
+
 // ── Path group ────────────────────────────────────────────────────────────────
 
 struct LayerRange {
@@ -228,6 +259,7 @@ struct PathGroup {
 
 struct GcodeData {
     PathGroup groups[ST_COUNT];
+    std::vector<std::pair<Vec3, int>> retract_pts;  // (position, layer_num)
     float x_min = 1e9f, x_max = -1e9f;
     float r_min = 1e9f, r_max = -1e9f;
     int   layer_min = INT_MAX, layer_max = 0;
@@ -242,7 +274,7 @@ GcodeData load_gcode(const char* path) {
     std::ifstream f(path);
     if (!f) { std::cerr << "Cannot open: " << path << "\n"; return d; }
 
-    float cur_x = 0.f, cur_t = 0.f;
+    float cur_x = 0.f, cur_t = 0.f, cur_e = 0.f;
     float radius = 10.f;
     bool  has_pos = false;
     bool  in_ext  = false;
@@ -305,17 +337,24 @@ GcodeData load_gcode(const char* path) {
         if (cmd != "G0" && cmd != "G1") continue;
 
         bool rapid = (cmd == "G0");
-        float nx = cur_x, nt = cur_t;
+        float nx = cur_x, nt = cur_t, ne = cur_e;
+        bool has_x_tok = false, has_t_tok = false, has_e_tok = false;
 
         std::string tok;
         while (ss >> tok) {
             if (tok.size() < 2) continue;
             try {
                 float v = std::stof(tok.substr(1));
-                if      (tok[0] == 'X') nx = v;
-                else if (tok[0] == 'Y') nt = v;
+                if      (tok[0] == 'X') { nx = v; has_x_tok = true; }
+                else if (tok[0] == 'Y') { nt = v; has_t_tok = true; }
+                else if (tok[0] == 'E') { ne = v; has_e_tok = true; }
             } catch (...) {}
         }
+
+        // Detect retraction: G1 with E going down and no X/Y motion
+        if (!rapid && has_e_tok && ne < cur_e - 1e-6f && !has_x_tok && !has_t_tok && has_pos)
+            d.retract_pts.push_back({cyl_to_cart(cur_t, cur_x, radius), cur_layer});
+        cur_e = ne;
 
         d.x_min = std::min(d.x_min, nx);
         d.x_max = std::max(d.x_max, nx);
@@ -530,6 +569,28 @@ int main(int argc, char** argv) {
     std::cout << "Layers: " << gcode.layer_min << " – " << gcode.layer_max << "\n";
     std::cout << "Layer height: " << gcode.groups[0].tube_lh << " mm"
               << "  Line width: "  << gcode.groups[0].tube_lw << " mm\n";
+    std::cout << "Retractions: " << gcode.retract_pts.size() << "\n";
+
+    // Build retraction marker geometry (octahedra, 1.5× line width), grouped by layer
+    {
+        float marker_r = gcode.groups[0].tube_lw * 1.5f;
+        auto& rg = gcode.groups[ST_RETRACT];
+        int   cur_layer = INT_MIN;
+        uint32_t lr_start = 0;
+        for (auto& [pt, layer] : gcode.retract_pts) {
+            if (layer != cur_layer) {
+                if (cur_layer != INT_MIN)
+                    rg.layer_ranges.push_back({cur_layer, lr_start,
+                                               (uint32_t)rg.idx.size() - lr_start});
+                cur_layer = layer;
+                lr_start  = (uint32_t)rg.idx.size();
+            }
+            build_sphere_marker(rg.verts, rg.idx, pt, marker_r);
+        }
+        if (cur_layer != INT_MIN)
+            rg.layer_ranges.push_back({cur_layer, lr_start,
+                                       (uint32_t)rg.idx.size() - lr_start});
+    }
 
     if (!glfwInit()) { std::cerr << "glfwInit failed\n"; return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);

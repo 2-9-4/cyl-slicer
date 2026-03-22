@@ -13,10 +13,10 @@ A **cylindrical FDM slicer** — it slices STL meshes radially (peeling concentr
 source .venv/bin/activate
 
 # Run the slicer (reads test.stl, writes output.gcode)
-python test.py
+python slicer.py
 ```
 
-Key toggle at the top of `test.py`:
+Key toggle at the top of `slicer.py`:
 - `max_real_layers` — set to an integer to cap layer count for fast iteration; `None` for a full print.
 - `plot_3d` / `plot_per_layer` — enable/disable matplotlib visualisation.
 
@@ -32,9 +32,9 @@ Depends on: OpenGL, GLFW3, GLEW (system packages). ImGui is fetched automaticall
 
 ## Architecture
 
-### Python slicer (`test.py` + `togcode.py`)
+### Python slicer (`slicer.py` + `togcode.py`)
 
-The pipeline runs entirely in `test.py` in two passes:
+The pipeline runs entirely in `slicer.py` in two passes:
 
 **Pass 1 — geometry / slicing loop** (iterates over radii from inner to outer):
 1. Create a trimesh cylinder at `current_r` and intersect it with the loaded STL mesh.
@@ -60,7 +60,7 @@ The pipeline runs entirely in `test.py` in two passes:
 5. Gap support layers are written first (before model layers), tagged `;LAYER:support_gap` / `;TYPE:SUPPORT`.
 
 ### Key coordinate system
-Internally everything lives in `(θ, z)` space (theta in radians, z in mm). Before Shapely operations that depend on metric distances, the θ axis is scaled by `current_r` to convert arc-length to mm, then divided back afterwards (`do_transform` / `do_transform_inverse` closures scattered throughout `test.py`).
+Internally everything lives in `(θ, z)` space (theta in radians, z in mm). Before Shapely operations that depend on metric distances, the θ axis is scaled by `current_r` to convert arc-length to mm, then divided back afterwards (`do_transform` / `do_transform_inverse` closures scattered throughout `slicer.py`).
 
 ### Supporting modules
 - `togcode.py` — `PathObject` class and `shapely_to_paths()`. Handles densification of arcs, duplicate-point removal, and seam-crossing in G-code (accumulated Y axis).
@@ -69,7 +69,7 @@ Internally everything lives in `(θ, z)` space (theta in radians, z in mm). Befo
 ### C++ viewer (`gcode_viewer.cpp`)
 Standalone OpenGL app that reads `output.gcode`, parses `;TYPE:` / `;LAYER:` / `;Z:` comments, converts `(X, Y_deg)` back to cylindrical then Cartesian, and renders with per-section-type colours. Controls: left-drag = orbit, right/mid-drag = pan, scroll = zoom, R = reset, Q/Esc = quit.
 
-## Slicing parameters (in `test.py`)
+## Slicing parameters (in `slicer.py`)
 
 ```python
 slicing_params = {
