@@ -791,8 +791,8 @@ slicing_params = {
 }
 
 printer_params = {
-    "bed_radius": 60.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
-    "max_radius": 160.0,    # mm — maximum printable radius; slicing stops here
+    "bed_radius": 30.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+    "max_radius": 120.0,    # mm — maximum printable radius; slicing stops here
     "axial_length": 150.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
     "hotend_temp": 205,    # °C — PLA

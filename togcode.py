@@ -82,21 +82,17 @@ class PathObject:
         
         pts = np.asarray(self.points, dtype=float)  # shape (N, 2), [theta, x]
         
-        # Filter out duplicate points first
+        # Filter duplicate points (vectorized) then remove collinear interior points.
         if len(pts) > 1:
-            # Calculate real distances between consecutive points
-            p1 = pts[:-1]
-            p2 = pts[1:]
-            real_dists = np.array([self.dist(p2[i,1], p1[i,1], p2[i,0], p1[i,0]) 
-                                for i in range(len(p1))])
-            
-            # Keep points where distance > 0 (plus always keep first point)
-            keep_mask = np.concatenate([[True], real_dists > 1e-10])  # Small epsilon for floating point
-            pts = pts[keep_mask]
-            
-            # If we filtered everything except first point, return early
+            dx   = pts[1:, 1] - pts[:-1, 1]
+            dt   = (pts[1:, 0] - pts[:-1, 0]) * self.radius
+            keep = np.concatenate([[True], np.hypot(dx, dt) > 1e-10])
+            pts  = pts[keep]
             if len(pts) < 2:
                 return "", current_pos, current_e
+
+        if len(pts) > 2:
+            pts = _reduce_collinear(pts, self.radius)
         
         # current_pos[0] is the printer's ACCUMULATED Y in radians (never resets to
         # canonical [0,2π) — it only increases).  This lets Marlin always move forward.
@@ -169,10 +165,10 @@ class PathObject:
 
         angles_deg = accum_thetas[1:] * 180 / np.pi   # accumulated degrees for G1
 
-        gcode_lines = []
-        for (t, x), e_val, fval, angle_deg in zip(p2, e_vals, fvals, angles_deg):
-            gcode_lines.append(f"G1 X{x:.3f} Y{angle_deg:.3f} E{e_val:.5f} F{fval:.1f}")
-        g.extend(gcode_lines)
+        g.extend(
+            f"G1 X{x:.3f} Y{a:.3f} E{e:.5f} F{f:.1f}"
+            for (_, x), a, e, f in zip(p2, angles_deg, e_vals, fvals)
+        )
 
         # Handle closed path closing segment
         if self.closed and len(pts) > 1:
@@ -327,23 +323,62 @@ def optimize_path_order(paths: List[PathObject], current_pos) -> List[PathObject
     return result
 
 
-def shapely_to_paths(geom, radius, max_seg_len=0.5) -> List[PathObject]:
-    """Convert a shapely geometry to a list of PathObjects (densified)."""
+def _reduce_collinear(pts: np.ndarray, radius: float, tol: float = 0.005) -> np.ndarray:
+    """Remove points collinear (within tol mm) with their neighbours.
+
+    Runs multiple passes until stable so that consecutive collinear runs
+    (e.g. densified straight lines) are fully collapsed.
+    pts: (N, 2) array of (theta, x) — theta in radians.
+    """
+    while len(pts) > 2:
+        scaled = np.column_stack([pts[:, 0] * radius, pts[:, 1]])
+        a = scaled[:-2]
+        b = scaled[1:-1]
+        c = scaled[2:]
+        ab = b - a
+        ac = c - a
+        ac_len = np.hypot(ac[:, 0], ac[:, 1])
+        safe_len = np.where(ac_len > 1e-10, ac_len, 1e-10)
+        perp = np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]) / safe_len
+        keep_mid = (perp >= tol) | (ac_len <= 1e-10)
+        keep = np.empty(len(pts), dtype=bool)
+        keep[0] = True
+        keep[-1] = True
+        keep[1:-1] = keep_mid
+        if keep.all():
+            break
+        pts = pts[keep]
+    return pts
+
+
+def shapely_to_paths(geom, radius, max_seg_len=None) -> List[PathObject]:
+    """Convert a shapely geometry to a list of PathObjects.
+
+    max_seg_len: if set (mm), long segments are densified into chunks of that
+    length.  Defaults to None (no densification) because the printer's
+    coordinate space (X=axial, Y=angle) is already linear in (theta, z), so
+    intermediate points on a straight segment add no accuracy.
+    """
 
     def densify(coords, closed):
-        if(len(coords) == 0):
+        if not coords:
             return []
+        coords = list(coords)
+        if max_seg_len is None:
+            out = coords[:]
+            if closed and out[-1] != out[0]:
+                out.append(out[0])
+            return out
         out = []
-        for i in range(len(coords)-1):
-            a, b = list(coords[i]), list(coords[i+1])
-            a[0] *= radius
-            b[0] *= radius
-            dx, dy = b[0]-a[0], b[1]-a[1]
+        for i in range(len(coords) - 1):
+            a = [coords[i][0] * radius,  coords[i][1]]
+            b = [coords[i+1][0] * radius, coords[i+1][1]]
+            dx, dy = b[0] - a[0], b[1] - a[1]
             dist = (dx*dx + dy*dy)**0.5
-            steps = max(1, int(dist/max_seg_len))
+            steps = max(1, int(dist / max_seg_len))
             for s in range(steps):
-                t = s/steps
-                out.append(((a[0]+t*dx)/radius, a[1]+t*dy))
+                t = s / steps
+                out.append(((a[0] + t*dx) / radius, a[1] + t*dy))
         out.append(coords[-1])
         if closed and out[-1] != out[0]:
             out.append(out[0])
