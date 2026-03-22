@@ -324,14 +324,30 @@ def fold_to_canonical(geom, clip_box, period=2 * np.pi):
     return folded.intersection(clip_box)
 
 
+def _make_sine_wave_ls(theta_center, z_min, z_max, amplitude_rad, period_mm, pts_per_period=24):
+    """
+    Build a Shapely LineString for a single sine wave in (θ, z) space.
+
+    The wave runs along z with:
+        θ(z) = theta_center + amplitude_rad * sin(2π * z / period_mm)
+    """
+    n_pts = max(4, int(np.ceil((z_max - z_min) / period_mm * pts_per_period)) + 1)
+    zs = np.linspace(z_min, z_max, n_pts)
+    thetas = theta_center + amplitude_rad * np.sin(2 * np.pi * zs / period_mm)
+    return shapely.LineString(np.column_stack([thetas, zs]))
+
+
 def do_support_infill(support_geom, slicing_params, current_r, is_interface=False):
     """
     Generate support infill in (θ,z) space.
 
     Interface layers (top/bottom of a support column):
         axial + radial grid at support_interface_spacing.
-    Body layers (interior of a support column):
+    Body layers, mode "grid":
         axial + radial grid at support_body_spacing.
+    Body layers, mode "sine":
+        parallel sine waves along z, spaced support_body_spacing apart in arc-length.
+        Amplitude and period controlled by support_sine_amplitude_mm / support_sine_period_mm.
 
     Returns a list of Shapely LineStrings.
     """
@@ -375,21 +391,37 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
         _ts = spacing / r_base
         thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
 
-        # Axial lines (constant θ, varying z)
-        for theta in thetas:
-            ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
-            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+        mode = slicing_params.get("support_infill_mode", "grid")
 
-        # Radial lines (constant z, varying θ) — stitch seam-split arcs
-        z_lo = np.floor(z_min / spacing) * spacing
-        for z in np.arange(z_lo, z_max + spacing, spacing):
-            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
-            inter = shapely.intersection(ls, support_geom)
-            if hasattr(inter, 'geoms'):
-                for seg in stitch_radial_seam(inter.geoms):
-                    _collect_lines(seg, result, min_length)
-            else:
-                _collect_lines(inter, result, min_length)
+        if mode == "sine":
+            amplitude_rad = slicing_params["support_sine_amplitude_mm"] / current_r
+            period_mm = slicing_params["support_sine_period_mm"]
+            # Extend z slightly so waves fully cover the geometry bounds
+            z_lo = z_min - period_mm
+            z_hi = z_max + period_mm
+            for theta in thetas:
+                # Generate ±2π shifted copies so waves that cross the 0/2π seam
+                # are captured correctly — same seam-handling strategy as the rest
+                # of the codebase.
+                for shift in (0.0, -2 * np.pi, 2 * np.pi):
+                    ls = _make_sine_wave_ls(theta + shift, z_lo, z_hi, amplitude_rad, period_mm)
+                    _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+        else:
+            # Axial lines (constant θ, varying z)
+            for theta in thetas:
+                ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
+                _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+
+            # Radial lines (constant z, varying θ) — stitch seam-split arcs
+            z_lo = np.floor(z_min / spacing) * spacing
+            for z in np.arange(z_lo, z_max + spacing, spacing):
+                ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+                inter = shapely.intersection(ls, support_geom)
+                if hasattr(inter, 'geoms'):
+                    for seg in stitch_radial_seam(inter.geoms):
+                        _collect_lines(seg, result, min_length)
+                else:
+                    _collect_lines(inter, result, min_length)
 
     return result
 
@@ -701,8 +733,11 @@ slicing_params = {
     "wall_count": 3,
     "feed_mm_per_min" : 2400,
     "travel_mm_per_min" : 2400,
+    "support_infill_mode": "sine",   # "grid" or "sine"
+    "support_sine_amplitude_mm": 2.0, # mm — sine wave half-amplitude (grid mode ignores this)
+    "support_sine_period_mm": 8.0,   # mm — sine wave period along z (grid mode ignores this)
     "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
-    "support_body_spacing": 3,       # mm — axial-line spacing for support interior
+    "support_body_spacing": 2,       # mm — line spacing for support interior (arc-length mm)
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
     "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
