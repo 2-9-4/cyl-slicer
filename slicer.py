@@ -512,92 +512,86 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
 from shapely.geometry import Polygon, LineString, box, MultiLineString
 from shapely.ops import linemerge
 
-def polygon_to_wrapped_lines(poly: Polygon, lower=0.0, upper=2*math.pi):
+def _stitch_lines(lines, lower=0.0, period=2*math.pi, tol=1e-9):
     """
-    Cut polygon at x=lower and x=upper, return open LineStrings for exterior
-    and interiors. If an interior gets clipped, the pieces are wrapped
-    around the seam and stitched together.
+    Given a list of LineStrings produced by clipping a ring at [lower, lower+period],
+    shift any 'left-boundary' pieces (those whose minimum x is within tol of lower)
+    by +period so their endpoints align with the 'right-boundary' pieces, then
+    linemerge the result.  Only shifts when multiple pieces exist (i.e. the ring
+    actually crossed the seam) to avoid wrongly shifting un-split geometry.
+    """
+    lines = [l for l in lines if not l.is_empty]
+    if not lines:
+        return []
+    if len(lines) > 1:
+        wrapped = []
+        for line in lines:
+            coords = np.array(line.coords)
+            if np.min(coords[:, 0]) < lower + tol:
+                coords[:, 0] += period
+            wrapped.append(LineString(coords))
+    else:
+        wrapped = lines
+
+    wrapped = [l for l in wrapped if not l.is_empty]
+    if not wrapped:
+        return []
+    merged = linemerge(MultiLineString(wrapped))
+    if isinstance(merged, LineString):
+        return [merged]
+    return [l for l in merged.geoms if isinstance(l, LineString)]
+
+def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
+    """
+    Convert a polygon (or collection) to LineStrings for gcode/plotting.
+
+    external_peris stores each physical polygon THREE times (canonical + ±2π
+    copies).  We keep only the canonical copy by checking that the centroid
+    theta is within [lower, upper).  The ring coords are then unwrapped with
+    np.unwrap so any seam-crossing polygon is returned as one continuous
+    LineString — no clipping, no stitching.
     """
     if poly is None or (hasattr(poly, 'is_empty') and poly.is_empty):
         return []
-    if isinstance(poly,list):
+
+    # Recurse into collections / lists
+    if isinstance(poly, list):
         ret = []
         for each in poly:
-            ret += polygon_to_wrapped_lines(each,lower,upper)
+            ret += polygon_to_wrapped_lines(each, lower, upper)
         return ret
-    elif isinstance(poly,shapely.MultiPolygon):
-        ret = []
-        for each in poly.geoms:
-            ret += polygon_to_wrapped_lines(each,lower,upper)
-        return ret
-    
-    if isinstance(poly, shapely.GeometryCollection) and not isinstance(poly, (Polygon, shapely.MultiPolygon)):
+
+    if isinstance(poly, (shapely.MultiPolygon, shapely.GeometryCollection)):
         ret = []
         for geom in poly.geoms:
             ret += polygon_to_wrapped_lines(geom, lower, upper)
         return ret
 
+    if isinstance(poly, (LineString, shapely.MultiLineString)):
+        # Already a line (e.g. infill passed through here) — return as-is
+        return [poly] if not poly.is_empty else []
+
     if not isinstance(poly, Polygon):
-        print(poly)
-        print(type(poly))
-        raise ValueError("Expected a shapely Polygon")
+        return []
 
-    clip_rect = box(lower, -1e12, upper, 1e12)
+    # Skip ±2π duplicate copies — only keep the canonical polygon
+    if not (lower <= poly.centroid.x < upper):
+        return []
+
     result = []
-
-    # --- exterior (no wrapping) ---
-    boundary_line = LineString(poly.exterior.coords)
-    clipped = boundary_line.intersection(clip_rect)
-
-
-    if isinstance(clipped, LineString):
-        coords = np.array(clipped.coords)
-        if(np.any(coords[:,0] == 0)):
-            coords[:,0] += 2*np.pi
-        result.append(LineString(coords))
-    elif not clipped.is_empty:
-        for g in clipped.geoms:
-            coords = np.array(g.coords)
-            if(np.any(coords[:,0] == 0)):
-                coords[:,0] += 2*np.pi
-            result.append(LineString(coords))
-        # result.extend([g for g in clipped.geoms if isinstance(g, LineString)])
-
-    # --- interiors (with wrapping) ---
-    for ring in poly.interiors:
-        hole_line = LineString(ring.coords)
-        clipped = hole_line.intersection(clip_rect)
-
-        if clipped.is_empty:
-            continue
-
-        # convert to list of LineStrings
-        if isinstance(clipped, LineString):
-            lines = [clipped]
-        else:
-            lines = [g for g in clipped.geoms if isinstance(g, LineString)]
-
-        wrapped_lines = []
-
-        for line in lines:
-            coords = np.array(line.coords)
-            if(np.any(coords[:,0] == 0)):
-                coords[:,0] += 2*np.pi
-
-            wrapped_lines.append(LineString(coords))
-
-        # stitch together the wrapped pieces
-        merged = linemerge(MultiLineString(wrapped_lines))
-        if isinstance(merged, LineString):
-            result.append(merged)
-        else:  # sometimes linemerge returns MultiLineString
-            result.extend([l for l in merged.geoms if isinstance(l, LineString)])
-
+    for ring in [poly.exterior] + list(poly.interiors):
+        coords = np.array(ring.coords)
+        coords[:, 0] = np.unwrap(coords[:, 0])
+        ls = LineString(coords)
+        if not ls.is_empty:
+            result.append(ls)
     return result
     
 def sum_poly(p):
     if isinstance(p, Polygon):
-        return p 
+        return p
+    if len(p) == 0:
+        return MultiLineString()
     f = p[0]
     for e in p[1:]:
         f = f.union(e)
@@ -956,9 +950,16 @@ for i in reversed(sorted_layer_keys):
     else:
         support_needed = support_needed.difference(current_ext)
 
-    # Record what this layer must print as support
+    # Record what this layer must print as support.
+    # Store with ±2π shifted copies (like external_peris) so seam-crossing
+    # regions remain as one continuous polygon rather than two split pieces.
     if not support_needed.is_empty:
-        layer_data[i]["support"] = support_needed.intersection(theta_clip_box)
+        clipped = support_needed.intersection(theta_clip_box)
+        layer_data[i]["support"] = shapely.unary_union([
+            clipped,
+            shift_polygon(clipped, 2*np.pi),
+            shift_polygon(clipped, -2*np.pi),
+        ])
 
     # Add this layer's overhangs so inner layers know to support them
     if "needs_support" in layer_data[i]:
@@ -1194,8 +1195,8 @@ for i in sorted(layer_data.keys()):
         else:
             bottom_interface = shapely.GeometryCollection()
 
-        interface = top_interface.union(bottom_interface)
-        body = support_geom.difference(interface)
+        interface = top_interface.union(bottom_interface).intersection(theta_clip_box)
+        body = support_geom.difference(interface).intersection(theta_clip_box)
 
         layer_data[i]["support_infill"] = (
             do_support_infill(interface, slicing_params, current_r, is_interface=True) +
@@ -1243,6 +1244,25 @@ for i in sorted(layer_data.keys()):
             ax.plot(x, y, coords[:, 1], color=color, linewidth=linewidth,
                     label=label if k == 0 else None)
 
+    def plot_line_endpoints_3d(line_list, ax, marker_size=3, start_color='lime', end_color='red'):
+        """Plot spheres at start and end of each LineString in 3D space."""
+        if not line_list:
+            return
+        for line in line_list:
+            if line is None or line.is_empty:
+                continue
+            coords = densify_cylindrical(np.array(line.coords))
+            if len(coords) < 2:
+                continue
+            # Convert to Cartesian
+            x = current_r * np.cos(coords[:, 0])
+            y = current_r * np.sin(coords[:, 0])
+            z = coords[:, 1]
+            # Start point (green sphere)
+            ax.scatter(x[0], y[0], z[0], c=start_color, s=marker_size**2, alpha=0.7)
+            # End point (red sphere)
+            ax.scatter(x[-1], y[-1], z[-1], c=end_color, s=marker_size**2, alpha=0.7)
+
     def set_equal_aspect_3d(ax):
         limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
         spans = limits[:, 1] - limits[:, 0]
@@ -1262,6 +1282,12 @@ for i in sorted(layer_data.keys()):
         plot_linelist_3d(layer_data[i].get("radial_infill", []),       ax_3d_layer, 'orange',      0.8, label='Radial Infill')
         plot_linelist_3d(layer_data[i].get("axial_infill", []),        ax_3d_layer, 'darkviolet',  0.8, label='Axial Infill')
         plot_linelist_3d(layer_data[i].get("fully_radial_infill", []), ax_3d_layer, 'orangered',   0.8, label='Full Radial')
+        # Plot 3D endpoint markers
+        plot_line_endpoints_3d(layer_data[i].get("solid_infill", []), ax_3d_layer, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("radial_infill", []), ax_3d_layer, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("axial_infill", []), ax_3d_layer, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("fully_radial_infill", []), ax_3d_layer, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("support_infill", []), ax_3d_layer, marker_size=3, start_color='cyan', end_color='magenta')
         set_equal_aspect_3d(ax_3d_layer)
         ax_3d_layer.set_xlabel('X'); ax_3d_layer.set_ylabel('Y'); ax_3d_layer.set_zlabel('Z')
         ax_3d_layer.set_title(f'Layer {i} (r={current_r:.2f})')
@@ -1278,6 +1304,12 @@ for i in sorted(layer_data.keys()):
         plot_linelist_3d(layer_data[i].get("radial_infill", []),       ax_3d, 'orange',      0.8, label=f'Radial Infill L{i}')
         plot_linelist_3d(layer_data[i].get("axial_infill", []),        ax_3d, 'darkviolet',  0.8, label=f'Axial Infill L{i}')
         plot_linelist_3d(layer_data[i].get("fully_radial_infill", []), ax_3d, 'orangered',   0.8, label=f'Full Radial L{i}')
+        # Plot 3D endpoint markers
+        plot_line_endpoints_3d(layer_data[i].get("solid_infill", []), ax_3d, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("radial_infill", []), ax_3d, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("axial_infill", []), ax_3d, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("fully_radial_infill", []), ax_3d, marker_size=4, start_color='lime', end_color='red')
+        plot_line_endpoints_3d(layer_data[i].get("support_infill", []), ax_3d, marker_size=3, start_color='cyan', end_color='magenta')
         set_equal_aspect_3d(ax_3d)
         ax_3d.set_title(f'Up to layer {i} (r={current_r:.2f})')
         fig_combined.canvas.draw()
@@ -1362,6 +1394,34 @@ for i in sorted(layer_data.keys()):
     # fig = go.Figure(data=traces)
     # fig.show()
 # set_axes_equal(ax)
+    # Helper functions for endpoint markers
+    def plot_line_endpoints_2d(line_list, ax, marker_size=8, color='red'):
+        """Plot circles at start (green) and end (red) of each LineString."""
+        if not line_list:
+            return
+        for line in line_list:
+            if line is None or line.is_empty:
+                continue
+            coords = np.array(line.coords)
+            if len(coords) < 2:
+                continue
+            # Transform to metric space for plotting
+            coords_metric = coords * np.array([current_r, 1])
+            # Start point (green circle)
+            ax.plot(coords_metric[0, 0], coords_metric[0, 1], 'go', 
+                    markersize=marker_size, alpha=0.7)
+            # End point (red circle)
+            ax.plot(coords_metric[-1, 0], coords_metric[-1, 1], 'ro', 
+                    markersize=marker_size, alpha=0.7)
+
+    # Plot endpoints for all infill types in 2D
+    if plot_per_layer:
+        plot_line_endpoints_2d(layer_data[i].get("solid_infill", []), ax_2d_layer, marker_size=6, color='greenyellow')
+        plot_line_endpoints_2d(layer_data[i].get("radial_infill", []), ax_2d_layer, marker_size=6, color='orange')
+        plot_line_endpoints_2d(layer_data[i].get("axial_infill", []), ax_2d_layer, marker_size=6, color='darkviolet')
+        plot_line_endpoints_2d(layer_data[i].get("fully_radial_infill", []), ax_2d_layer, marker_size=6, color='orangered')
+        plot_line_endpoints_2d(layer_data[i].get("support_infill", []), ax_2d_layer, marker_size=5, color='magenta')
+
     # plt.clf()
 
 with open("output.gcode", "a") as f:
