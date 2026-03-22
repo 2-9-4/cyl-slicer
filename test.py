@@ -230,24 +230,70 @@ def fix_mesh(mesh1):
     mesh1.merge_vertices()
     return mesh1.process(validate=True)
 
-def _collect_lines(geom, result):
+def _collect_lines(geom, result, min_length=0.0):
     """Append all non-empty LineStrings from any geometry type into result."""
     if geom is None or geom.is_empty:
         return
     if isinstance(geom, shapely.LineString):
-        result.append(geom)
+        if geom.length >= min_length:
+            result.append(geom)
     elif hasattr(geom, 'geoms'):
         for g in geom.geoms:
-            _collect_lines(g, result)
+            _collect_lines(g, result, min_length)
+
+def clean_support_region(geom_theta_z, r_base, min_area_mm2, merge_gap_mm):
+    """
+    1. Inflate sub-polygons below min_area_mm2 to at least that area.
+    2. Merge patches closer than merge_gap_mm by buffering then eroding.
+    All size parameters are in real mm / mm².  Geometry in (θ,z) space.
+    """
+    if geom_theta_z is None or geom_theta_z.is_empty:
+        return geom_theta_z
+
+    # Work in metric space: scale θ axis by r_base so distances are in mm
+    metric = shapely.affinity.scale(geom_theta_z, xfact=r_base, yfact=1.0, origin=(0, 0))
+
+    if min_area_mm2 > 0:
+        parts = list(metric.geoms) if hasattr(metric, 'geoms') else [metric]
+        inflated = []
+        for part in parts:
+            if part.is_empty:
+                continue
+            if part.area < min_area_mm2:
+                r_target = (min_area_mm2 / np.pi) ** 0.5
+                r_current = (part.area / np.pi) ** 0.5
+                part = part.buffer(r_target - r_current)
+            inflated.append(part)
+        if not inflated:
+            return shapely.GeometryCollection()
+        metric = shapely.unary_union(inflated)
+
+    if merge_gap_mm > 0:
+        metric = metric.buffer(merge_gap_mm / 2).buffer(-(merge_gap_mm / 2))
+
+    return shapely.affinity.scale(metric, xfact=1.0 / r_base, yfact=1.0, origin=(0, 0))
+
+
+def fold_to_canonical(geom, clip_box, period=2 * np.pi):
+    """Fold (θ,z)-space geometry into [0, 2π] by unioning ±period shifted copies, then clipping."""
+    if geom is None or geom.is_empty:
+        return geom
+    folded = shapely.unary_union([
+        geom,
+        shift_polygon(geom, period),
+        shift_polygon(geom, -period),
+    ])
+    return folded.intersection(clip_box)
+
 
 def do_support_infill(support_geom, slicing_params, current_r, is_interface=False):
     """
     Generate support infill in (θ,z) space.
 
     Interface layers (top/bottom of a support column):
-        axial lines (constant θ) + radial lines (constant z) at support_interface_spacing.
+        axial + radial grid at support_interface_spacing.
     Body layers (interior of a support column):
-        axial lines only (constant θ) at support_body_spacing.
+        axial + radial grid at support_body_spacing.
 
     Returns a list of Shapely LineStrings.
     """
@@ -262,6 +308,10 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
     # matching the strategy used by do_sparse_infill.
     r_base = slicing_params["r_base"]
 
+    # Support strips are ~layer_height thick in z, so their infill intersections are
+    # naturally short.  Only filter true zero-length degenerate geometry.
+    min_length = 1e-6
+
     if is_interface:
         spacing = slicing_params["support_interface_spacing"]
         thetas = np.arange(0, 2 * np.pi, spacing / r_base)
@@ -269,21 +319,27 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
         # Axial lines (constant θ, varying z)
         for theta in thetas:
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
-            _collect_lines(shapely.intersection(ls, support_geom), result)
+            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
 
         # Radial lines (constant z, varying θ)
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
             ls = shapely.LineString([[0, z], [2 * np.pi, z]])
-            _collect_lines(shapely.intersection(ls, support_geom), result)
+            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
     else:
         spacing = slicing_params["support_body_spacing"]
         thetas = np.arange(0, 2 * np.pi, spacing / r_base)
 
-        # Axial lines only (constant θ, varying z)
+        # Axial lines (constant θ, varying z)
         for theta in thetas:
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
-            _collect_lines(shapely.intersection(ls, support_geom), result)
+            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+
+        # Radial lines (constant z, varying θ)
+        z_lo = np.floor(z_min / spacing) * spacing
+        for z in np.arange(z_lo, z_max + spacing, spacing):
+            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
 
     return result
 
@@ -594,30 +650,49 @@ slicing_params = {
     "infill_spacing" : 2,
     "nozzle_size": 0.4,
     "wall_count": 3,
-    "feed_mm_per_min" : 6000,
-    "travel_mm_per_min" : 6000,
-    "support_interface_spacing": 2,  # mm — grid spacing for top/bottom surfaces of support
-    "support_body_spacing": 3,       # mm — axial-line spacing for support interior
+    "feed_mm_per_min" : 2400,
+    "travel_mm_per_min" : 2400,
+    "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
+    "support_body_spacing": 2,       # mm — axial-line spacing for support interior
+    "support_min_area": 4.0,         # mm² — inflate overhang patches below this area to at least this size
+    "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
+    "support_taper_per_layer_mm": -0.05,  # mm — how much the support footprint shrinks per layer going inward
+    "support_xy_distance_mm": 0.3,   # mm — lateral gap between support and model walls
+    "retract_mm": 1.0,               # mm — retraction distance on travel moves
+    "retract_speed_mm_per_min": 1800, # mm/min — retraction speed (30 mm/s)
+    "flow_rate": 1.0,                # multiplier on extrusion_per_mm (tune for over/underextrusion)
+    "first_layer_speed_factor": 0.5, # fraction of feed/travel speeds for the first model layer
+    "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
 }
 printer_params = {
     "bed_radius": 15.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
     "max_radius": 25.0,    # mm — maximum printable radius; slicing stops here
     "axial_length": 150.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
+    "hotend_temp": 205,    # °C — PLA
+    "min_x_pos": 50.0,    # mm — X coordinate where the printable bed begins (prime line here)
+    "min_x_margin": 5.0,  # mm — gap between bed start and model start
 }
-# printer_params = {
-#     "bed_radius": 60.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
-#     "max_radius": 160.0,    # mm — maximum printable radius; slicing stops here
-#     "axial_length": 150.0, # mm — printable length along the cylinder axis
-#     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
-# }
+printer_params = {
+    "bed_radius": 60.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
+    "max_radius": 160.0,    # mm — maximum printable radius; slicing stops here
+    "axial_length": 150.0, # mm — printable length along the cylinder axis
+    "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
+    "hotend_temp": 205,    # °C — PLA
+    "min_x_pos": 50.0,    # mm — X coordinate where the printable bed begins (prime line here)
+    "min_x_margin": 5.0,  # mm — gap between bed start and model start
+}
 # Derived: how many mm of filament per mm of real travel
 slicing_params["extrusion_per_mm"] = (
     slicing_params["nozzle_size"] * slicing_params["layer_height"]
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh("test.stl")
+mesh = trimesh.load_mesh("offset_cube.stl")
+pts = cartesian_to_cylindrical(mesh.vertices)
+# Shift mesh so its axial start aligns with min_x_pos + min_x_margin
+_z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
+mesh.apply_translation([0, 0, _z_shift])
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
 min_z = np.min(pts[:,2])
@@ -629,6 +704,8 @@ z_clip_max = min_z + printer_params["axial_length"]
 
 # layer (θ,z)-space clipping box — wide enough to cover all θ shifts (±2π copies)
 axial_clip_box = box(-2*np.pi, z_clip_min, 4*np.pi, z_clip_max)
+# Canonical one-rotation clip box for support geometry
+theta_clip_box = box(0, z_clip_min, 2 * np.pi, z_clip_max)
 
 # for current_r in np.arange(max_r-layer_height*35,max_r,layer_height):
 layer_data = {}
@@ -637,6 +714,10 @@ sliced_layer_count = 0
 # axial-line grid at a fixed θ-step that never drifts across layers.
 r_start = max(np.min(pts[:,0]) + slicing_params["layer_height"], printer_params["bed_radius"])
 r_end   = min(np.max(pts[:,0]) - 1e-3, printer_params["max_radius"])
+print(f"Mesh radial range: {np.min(pts[:,0]):.2f} – {np.max(pts[:,0]):.2f} mm")
+print(f"Slicing range:     {r_start:.2f} – {r_end:.2f} mm  ({max(0, (r_end-r_start)/slicing_params['layer_height']):.0f} layers)")
+if r_start >= r_end:
+    raise ValueError(f"bed_radius ({printer_params['bed_radius']} mm) is at or beyond the mesh max radius ({np.max(pts[:,0]):.2f} mm) — nothing to slice.")
 slicing_params["r_base"] = r_start
 for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["layer_height"])):
     if max_real_layers is not None and sliced_layer_count >= max_real_layers:
@@ -803,8 +884,22 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     e -= do_transform(layer_data[layer_i-1]["external_peris"]).buffer(slicing_params["nozzle_size"]/2)
     e -= do_transform(shift_polygon(layer_data[layer_i-1]["external_peris"],-np.pi*2)).buffer(slicing_params["nozzle_size"]/2)
 
-
-    layer_data[layer_i]["needs_support"] = do_transform_inverse(e)
+    if not e.is_empty:
+        ns = do_transform_inverse(e)
+        ns = clean_support_region(
+            ns, current_r,
+            min_area_mm2=slicing_params["support_min_area"],
+            merge_gap_mm=slicing_params["support_merge_gap"],
+        )
+        # Fold shifted fragments into the canonical [0, 2π] range and remove
+        # areas already occupied by the model at this layer.
+        ns = fold_to_canonical(ns, theta_clip_box)
+        if not ns.is_empty:
+            model_mask = fold_to_canonical(final, theta_clip_box)
+            if not model_mask.is_empty:
+                ns = ns.difference(model_mask)
+        if not ns.is_empty:
+            layer_data[layer_i]["needs_support"] = ns
     times.append((time.perf_counter(),"support check"))
 
     e = do_transform(layer_data[layer_i-1]["external_peris"])
@@ -838,44 +933,115 @@ layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-
 # Support propagation: backward pass (outer → inner)
 # ═══════════════════════════════════════════════════════════════════════
 sorted_layer_keys = sorted(layer_data.keys())
-# Clip box for support: exactly one rotation wide so do_solid_infill's 0→2π sweep covers it
-theta_clip_box = box(0, z_clip_min, 2 * np.pi, z_clip_max)
 
 for i in sorted_layer_keys:
     layer_data[i]["support"] = shapely.GeometryCollection()
 
 support_needed = shapely.GeometryCollection()   # (θ,z) regions needing a support column below
 
+taper_mm   = slicing_params.get("support_taper_per_layer_mm", 0.5)
+xy_dist_mm = slicing_params.get("support_xy_distance_mm", 0.3)
+merge_gap  = slicing_params.get("support_merge_gap", 0)
+
 for i in reversed(sorted_layer_keys):
     current_ext = layer_data[i]["external_peris"]
+    current_r   = layer_data[i]["radius"]
 
-    # Ground: any pending support that this layer's model already covers needs no extra material
-    support_needed = support_needed.difference(current_ext)
+    # Ground: subtract model, expanded by xy gap so support doesn't press against walls
+    if xy_dist_mm > 0 and not current_ext.is_empty:
+        metric_ext     = shapely.affinity.scale(current_ext, xfact=current_r, yfact=1.0, origin=(0, 0))
+        metric_exp     = metric_ext.buffer(xy_dist_mm)
+        model_expanded = shapely.affinity.scale(metric_exp, xfact=1.0 / current_r, yfact=1.0, origin=(0, 0))
+        support_needed = support_needed.difference(model_expanded)
+    else:
+        support_needed = support_needed.difference(current_ext)
 
-    # Record what this layer must print as support (in space not occupied by the model)
+    # Record what this layer must print as support
     if not support_needed.is_empty:
         layer_data[i]["support"] = support_needed.intersection(theta_clip_box)
 
     # Add this layer's overhangs so inner layers know to support them
     if "needs_support" in layer_data[i]:
         support_needed = support_needed.union(layer_data[i]["needs_support"])
+        support_needed = fold_to_canonical(support_needed, theta_clip_box)
+
+    # Organic taper: erode the support footprint so columns narrow toward the bed
+    if not support_needed.is_empty :
+        metric = shapely.affinity.scale(support_needed, xfact=current_r, yfact=1.0, origin=(0, 0))
+        metric = metric.buffer(-taper_mm)
+        if metric.is_empty:
+            support_needed = shapely.GeometryCollection()
+        else:
+            support_needed = shapely.affinity.scale(metric, xfact=1.0 / current_r, yfact=1.0, origin=(0, 0))
+            support_needed = fold_to_canonical(support_needed, theta_clip_box)
+
+    # Merge nearby branches that have tapered into proximity
+    if merge_gap > 0 and not support_needed.is_empty:
+        support_needed = clean_support_region(
+            support_needed, current_r,
+            min_area_mm2=0,
+            merge_gap_mm=merge_gap,
+        )
 
 # ── Gap layers: model floating above the bed ────────────────────────────
 # If the innermost model layer is above bed_radius, print support shells
 # from bed_radius up to the first model layer.
 gap_support_layers = []
 first_r = layer_data[sorted_layer_keys[0]]["radius"]
-if first_r > printer_params["bed_radius"] + slicing_params["layer_height"]:
+if first_r > printer_params["bed_radius"]:
     # Union the accumulated ungrounded support with the full first-layer footprint
     # (the entire first layer floats, so all of it needs a support base)
     gap_footprint = support_needed.union(
         layer_data[sorted_layer_keys[0]]["external_peris"]
     ).intersection(theta_clip_box)
     if not gap_footprint.is_empty:
-        for r in np.arange(printer_params["bed_radius"],
-                           first_r,
-                           slicing_params["layer_height"]):
-            gap_support_layers.append({"radius": r, "support": gap_footprint})
+        gap_radii = list(np.arange(printer_params["bed_radius"],
+                                   first_r,
+                                   slicing_params["layer_height"]))
+        n_gap = len(gap_radii)
+        for k, r in enumerate(gap_radii):
+            # Organic flare: layers nearer the bed are wider (distance from top increases)
+            layers_from_top = n_gap - 1 - k
+            if taper_mm > 0 and layers_from_top > 0:
+                m = shapely.affinity.scale(gap_footprint, xfact=r, yfact=1.0, origin=(0, 0))
+                m = m.buffer(taper_mm * layers_from_top)
+                tapered = shapely.affinity.scale(m, xfact=1.0 / r, yfact=1.0, origin=(0, 0))
+                tapered = tapered.intersection(theta_clip_box)
+            else:
+                tapered = gap_footprint
+            gap_support_layers.append({"radius": r, "support": tapered})
+
+with open("stats.txt", "w") as _sf:
+    _sf.write(
+        "# Column definitions (areas are in (θ,z) space — radians×mm; multiply by radius for metric mm²)\n"
+        "#   layer     — layer index; 0 = innermost model layer, counts outward\n"
+        "#   radius    — nozzle distance from rotation axis in mm (the printer's Z axis)\n"
+        "#   ext_area  — cross-section area of the model at this radius; grows as model widens outward\n"
+        "#   ns_area   — needs_support area: portion of this layer not covered by the layer below (overhang);\n"
+        "#               non-zero means the model grew here in a way the inner layer can't support\n"
+        "#   sup_area  — support geometry area assigned to print at this radius: union of all outer-layer\n"
+        "#               overhang footprints not yet grounded by the model; what actually gets deposited\n"
+        "#   sup_paths — number of support infill line segments generated from sup_area;\n"
+        "#               should be non-zero wherever sup_area > 0 (if zero, support is missing)\n"
+        "#   solid_ln  — solid infill line count (dense radial sweeps for top/bottom surfaces)\n"
+        "#   sparse_ln — sparse infill line count (radial + axial + fully-radial interior fill)\n"
+        "#\n"
+        "# Key diagnostic: ns_area > 0 at layer N → expect sup_area > 0 at all layers 0..N-1\n"
+        "#                 sup_area > 0 but sup_paths = 0 → support geometry exists but no infill generated\n"
+        "\n"
+    )
+    _sf.write(f"mesh: {mesh.metadata.get('file_path', 'unknown')}  vertices={len(mesh.vertices)}\n")
+    _sf.write(f"bed_radius={printer_params['bed_radius']} mm  max_radius={printer_params['max_radius']} mm\n")
+    _sf.write(f"layer_height={slicing_params['layer_height']} mm  nozzle={slicing_params['nozzle_size']} mm  walls={slicing_params['wall_count']}\n")
+    _sf.write(f"first_r={first_r:.3f} mm  r_start={slicing_params['r_base']:.3f} mm\n")
+    _sf.write(f"model_layers={len(sorted_layer_keys)}  gap_layers={len(gap_support_layers)}\n")
+    if gap_support_layers:
+        _sf.write(f"gap_r: {gap_support_layers[0]['radius']:.3f} → {gap_support_layers[-1]['radius']:.3f} mm"
+                  f"  footprint_area(θz)={gap_support_layers[0]['support'].area:.6f}\n")
+    _sf.write("\n")
+    _sf.write(f"{'layer':>6}  {'radius':>8}  {'ext_area':>10}  {'ns_area':>10}  {'sup_area':>10}"
+              f"  {'sup_paths':>9}  {'solid_ln':>8}  {'sparse_ln':>9}\n")
+    _sf.write("-" * 80 + "\n")
 
 plot_3d = False       # live combined 3D figure (non-blocking)
 plot_per_layer = False  # show blocking per-layer 2D+3D window; set False for full gcode runs
@@ -900,22 +1066,61 @@ last_e = 0
 real_layer_count = 0
 if max_real_layers is not None:
     print(f"\n=== CAPPED AT {max_real_layers} LAYERS FOR TESTING ===\n")
+_bed_r = printer_params["bed_radius"]
+_prime_e = 2 * np.pi * _bed_r * slicing_params["extrusion_per_mm"] * slicing_params["flow_rate"]
+_first_feed = slicing_params["feed_mm_per_min"] * slicing_params["first_layer_speed_factor"]
+_min_x = printer_params["min_x_pos"]
+_start_gcode = f""";start of slice
+M82 ; absolute extrusion mode
+G28 ; home all axes
+M104 S{printer_params['hotend_temp']} ; start hotend heating
+M109 S{printer_params['hotend_temp']} ; wait for hotend
+G92 E0 ; reset extruder
+M107 ; fan off
+G0 Z0.000 F600 ; move to print radius (Z=0 at bed surface)
+;LAYER:-9999
+;Z:{_bed_r:.4f}
+;TYPE:SUPPORT
+G0 X{_min_x:.3f} Y0.000 F{slicing_params['travel_mm_per_min']:.1f} ; move to prime position
+G1 Y360.000 E{_prime_e:.5f} F{_first_feed:.1f} ; prime rotation (one full circle)
+G92 E0 ; reset extruder after prime
+"""
 with open("output.gcode","w") as f:
-    f.write(";start of slice\n")
+    f.write(_start_gcode)
 
 # Write gap support layers (printed before the model, from bed outward).
 # Use negative layer numbers (-N … -1) so the viewer layer slider includes them.
+first_model_ext = fold_to_canonical(
+    layer_data[sorted_layer_keys[0]]["external_peris"], theta_clip_box
+) if sorted_layer_keys else shapely.GeometryCollection()
+
 for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
     layer_num = gap_layer_idx - len(gap_support_layers)   # e.g. -5, -4, …, -1
     r = gap_layer["radius"]
     n_gap = len(gap_support_layers)
-    # First and last gap layers are the bottom/top interfaces; the rest are body.
-    is_interface = (n_gap <= 2) or (gap_layer_idx == 0 or gap_layer_idx == n_gap - 1)
-    support_infill = do_support_infill(gap_layer["support"], slicing_params, r, is_interface=is_interface)
+    gap_sup = gap_layer["support"]
+    is_first = gap_layer_idx == 0
+    is_last = gap_layer_idx == n_gap - 1
+
+    if n_gap <= 2:
+        # Very few gap layers — treat everything as interface
+        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=True)
+    elif is_last:
+        # Top of gap column: only the part under the model is interface
+        top_iface = gap_sup.intersection(first_model_ext) if not first_model_ext.is_empty else shapely.GeometryCollection()
+        body = gap_sup.difference(top_iface) if not top_iface.is_empty else gap_sup
+        support_infill = (
+            do_support_infill(top_iface, slicing_params, r, is_interface=True) +
+            do_support_infill(body, slicing_params, r, is_interface=False)
+        )
+    elif is_first:
+        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=True)
+    else:
+        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=False)
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
-        f.write(f"G0 Z{r:.4f}\n")
+        f.write(f"G0 Z{r - _bed_r:.4f}\n")
         gcode_paths = shapely_to_paths(support_infill, r)
         for path in gcode_paths:
             if path is None:
@@ -974,12 +1179,18 @@ for i in sorted(layer_data.keys()):
     # Support infill: interface (top/bottom of column) gets a grid; body gets axial lines only.
     support_geom = layer_data[i].get("support", shapely.GeometryCollection())
     if not support_geom.is_empty:
-        # Detect top interface: support here but NOT in the next (outer) layer
-        next_support = layer_data.get(i + 1, {}).get("support", shapely.GeometryCollection())
-        top_interface = support_geom.difference(next_support)
-        # Detect bottom interface: support here but NOT in the previous (inner) layer
-        prev_support = layer_data.get(i - 1, {}).get("support", shapely.GeometryCollection())
-        bottom_interface = support_geom.difference(prev_support)
+        # Top interface: support here that directly contacts model on the next (outer) layer
+        next_ext = layer_data.get(i + 1, {}).get("external_peris", shapely.GeometryCollection())
+        if not next_ext.is_empty:
+            top_interface = support_geom.intersection(fold_to_canonical(next_ext, theta_clip_box))
+        else:
+            top_interface = shapely.GeometryCollection()
+        # Bottom interface: support here that directly contacts model on the previous (inner) layer
+        prev_ext = layer_data.get(i - 1, {}).get("external_peris", shapely.GeometryCollection())
+        if not prev_ext.is_empty:
+            bottom_interface = support_geom.intersection(fold_to_canonical(prev_ext, theta_clip_box))
+        else:
+            bottom_interface = shapely.GeometryCollection()
 
         interface = top_interface.union(bottom_interface)
         body = support_geom.difference(interface)
@@ -1091,10 +1302,18 @@ for i in sorted(layer_data.keys()):
         ("radial_infill", "INFILL_RADIAL"),
         ("axial_infill", "INFILL_AXIAL")
     ]
+    # Temporarily scale speeds for the first model layer
+    _speed_factor = slicing_params["first_layer_speed_factor"] if i == 0 else 1.0
+    _layer_params = slicing_params.copy()
+    _layer_params["feed_mm_per_min"]   *= _speed_factor
+    _layer_params["travel_mm_per_min"] *= _speed_factor
+
     with open("output.gcode","a") as f:
         f.write(f";LAYER:{i}\n")
         f.write(f";Z:{current_r}\n")
-        f.write(f"G0 Z{current_r}\n")
+        if i == slicing_params["fan_start_layer"]:
+            f.write("M106 S255 ; part cooling fan on\n")
+        f.write(f"G0 Z{current_r - _bed_r:.4f}\n")
 
         for subsection, section_name in sections:
             if subsection == "external_peris" or subsection == "internal_peris":
@@ -1105,8 +1324,24 @@ for i in sorted(layer_data.keys()):
                 if path is None:
                     continue
                 f.write(f";TYPE:{section_name}\n")
-                g,last_pos,last_e = path.to_gcode(slicing_params,last_pos,last_e)
+                g,last_pos,last_e = path.to_gcode(_layer_params,last_pos,last_e)
                 f.write(g)
+
+    _ns  = layer_data[i].get("needs_support")
+    _sup = layer_data[i].get("support", shapely.GeometryCollection())
+    _solid_n  = len(layer_data[i].get("solid_infill", []))
+    _sparse_n = (len(layer_data[i].get("radial_infill", [])) +
+                 len(layer_data[i].get("axial_infill", [])) +
+                 len(layer_data[i].get("fully_radial_infill", [])))
+    _sup_n = len(layer_data[i].get("support_infill", []))
+    with open("stats.txt", "a") as _sf:
+        _sf.write(f"{i:>6}  {current_r:>8.3f}"
+                  f"  {layer_data[i]['external_peris'].area:>10.5f}"
+                  f"  {(_ns.area if _ns else 0.0):>10.5f}"
+                  f"  {_sup.area:>10.5f}"
+                  f"  {_sup_n:>9}"
+                  f"  {_solid_n:>8}"
+                  f"  {_sparse_n:>9}\n")
 
     # traces = [trace for trace in traces if trace is not None]
     # traces = np.vstack(traces)
@@ -1126,6 +1361,17 @@ for i in sorted(layer_data.keys()):
     # fig.show()
 # set_axes_equal(ax)
     # plt.clf()
+
+with open("output.gcode", "a") as f:
+    f.write(
+        "\nM104 S0 ; hotend off\n"
+        "M106 S0 ; fan off\n"
+        "G91 ; relative mode\n"
+        "G0 Z5 F600 ; retract radially away from print\n"
+        "G90 ; absolute mode\n"
+        "M84 ; disable steppers\n"
+        ";end of slice\n"
+    )
 
 if plot_3d and ax_3d:
     ax_3d.set_xlabel('X')

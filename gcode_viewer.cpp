@@ -192,7 +192,16 @@ GcodeData load_gcode(const char* path) {
                 start_path(g);
                 if (has_pos) push_vert(g, cyl_to_cart(cur_t, cur_x, radius));
             }
-            push_vert(d.groups[ext_type], nv);
+            // Tessellate large angular spans so arcs render correctly
+            // (without this a 360° prime line collapses to a point via fmod)
+            float delta_t = nt - cur_t;
+            int steps = std::max(1, (int)(std::abs(delta_t) / 2.f)); // ~2° per step
+            for (int s = 1; s <= steps; ++s) {
+                float frac = (float)s / (float)steps;
+                float it = cur_t + delta_t * frac;
+                float ix = cur_x + (nx - cur_x) * frac;
+                push_vert(d.groups[ext_type], cyl_to_cart(it, ix, radius));
+            }
         }
 
         cur_x = nx; cur_t = nt; has_pos = true;
@@ -498,7 +507,7 @@ int main(int argc, char** argv) {
 
         // Occluder
         glDepthMask(GL_TRUE);
-        glUniform4f(col_loc, 1.f, 1.f, 1.f, 1.f);
+        glUniform4f(col_loc, 0.f, 0.f, 0.f, 1.f);
         glBindVertexArray(occ.vao);
         glDrawElements(GL_TRIANGLE_STRIP, occ.count, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);

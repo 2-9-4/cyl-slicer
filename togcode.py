@@ -115,8 +115,16 @@ class PathObject:
         dt           = ((t0_canonical - accum_y) + np.pi) % (2 * np.pi) - np.pi  # shortest-path, [-π, π)
         t0_accum     = accum_y + dt
         x0           = pts[0, 1]
-        g = [";start of path\n",
-             f"G0 X{x0:.3f} Y{t0_accum * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
+        _retract_mm    = slicing_params.get("retract_mm", 0.0)
+        _retract_speed = slicing_params.get("retract_speed_mm_per_min", 1800)
+        if _retract_mm > 0:
+            g = [";start of path\n",
+                 f"G1 E{current_e - _retract_mm:.5f} F{_retract_speed:.1f}",
+                 f"G0 X{x0:.3f} Y{t0_accum * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}",
+                 f"G1 E{current_e:.5f} F{_retract_speed:.1f}"]
+        else:
+            g = [";start of path\n",
+                 f"G0 X{x0:.3f} Y{t0_accum * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}"]
 
         if len(pts) == 1:
             g.append(";end of path\n")
@@ -147,7 +155,7 @@ class PathObject:
         fake_dist = np.sqrt(dx*dx + dt_accum*dt_accum)
 
         safe_real_dist = np.where(real_dist > 1e-10, real_dist, 1e-10)
-        e_incr  = real_dist * slicing_params["extrusion_per_mm"]
+        e_incr  = real_dist * slicing_params["extrusion_per_mm"] * slicing_params.get("flow_rate", 1.0)
         e_vals  = np.cumsum(e_incr) + current_e
         fvals   = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
 
@@ -165,7 +173,7 @@ class PathObject:
             if not np.allclose([t1_canon, x1], [t2_canon, x2], atol=1e-10):
                 real_dist_close = self.dist(x2, x1, t2_canon, t1_canon)
                 if real_dist_close > 1e-10:
-                    current_e = e_vals[-1] + real_dist_close * slicing_params["extrusion_per_mm"]
+                    current_e = e_vals[-1] + real_dist_close * slicing_params["extrusion_per_mm"] * slicing_params.get("flow_rate", 1.0)
                     dt_close  = (accum_thetas[0] - accum_thetas[-1]) * 180 / np.pi
                     fval_close = (slicing_params["feed_mm_per_min"]
                                   * np.sqrt((x2-x1)**2 + dt_close**2) / real_dist_close)
