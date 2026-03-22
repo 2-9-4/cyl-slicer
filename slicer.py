@@ -352,7 +352,8 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
 
     if is_interface:
         spacing = slicing_params["support_interface_spacing"]
-        thetas = np.arange(0, 2 * np.pi, spacing / r_base)
+        _ts = spacing / r_base
+        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
 
         # Axial lines (constant θ, varying z)
         for theta in thetas:
@@ -371,7 +372,8 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
                 _collect_lines(inter, result, min_length)
     else:
         spacing = slicing_params["support_body_spacing"]
-        thetas = np.arange(0, 2 * np.pi, spacing / r_base)
+        _ts = spacing / r_base
+        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
 
         # Axial lines (constant θ, varying z)
         for theta in thetas:
@@ -401,7 +403,9 @@ def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
     infill = []
     bounds = shapely.bounds(peri)
 
-    for current_line_h in np.arange(0,2*np.pi,slicing_params["nozzle_size"]/current_r):
+    _solid_step = slicing_params["nozzle_size"] / current_r
+    _n_solid = int(np.floor(2 * np.pi / _solid_step))
+    for current_line_h in np.arange(_n_solid) * _solid_step:
         lp_x,lp_y = [current_line_h,current_line_h],[bounds[1],bounds[3]]
         ls = shapely.LineString(np.array([lp_x,lp_y]).swapaxes(0,1))
         inter = shapely.intersection(ls,peri)
@@ -695,13 +699,13 @@ def remove_collinear_points_angle(coords, angle_tolerance=1e-6):
 
 slicing_params = {
     "layer_height": 0.2,
-    "infill_spacing" : 2,
+    "infill_spacing" : 3,
     "nozzle_size": 0.4,
     "wall_count": 3,
     "feed_mm_per_min" : 2400,
     "travel_mm_per_min" : 2400,
-    "support_interface_spacing": 2,  # mm — grid spacing for top/bottom surfaces of support
-    "support_body_spacing": 2,       # mm — axial-line spacing for support interior
+    "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
+    "support_body_spacing": 3,       # mm — axial-line spacing for support interior
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
     "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
@@ -1214,11 +1218,16 @@ for i in sorted(layer_data.keys()):
 
 
     final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    # Clip to canonical x=[0,2π·r] to remove thin-strip artifacts where the buffer
+    # bleeds into the ±2π copies of final_perimeter, which would create double infill lines near the seam.
+    _canonical_x_clip = shapely.geometry.box(0, z_clip_min - 10, 2 * np.pi * current_r, z_clip_max + 10)
+    final_top_surface = final_top_surface.intersection(_canonical_x_clip)
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
     layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
 
     final_bottom_surface = do_transform(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection())).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    final_bottom_surface = final_bottom_surface.intersection(_canonical_x_clip)
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
     bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
