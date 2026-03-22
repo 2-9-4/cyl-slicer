@@ -1071,6 +1071,8 @@ _prime_e = 2 * np.pi * _bed_r * slicing_params["extrusion_per_mm"] * slicing_par
 _first_feed = slicing_params["feed_mm_per_min"] * slicing_params["first_layer_speed_factor"]
 _min_x = printer_params["min_x_pos"]
 _start_gcode = f""";start of slice
+;LAYER_HEIGHT:{slicing_params['layer_height']}
+;LINE_WIDTH:{slicing_params['nozzle_size']}
 M82 ; absolute extrusion mode
 G28 ; home all axes
 M104 S{printer_params['hotend_temp']} ; start hotend heating

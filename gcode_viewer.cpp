@@ -1,4 +1,5 @@
-// gcode_viewer.cpp — High-performance OpenGL G-code viewer for cylindrical printer
+// gcode_viewer.cpp — Volumetric OpenGL G-code viewer for cylindrical printer
+// Lines rendered as 3D beads (layer_height × nozzle_size rectangular cross-section)
 // Controls: left-drag=orbit  right/mid-drag=pan  scroll=zoom  R=reset  Q/Esc=quit
 
 #include <GL/glew.h>
@@ -18,6 +19,11 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+// ── Slicer parameters (parsed from G-code header; these are fallback defaults) ─
+
+static const float kDefaultLayerHeight = 0.2f;
+static const float kDefaultLineWidth   = 0.4f;
 
 // ── Section types ─────────────────────────────────────────────────────────────
 
@@ -61,27 +67,163 @@ SType parse_stype(const std::string& s) {
     return ST_UNKNOWN;
 }
 
-// ── Geometry ──────────────────────────────────────────────────────────────────
+// ── Vec3 helpers ──────────────────────────────────────────────────────────────
 
 struct Vec3 { float x, y, z; };
+
+inline Vec3 v3sub(Vec3 a, Vec3 b)   { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
+inline Vec3 v3add(Vec3 a, Vec3 b)   { return {a.x+b.x, a.y+b.y, a.z+b.z}; }
+inline Vec3 v3scale(Vec3 a, float s){ return {a.x*s,   a.y*s,   a.z*s};   }
+inline Vec3 v3neg(Vec3 a)           { return {-a.x,    -a.y,    -a.z};     }
+inline float v3dot(Vec3 a, Vec3 b)  { return a.x*b.x + a.y*b.y + a.z*b.z; }
+inline Vec3 v3cross(Vec3 a, Vec3 b) {
+    return {a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x};
+}
+inline Vec3 v3norm(Vec3 a) {
+    float l = sqrtf(v3dot(a, a));
+    return l > 1e-8f ? v3scale(a, 1.f / l) : Vec3{0, 1, 0};
+}
 
 Vec3 cyl_to_cart(float theta_deg, float ax, float r) {
     float t = std::fmod(theta_deg, 360.f) * (float)M_PI / 180.f;
     return { ax, r * std::cos(t), r * std::sin(t) };
 }
 
+// Radial direction outward from cylinder axis (X-axis)
+static Vec3 radial_dir(Vec3 p) {
+    float len = sqrtf(p.y * p.y + p.z * p.z);
+    return len > 1e-6f ? Vec3{0, p.y / len, p.z / len} : Vec3{0, 1, 0};
+}
+
+// ── Vertex with position + normal ─────────────────────────────────────────────
+
+struct Vert { float px, py, pz, nx, ny, nz; };
+
+// ── Tube mesh generation ──────────────────────────────────────────────────────
+//
+// Sweeps a rectangle (lh × lw) along the centerline path.
+// lh = layer_height → radial extent (in/out of cylinder surface)
+// lw = line_width   → transverse extent (along cylinder surface, ⊥ path)
+//
+// Cross-section corner convention:
+//   c[0] = outer + side  (+r, +s)
+//   c[1] = outer - side  (+r, -s)
+//   c[2] = inner - side  (-r, -s)
+//   c[3] = inner + side  (-r, +s)
+
+static void build_tube(
+    std::vector<Vert>&     verts,
+    std::vector<uint32_t>& idx,
+    const std::vector<Vec3>& path,
+    float lh, float lw)
+{
+    int N = (int)path.size();
+    if (N < 2) return;
+
+    float hw = lw * 0.5f;
+    float hh = lh * 0.5f;
+
+    // Tangent at each vertex
+    std::vector<Vec3> tang(N);
+    for (int i = 0; i < N; ++i) {
+        if (i == 0)
+            tang[i] = v3norm(v3sub(path[1], path[0]));
+        else if (i == N - 1)
+            tang[i] = v3norm(v3sub(path[N-1], path[N-2]));
+        else
+            tang[i] = v3norm(v3add(v3norm(v3sub(path[i],   path[i-1])),
+                                   v3norm(v3sub(path[i+1], path[i]))));
+    }
+
+    // Cross-section (4 corners + r/s axes) at each vertex
+    struct XS { Vec3 c[4]; Vec3 r, s; };
+    std::vector<XS> xs(N);
+
+    for (int i = 0; i < N; ++i) {
+        Vec3 r = radial_dir(path[i]);
+        Vec3 s = v3norm(v3cross(tang[i], r));
+        // Fallback when tang ≈ radial (degenerate)
+        if (v3dot(s, s) < 0.01f) {
+            Vec3 up = {1, 0, 0};
+            s = v3norm(v3cross(tang[i], up));
+        }
+        xs[i].r = r; xs[i].s = s;
+        Vec3 p = path[i];
+        xs[i].c[0] = {p.x + hh*r.x + hw*s.x, p.y + hh*r.y + hw*s.y, p.z + hh*r.z + hw*s.z};
+        xs[i].c[1] = {p.x + hh*r.x - hw*s.x, p.y + hh*r.y - hw*s.y, p.z + hh*r.z - hw*s.z};
+        xs[i].c[2] = {p.x - hh*r.x - hw*s.x, p.y - hh*r.y - hw*s.y, p.z - hh*r.z - hw*s.z};
+        xs[i].c[3] = {p.x - hh*r.x + hw*s.x, p.y - hh*r.y + hw*s.y, p.z - hh*r.z + hw*s.z};
+    }
+
+    // Emit a quad (a,b,c,d in CCW order) with the given face normal
+    auto add_quad = [&](Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 n) {
+        uint32_t base = (uint32_t)verts.size();
+        verts.push_back({a.x, a.y, a.z, n.x, n.y, n.z});
+        verts.push_back({b.x, b.y, b.z, n.x, n.y, n.z});
+        verts.push_back({c.x, c.y, c.z, n.x, n.y, n.z});
+        verts.push_back({d.x, d.y, d.z, n.x, n.y, n.z});
+        idx.push_back(base);     idx.push_back(base + 1); idx.push_back(base + 2);
+        idx.push_back(base);     idx.push_back(base + 2); idx.push_back(base + 3);
+    };
+
+    // Lateral faces between consecutive cross-sections
+    for (int i = 0; i < N - 1; ++i) {
+        const XS& x0 = xs[i], &x1 = xs[i + 1];
+        Vec3 r = v3norm(v3add(x0.r, x1.r));
+        Vec3 s = v3norm(v3add(x0.s, x1.s));
+
+        // Outer face (+r normal)
+        add_quad(x0.c[0], x0.c[1], x1.c[1], x1.c[0], r);
+        // Inner face (-r normal)
+        add_quad(x0.c[2], x0.c[3], x1.c[3], x1.c[2], v3neg(r));
+        // +side face (+s normal)
+        add_quad(x0.c[3], x0.c[0], x1.c[0], x1.c[3], s);
+        // -side face (-s normal)
+        add_quad(x0.c[1], x0.c[2], x1.c[2], x1.c[1], v3neg(s));
+    }
+
+    // Start cap (normal = -tang[0])
+    {
+        const XS& x = xs[0];
+        Vec3 n = v3neg(tang[0]);
+        add_quad(x.c[0], x.c[3], x.c[2], x.c[1], n);
+    }
+    // End cap (normal = +tang[N-1])
+    {
+        const XS& x = xs[N - 1];
+        add_quad(x.c[0], x.c[1], x.c[2], x.c[3], tang[N - 1]);
+    }
+}
+
+// ── Path group ────────────────────────────────────────────────────────────────
+
 struct LayerRange {
     int      layer_num;
-    uint32_t idx_offset;  // element offset into index buffer
+    uint32_t idx_offset;
     uint32_t idx_count;
 };
 
 struct PathGroup {
-    SType                 type;
-    std::vector<Vec3>     verts;
-    std::vector<uint32_t> idx;          // 0xFFFFFFFF = primitive restart
+    SType type;
+    std::vector<Vert>     verts;
+    std::vector<uint32_t> idx;
     std::vector<LayerRange> layer_ranges;
     GLuint vao = 0, vbo = 0, ebo = 0;
+
+    // Build state
+    std::vector<Vec3> cur_path;
+    float tube_lh = kDefaultLayerHeight;
+    float tube_lw = kDefaultLineWidth;
+
+    void add_pt(Vec3 p)  { cur_path.push_back(p); }
+
+    void flush_path() {
+        if (cur_path.size() >= 2)
+            build_tube(verts, idx, cur_path, tube_lh, tube_lw);
+        cur_path.clear();
+    }
+
+    void break_path() { flush_path(); }
 };
 
 struct GcodeData {
@@ -108,17 +250,15 @@ GcodeData load_gcode(const char* path) {
     SType sec_type = ST_UNKNOWN;
     int   cur_layer = 0;
 
+    // Parameters parsed from G-code header comments
+    float lh = kDefaultLayerHeight, lw = kDefaultLineWidth;
+
     uint32_t layer_idx_start[ST_COUNT] = {};
 
-    auto push_vert = [](PathGroup& g, Vec3 v) {
-        uint32_t i = (uint32_t)g.verts.size();
-        g.verts.push_back(v);
-        g.idx.push_back(i);
-    };
-    auto start_path = [](PathGroup& g) {
-        if (!g.idx.empty()) g.idx.push_back(0xFFFFFFFF);
-    };
     auto close_layer = [&]() {
+        // Flush in-progress paths before snapshotting layer ranges
+        for (int i = 0; i < ST_COUNT; ++i)
+            d.groups[i].flush_path();
         for (int i = 0; i < ST_COUNT; ++i) {
             uint32_t start = layer_idx_start[i];
             uint32_t end   = (uint32_t)d.groups[i].idx.size();
@@ -137,13 +277,18 @@ GcodeData load_gcode(const char* path) {
             if (line.rfind(";LAYER:", 0) == 0) {
                 close_layer();
                 std::string layer_str = line.substr(7);
-                // Accept integers (positive or negative); skip non-numeric identifiers
                 if (!layer_str.empty() && (std::isdigit(layer_str[0]) || layer_str[0] == '-')) {
                     cur_layer = std::stoi(layer_str);
                     d.layer_min = std::min(d.layer_min, cur_layer);
                     d.layer_max = std::max(d.layer_max, cur_layer);
                 }
                 in_ext = false;
+            } else if (line.rfind(";LAYER_HEIGHT:", 0) == 0) {
+                lh = std::stof(line.substr(14));
+                for (auto& grp : d.groups) grp.tube_lh = lh;
+            } else if (line.rfind(";LINE_WIDTH:", 0) == 0) {
+                lw = std::stof(line.substr(12));
+                for (auto& grp : d.groups) grp.tube_lw = lw;
             } else if (line.rfind(";Z:", 0) == 0) {
                 radius = std::stof(line.substr(3));
                 d.r_min = std::min(d.r_min, radius);
@@ -178,29 +323,34 @@ GcodeData load_gcode(const char* path) {
 
         if (rapid) {
             in_ext = false;
+            // End any ongoing extrusion path
+            for (int i = 0; i < ST_COUNT; ++i)
+                if (i != ST_TRAVEL) d.groups[i].flush_path();
+
             if (has_pos) {
                 auto& g = d.groups[ST_TRAVEL];
-                start_path(g);
-                push_vert(g, cyl_to_cart(cur_t, cur_x, radius));
-                push_vert(g, nv);
+                g.flush_path();  // each G0 is its own short path
+                g.add_pt(cyl_to_cart(cur_t, cur_x, radius));
+                g.add_pt(nv);
             }
         } else {
             if (!in_ext || sec_type != ext_type) {
+                // Type change: end previous path in old group
+                if (in_ext) d.groups[ext_type].flush_path();
                 in_ext   = true;
                 ext_type = sec_type;
                 auto& g = d.groups[ext_type];
-                start_path(g);
-                if (has_pos) push_vert(g, cyl_to_cart(cur_t, cur_x, radius));
+                // Seed new path with current position
+                if (has_pos) g.add_pt(cyl_to_cart(cur_t, cur_x, radius));
             }
             // Tessellate large angular spans so arcs render correctly
-            // (without this a 360° prime line collapses to a point via fmod)
             float delta_t = nt - cur_t;
-            int steps = std::max(1, (int)(std::abs(delta_t) / 2.f)); // ~2° per step
+            int steps = std::max(1, (int)(std::abs(delta_t) / 2.f));
             for (int s = 1; s <= steps; ++s) {
                 float frac = (float)s / (float)steps;
                 float it = cur_t + delta_t * frac;
                 float ix = cur_x + (nx - cur_x) * frac;
-                push_vert(d.groups[ext_type], cyl_to_cart(it, ix, radius));
+                d.groups[ext_type].add_pt(cyl_to_cart(it, ix, radius));
             }
         }
 
@@ -217,16 +367,17 @@ GcodeData load_gcode(const char* path) {
 struct Mesh { GLuint vao = 0, vbo = 0, ebo = 0; int count = 0; };
 
 Mesh build_cylinder(float r, float x0, float x1, int slices = 64) {
+    // Vertex layout: px py pz nx ny nz  (6 floats)
     std::vector<float>    v;
     std::vector<uint32_t> idx;
 
     for (int xi = 0; xi < 2; ++xi) {
-        float ax = xi == 0 ? x0 : x1;
+        float ax = (xi == 0) ? x0 : x1;
         for (int i = 0; i <= slices; ++i) {
             float t = 2.f * (float)M_PI * i / slices;
-            v.push_back(ax);
-            v.push_back(r * std::cos(t));
-            v.push_back(r * std::sin(t));
+            float cy = std::cos(t), cz = std::sin(t);
+            v.push_back(ax);       v.push_back(r * cy);  v.push_back(r * cz);
+            v.push_back(0.f);      v.push_back(cy);      v.push_back(cz);
         }
     }
     for (int i = 0; i <= slices; ++i) {
@@ -240,11 +391,13 @@ Mesh build_cylinder(float r, float x0, float x1, int slices = 64) {
     glGenBuffers(1, &m.ebo);
     glBindVertexArray(m.vao);
     glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
-    glBufferData(GL_ARRAY_BUFFER, v.size() * sizeof(float), v.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(uint32_t), idx.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, nullptr);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(idx.size() * sizeof(uint32_t)), idx.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
     glBindVertexArray(0);
     m.count = (int)idx.size();
     return m;
@@ -255,15 +408,30 @@ Mesh build_cylinder(float r, float x0, float x1, int slices = 64) {
 static const char* kVert = R"glsl(
 #version 330 core
 layout(location=0) in vec3 pos;
+layout(location=1) in vec3 normal;
 uniform mat4 MVP;
-void main() { gl_Position = MVP * vec4(pos, 1.0); }
+out vec3 vNormal;
+void main() {
+    gl_Position = MVP * vec4(pos, 1.0);
+    vNormal = normal;
+}
 )glsl";
 
+// Simple Lambert shading with a fixed world-space light.
+// abs(dot) makes both faces of each quad respond to the light,
+// so the viewer is not confused by inside/outside orientation.
 static const char* kFrag = R"glsl(
 #version 330 core
+in  vec3 vNormal;
 uniform vec4 color;
+uniform vec3 lightDir;   // normalised, set once at startup
 out vec4 fragColor;
-void main() { fragColor = color; }
+void main() {
+    float diff    = abs(dot(normalize(vNormal), lightDir));
+    float ambient = 0.30;
+    float lit     = ambient + (1.0 - ambient) * diff;
+    fragColor = vec4(color.rgb * lit, color.a);
+}
 )glsl";
 
 GLuint make_program() {
@@ -360,6 +528,8 @@ int main(int argc, char** argv) {
     std::cout << "Loading: " << file << "\n";
     GcodeData gcode = load_gcode(file);
     std::cout << "Layers: " << gcode.layer_min << " – " << gcode.layer_max << "\n";
+    std::cout << "Layer height: " << gcode.groups[0].tube_lh << " mm"
+              << "  Line width: "  << gcode.groups[0].tube_lw << " mm\n";
 
     if (!glfwInit()) { std::cerr << "glfwInit failed\n"; return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -379,15 +549,15 @@ int main(int argc, char** argv) {
     glEnable(GL_MULTISAMPLE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_PRIMITIVE_RESTART);
-    glPrimitiveRestartIndex(0xFFFFFFFF);
-    glLineWidth(2.0f);
+    // No primitive restart needed — tube meshes use plain GL_TRIANGLES
 
-    GLuint prog    = make_program();
-    GLint  mvp_loc = glGetUniformLocation(prog, "MVP");
-    GLint  col_loc = glGetUniformLocation(prog, "color");
+    GLuint prog     = make_program();
+    GLint  mvp_loc  = glGetUniformLocation(prog, "MVP");
+    GLint  col_loc  = glGetUniformLocation(prog, "color");
+    GLint  ldir_loc = glGetUniformLocation(prog, "lightDir");
 
-    // Upload path geometry
+    // Upload tube geometry
+    // Vertex layout: px py pz nx ny nz  (6 floats = sizeof(Vert))
     for (auto& grp : gcode.groups) {
         if (grp.verts.empty()) continue;
         glGenVertexArrays(1, &grp.vao);
@@ -395,12 +565,22 @@ int main(int argc, char** argv) {
         glGenBuffers(1, &grp.ebo);
         glBindVertexArray(grp.vao);
         glBindBuffer(GL_ARRAY_BUFFER, grp.vbo);
-        glBufferData(GL_ARRAY_BUFFER, grp.verts.size() * sizeof(Vec3), grp.verts.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER,
+            (GLsizeiptr)(grp.verts.size() * sizeof(Vert)),
+            grp.verts.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grp.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, grp.idx.size() * sizeof(uint32_t), grp.idx.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), nullptr);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+            (GLsizeiptr)(grp.idx.size() * sizeof(uint32_t)),
+            grp.idx.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)0);
         glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
         glBindVertexArray(0);
+
+        std::cout << kNames[grp.type] << ": "
+                  << grp.verts.size() << " verts, "
+                  << grp.idx.size() / 3 << " triangles\n";
     }
 
     // Occluder at min radius
@@ -420,14 +600,12 @@ int main(int argc, char** argv) {
     g.show_layer_min  = gcode.layer_min;
     g.show_layer_max  = gcode.layer_max;
 
-    // Register callbacks BEFORE ImGui init so ImGui chains onto them
     glfwSetMouseButtonCallback(win, cb_mouse);
     glfwSetCursorPosCallback(win, cb_pos);
     glfwSetScrollCallback(win, cb_scroll);
     glfwSetKeyCallback(win, cb_key);
     glfwSetFramebufferSizeCallback(win, cb_resize);
 
-    // ImGui init — installs its own callbacks and chains to the ones above
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
@@ -438,6 +616,9 @@ int main(int argc, char** argv) {
     style.FrameRounding  = 4.f;
     style.WindowPadding  = {12, 12};
     style.ItemSpacing    = {8, 6};
+
+    // Fixed world-space light direction (upper-right-front)
+    glm::vec3 ldir = glm::normalize(glm::vec3(0.4f, 1.0f, 0.6f));
 
     while (!glfwWindowShouldClose(win)) {
         glfwPollEvents();
@@ -453,7 +634,6 @@ int main(int argc, char** argv) {
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
 
-        // Layer range slider
         ImGui::TextUnformatted("Layers");
         ImGui::SetNextItemWidth(-1);
         ImGui::DragIntRange2("##layers",
@@ -461,7 +641,6 @@ int main(int argc, char** argv) {
             1.f,
             g.total_layer_min, g.total_layer_max,
             "Min: %d", "Max: %d");
-        // Quick "all layers" button
         if (ImGui::SmallButton("All")) {
             g.show_layer_min = g.total_layer_min;
             g.show_layer_max = g.total_layer_max;
@@ -472,7 +651,6 @@ int main(int argc, char** argv) {
         ImGui::Separator();
         ImGui::TextUnformatted("Line types");
 
-        // Checkboxes with color swatches
         bool all_on = true;
         for (int i = 0; i < ST_COUNT; ++i) if (!g.visible[i]) { all_on = false; break; }
         if (ImGui::Checkbox("All##all", &all_on))
@@ -504,6 +682,7 @@ int main(int argc, char** argv) {
 
         glUseProgram(prog);
         glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3fv(ldir_loc, 1, glm::value_ptr(ldir));
 
         // Occluder
         glDepthMask(GL_TRUE);
@@ -512,19 +691,28 @@ int main(int argc, char** argv) {
         glDrawElements(GL_TRIANGLE_STRIP, occ.count, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
 
-        // Paths — draw only visible layers
-        for (int i = 0; i < ST_COUNT; ++i) {
-            if (!g.visible[i]) continue;
-            auto& grp = gcode.groups[i];
-            if (!grp.vao) continue;
-            glUniform4f(col_loc, kColors[i][0], kColors[i][1], kColors[i][2], kAlpha[i]);
-            glBindVertexArray(grp.vao);
-            for (auto& lr : grp.layer_ranges) {
-                if (lr.layer_num < g.show_layer_min || lr.layer_num > g.show_layer_max) continue;
-                glDrawElements(GL_LINE_STRIP, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
-                               (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+        // Opaque passes first, then transparent (travel etc.)
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int i = 0; i < ST_COUNT; ++i) {
+                bool transparent = (kAlpha[i] < 1.0f);
+                if (pass == 0 &&  transparent) continue;
+                if (pass == 1 && !transparent) continue;
+                if (!g.visible[i]) continue;
+                auto& grp = gcode.groups[i];
+                if (!grp.vao) continue;
+
+                if (transparent) glDepthMask(GL_FALSE);
+                glUniform4f(col_loc,
+                    kColors[i][0], kColors[i][1], kColors[i][2], kAlpha[i]);
+                glBindVertexArray(grp.vao);
+                for (auto& lr : grp.layer_ranges) {
+                    if (lr.layer_num < g.show_layer_min || lr.layer_num > g.show_layer_max) continue;
+                    glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
+                                   (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+                }
+                glBindVertexArray(0);
+                if (transparent) glDepthMask(GL_TRUE);
             }
-            glBindVertexArray(0);
         }
 
         ImGui::Render();
