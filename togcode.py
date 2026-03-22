@@ -101,11 +101,16 @@ class PathObject:
         # canonical [0,2π) — it only increases).  This lets Marlin always move forward.
         # The viewer recovers canonical position with Y_gcode % 360.
 
-        # For the closest-endpoint check use canonical current angle.
+        # For the closest-endpoint check use canonical current angle and
+        # shortest-arc distance so stitched seam-crossing lines (whose stored
+        # theta may exceed 2π) are handled correctly — matching the same metric
+        # used by optimize_path_order.
         current_canonical = current_pos[0] % (2 * np.pi)
         if (not self.closed and len(pts) >= 2 and
-            self.dist(current_pos[1], pts[-1,1], current_canonical, pts[-1,0]) <
-            self.dist(current_pos[1], pts[0,1], current_canonical, pts[0,0])):
+            _travel_dist(self.radius, current_pos[1], current_canonical,
+                         pts[-1,1], pts[-1,0] % (2*np.pi)) <
+            _travel_dist(self.radius, current_pos[1], current_canonical,
+                         pts[0,1],  pts[0,0]  % (2*np.pi))):
             pts = pts[::-1]
 
         # --- Travel (G0) to path start ---
