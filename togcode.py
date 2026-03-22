@@ -86,14 +86,14 @@ class PathObject:
         if len(pts) > 1:
             dx   = pts[1:, 1] - pts[:-1, 1]
             dt   = (pts[1:, 0] - pts[:-1, 0]) * self.radius
-            keep = np.concatenate([[True], np.hypot(dx, dt) > 1e-10])
+            keep = np.concatenate([[True], np.hypot(dx, dt) > 5e-3])
             pts  = pts[keep]
             if len(pts) < 2:
                 return "", current_pos, current_e
 
         if len(pts) > 2:
             pts = _reduce_collinear(pts, self.radius)
-        
+
         # current_pos[0] is the printer's ACCUMULATED Y in radians (never resets to
         # canonical [0,2π) — it only increases).  This lets Marlin always move forward.
         # The viewer recovers canonical position with Y_gcode % 360.

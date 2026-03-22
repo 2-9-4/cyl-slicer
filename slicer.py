@@ -709,6 +709,13 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     for ring in [poly.exterior] + list(poly.interiors):
         coords = np.array(ring.coords)
         coords[:, 0] = np.unwrap(coords[:, 0])
+        # Skip degenerate rings whose θ-extent is negligibly thin (e.g. a
+        # near-tangent cylindrical cross-section of a flat face).  Such rings
+        # produce a back-and-forth line in G-code rather than a closed loop.
+        # Threshold: 1e-3 rad ≈ 0.06° — well below any printable feature but
+        # above floating-point noise.
+        if coords[:, 0].max() - coords[:, 0].min() < 1e-3:
+            continue
         ls = LineString(coords)
         if not ls.is_empty:
             result.append(ls)
@@ -810,6 +817,13 @@ pts = cartesian_to_cylindrical(mesh.vertices)
 # Shift mesh so its axial start aligns with min_x_pos + min_x_margin
 _z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
 mesh.apply_translation([0, 0, _z_shift])
+
+# Subdivide large faces so that cylindrical cross-sections have enough sample points
+# along long edges (avoids jitter from straight-line approximation of curved arcs).
+_max_edge = slicing_params["layer_height"] * 5  # subdivide any edge longer than 5 layers
+_orig_faces = len(mesh.faces)
+mesh = trimesh.Trimesh(*trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, _max_edge), process=False)
+print(f"Subdivided mesh: {_orig_faces} → {len(mesh.faces)} faces (max edge {_max_edge:.2f} mm)")
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
 min_z = np.min(pts[:,2])
@@ -1462,6 +1476,7 @@ for i in sorted(layer_data.keys()):
             paths = [p for p in raw if p is not None]
             return optimize_path_order(paths, _snap_pos)
 
+    
         with ThreadPoolExecutor() as _ex:
             _futs = {s: _ex.submit(_prep_section, s) for s, _ in sections}
             _prepped = {s: _futs[s].result() for s, _ in sections}

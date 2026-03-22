@@ -21,4 +21,4 @@ module subdivided_cube(size=1, center=false, dim=5) {
     }
 }
 
-translate([30+15,0,0])rotate([35,0,45])subdivided_cube(20,center=true);
+translate([30+25,0,0])rotate([35,0,45])subdivided_cube(20,center=true);
