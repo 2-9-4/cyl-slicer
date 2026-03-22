@@ -15,9 +15,11 @@
 #include <cmath>
 #include <climits>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ── Slicer parameters (parsed from G-code header; these are fallback defaults) ─
@@ -248,18 +250,34 @@ struct PathGroup {
 
     void add_pt(Vec3 p)  { cur_path.push_back(p); }
 
+    std::function<void(SType, uint32_t, uint32_t)> on_flush;
+
     void flush_path() {
+        uint32_t before = (uint32_t)idx.size();
         if (cur_path.size() >= 2)
             build_tube(verts, idx, cur_path, tube_lh, tube_lw);
         cur_path.clear();
+        uint32_t after = (uint32_t)idx.size();
+        if (after > before && on_flush)
+            on_flush(type, before, after - before);
     }
 
     void break_path() { flush_path(); }
 };
 
+struct DrawCmd {
+    SType    type;
+    int      layer;
+    int      seq;        // sequence within layer (0-based)
+    uint32_t idx_offset;
+    uint32_t idx_count;
+};
+
 struct GcodeData {
     PathGroup groups[ST_COUNT];
     std::vector<std::pair<Vec3, int>> retract_pts;  // (position, layer_num)
+    std::vector<DrawCmd>              draw_cmds;
+    std::unordered_map<int, int>      layer_seq_count; // layer -> # seqs
     float x_min = 1e9f, x_max = -1e9f;
     float r_min = 1e9f, r_max = -1e9f;
     int   layer_min = INT_MAX, layer_max = 0;
@@ -281,11 +299,19 @@ GcodeData load_gcode(const char* path) {
     SType ext_type = ST_UNKNOWN;
     SType sec_type = ST_UNKNOWN;
     int   cur_layer = 0;
+    int   cur_layer_seq = 0;
 
     // Parameters parsed from G-code header comments
     float lh = kDefaultLayerHeight, lw = kDefaultLineWidth;
 
     uint32_t layer_idx_start[ST_COUNT] = {};
+
+    // Record each flushed path as a DrawCmd ordered by sequence within its layer
+    for (int i = 0; i < ST_COUNT; ++i) {
+        d.groups[i].on_flush = [&](SType t, uint32_t off, uint32_t cnt) {
+            d.draw_cmds.push_back({t, cur_layer, cur_layer_seq++, off, cnt});
+        };
+    }
 
     auto close_layer = [&]() {
         // Flush in-progress paths before snapshotting layer ranges
@@ -298,6 +324,7 @@ GcodeData load_gcode(const char* path) {
                 d.groups[i].layer_ranges.push_back({cur_layer, start, end - start});
             layer_idx_start[i] = end;
         }
+        cur_layer_seq = 0;  // reset for next layer
     };
 
     std::string line;
@@ -398,6 +425,7 @@ GcodeData load_gcode(const char* path) {
 
     close_layer();  // flush last layer
     if (d.layer_min == INT_MAX) { d.layer_min = 0; d.layer_max = 0; }
+    for (auto& grp : d.groups) grp.on_flush = nullptr;
     return d;
 }
 
@@ -518,6 +546,8 @@ struct App {
     int    W = 1400, H = 900;
     int    show_layer_min = 0, show_layer_max = 0;
     int    total_layer_min = 0, total_layer_max = 0;
+    int    show_seq = -1;   // -1 = show all; used only when single layer selected
+    int    seq_layer = INT_MIN; // which layer show_seq is tracking (for reset on change)
 } g;
 
 void cb_mouse(GLFWwindow* w, int btn, int act, int) {
@@ -591,6 +621,10 @@ int main(int argc, char** argv) {
             rg.layer_ranges.push_back({cur_layer, lr_start,
                                        (uint32_t)rg.idx.size() - lr_start});
     }
+
+    // Build per-layer sequence counts for the playback slider
+    for (auto& cmd : gcode.draw_cmds)
+        gcode.layer_seq_count[cmd.layer] = std::max(gcode.layer_seq_count[cmd.layer], cmd.seq + 1);
 
     if (!glfwInit()) { std::cerr << "glfwInit failed\n"; return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -702,12 +736,56 @@ int main(int argc, char** argv) {
             1.f,
             g.total_layer_min, g.total_layer_max,
             "Min: %d", "Max: %d");
-        if (ImGui::SmallButton("All")) {
+
+        // Single-layer row: [◄] [typed input] [►]  [All]
+        float fh = ImGui::GetFrameHeight();
+        float sp = ImGui::GetStyle().ItemSpacing.x;
+        float all_w = ImGui::CalcTextSize("All").x + ImGui::GetStyle().FramePadding.x * 2;
+        if (ImGui::ArrowButton("##lprev", ImGuiDir_Left)) {
+            int v = std::max(g.total_layer_min, g.show_layer_min - 1);
+            g.show_layer_min = g.show_layer_max = v;
+        }
+        ImGui::SameLine(0, 2);
+        ImGui::SetNextItemWidth(-(fh + 2 + sp + all_w + sp));
+        int snap = g.show_layer_min;
+        if (ImGui::InputInt("##lsnap", &snap, 0, 0)) {
+            snap = std::max(g.total_layer_min, std::min(g.total_layer_max, snap));
+            g.show_layer_min = g.show_layer_max = snap;
+        }
+        ImGui::SameLine(0, 2);
+        if (ImGui::ArrowButton("##lnext", ImGuiDir_Right)) {
+            int v = std::min(g.total_layer_max, g.show_layer_max + 1);
+            g.show_layer_min = g.show_layer_max = v;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("All")) {
             g.show_layer_min = g.total_layer_min;
             g.show_layer_max = g.total_layer_max;
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%d – %d)", g.total_layer_min, g.total_layer_max);
+        ImGui::TextDisabled("range %d – %d", g.total_layer_min, g.total_layer_max);
+
+        // Playback slider — always shown; active only on a single layer
+        ImGui::Separator();
+        ImGui::TextUnformatted("Playback");
+        bool single_layer = (g.show_layer_min == g.show_layer_max);
+        if (single_layer) {
+            int lyr = g.show_layer_min;
+            int total_seq = gcode.layer_seq_count.count(lyr) ? gcode.layer_seq_count.at(lyr) : 0;
+            if (lyr != g.seq_layer) {   // reset when layer changes
+                g.seq_layer = lyr;
+                g.show_seq  = total_seq - 1;
+            }
+            g.show_seq = std::max(0, std::min(g.show_seq, total_seq - 1));
+            float btn_w = ImGui::CalcTextSize("End").x + ImGui::GetStyle().FramePadding.x * 2;
+            ImGui::SetNextItemWidth(-(btn_w + ImGui::GetStyle().ItemSpacing.x));
+            ImGui::SliderInt("##seq", &g.show_seq, 0, std::max(0, total_seq - 1), "Path %d");
+            ImGui::SameLine();
+            if (ImGui::Button("End")) g.show_seq = total_seq - 1;
+        } else {
+            g.seq_layer = INT_MIN;
+            g.show_seq  = -1;
+            ImGui::TextDisabled("(select a single layer)");
+        }
 
         ImGui::Separator();
         ImGui::TextUnformatted("Line types");
@@ -753,26 +831,69 @@ int main(int argc, char** argv) {
         glBindVertexArray(0);
 
         // Opaque passes first, then transparent (travel etc.)
+        bool seq_mode = (g.show_layer_min == g.show_layer_max && g.show_seq >= 0);
         for (int pass = 0; pass < 2; ++pass) {
-            for (int i = 0; i < ST_COUNT; ++i) {
-                bool transparent = (kAlpha[i] < 1.0f);
-                if (pass == 0 &&  transparent) continue;
-                if (pass == 1 && !transparent) continue;
-                if (!g.visible[i]) continue;
-                auto& grp = gcode.groups[i];
-                if (!grp.vao) continue;
-
-                if (transparent) glDepthMask(GL_FALSE);
-                glUniform4f(col_loc,
-                    kColors[i][0], kColors[i][1], kColors[i][2], kAlpha[i]);
-                glBindVertexArray(grp.vao);
-                for (auto& lr : grp.layer_ranges) {
-                    if (lr.layer_num < g.show_layer_min || lr.layer_num > g.show_layer_max) continue;
-                    glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
-                                   (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+            if (seq_mode) {
+                // Sequential playback: iterate draw_cmds in order, stop at show_seq
+                GLuint bound_vao = 0;
+                int    bound_i   = -1;
+                for (auto& cmd : gcode.draw_cmds) {
+                    if (cmd.layer != g.show_layer_min) continue;
+                    if (cmd.seq > g.show_seq) continue;
+                    if (!g.visible[cmd.type]) continue;
+                    bool transparent = (kAlpha[cmd.type] < 1.0f);
+                    if (pass == 0 &&  transparent) continue;
+                    if (pass == 1 && !transparent) continue;
+                    auto& grp = gcode.groups[cmd.type];
+                    if (!grp.vao) continue;
+                    if (pass == 1) glDepthMask(GL_FALSE);
+                    if ((int)cmd.type != bound_i) {
+                        glUniform4f(col_loc, kColors[cmd.type][0], kColors[cmd.type][1],
+                                    kColors[cmd.type][2], kAlpha[cmd.type]);
+                        bound_i = (int)cmd.type;
+                    }
+                    if (grp.vao != bound_vao) { glBindVertexArray(grp.vao); bound_vao = grp.vao; }
+                    glDrawElements(GL_TRIANGLES, (GLsizei)cmd.idx_count, GL_UNSIGNED_INT,
+                                   (void*)(uintptr_t)(cmd.idx_offset * sizeof(uint32_t)));
+                    if (pass == 1) glDepthMask(GL_TRUE);
                 }
-                glBindVertexArray(0);
-                if (transparent) glDepthMask(GL_TRUE);
+                if (bound_vao) glBindVertexArray(0);
+
+                // Retraction markers for this layer (not part of draw_cmds)
+                if (pass == 0 && g.visible[ST_RETRACT]) {
+                    auto& rg = gcode.groups[ST_RETRACT];
+                    if (rg.vao) {
+                        glUniform4f(col_loc, kColors[ST_RETRACT][0], kColors[ST_RETRACT][1],
+                                    kColors[ST_RETRACT][2], kAlpha[ST_RETRACT]);
+                        glBindVertexArray(rg.vao);
+                        for (auto& lr : rg.layer_ranges) {
+                            if (lr.layer_num != g.show_layer_min) continue;
+                            glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
+                                           (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+                        }
+                        glBindVertexArray(0);
+                    }
+                }
+            } else {
+                // Normal mode: draw by layer range
+                for (int i = 0; i < ST_COUNT; ++i) {
+                    bool transparent = (kAlpha[i] < 1.0f);
+                    if (pass == 0 &&  transparent) continue;
+                    if (pass == 1 && !transparent) continue;
+                    if (!g.visible[i]) continue;
+                    auto& grp = gcode.groups[i];
+                    if (!grp.vao) continue;
+                    if (transparent) glDepthMask(GL_FALSE);
+                    glUniform4f(col_loc, kColors[i][0], kColors[i][1], kColors[i][2], kAlpha[i]);
+                    glBindVertexArray(grp.vao);
+                    for (auto& lr : grp.layer_ranges) {
+                        if (lr.layer_num < g.show_layer_min || lr.layer_num > g.show_layer_max) continue;
+                        glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
+                                       (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+                    }
+                    glBindVertexArray(0);
+                    if (transparent) glDepthMask(GL_TRUE);
+                }
             }
         }
 
