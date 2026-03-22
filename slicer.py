@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 import time
 import math
 from vispy.scene import visuals
-from togcode import shapely_to_paths
+from togcode import shapely_to_paths, optimize_path_order
 from plotutil import set_axes_equal
 
 from vispy import scene
@@ -274,6 +274,44 @@ def clean_support_region(geom_theta_z, r_base, min_area_mm2, merge_gap_mm):
     return shapely.affinity.scale(metric, xfact=1.0 / r_base, yfact=1.0, origin=(0, 0))
 
 
+
+def stitch_radial_seam(segments, period=2*np.pi, tol=1e-9):
+    """
+    Merge radial (constant-z) infill segments split at the theta=0 seam.
+
+    A radial line [0, 2pi] intersecting a seam-crossing polygon returns two
+    pieces: one ending at theta~2pi and one starting at theta~0 (physically
+    adjacent). Shift the theta=0 piece by +period so endpoints align, then
+    linemerge into one continuous LineString.
+    """
+    lines_in = [g for g in segments
+                if isinstance(g, shapely.geometry.LineString) and not g.is_empty]
+    if len(lines_in) <= 1:
+        return lines_in
+
+    from shapely.ops import linemerge as _lm
+    left, right, other = [], [], []
+    for ln in lines_in:
+        coords = np.array(ln.coords)
+        if np.min(coords[:, 0]) < tol:
+            shifted = coords.copy()
+            shifted[:, 0] += period
+            left.append(shapely.geometry.LineString(shifted))
+        elif np.max(coords[:, 0]) > period - tol:
+            right.append(ln)
+        else:
+            other.append(ln)
+
+    if not left:
+        return lines_in
+
+    to_merge = [l for l in right + left if not l.is_empty]
+    merged = _lm(shapely.geometry.MultiLineString(to_merge))
+    if isinstance(merged, shapely.geometry.LineString):
+        return [merged] + other
+    return list(merged.geoms) + other
+
+
 def fold_to_canonical(geom, clip_box, period=2 * np.pi):
     """Fold (θ,z)-space geometry into [0, 2π] by unioning ±period shifted copies, then clipping."""
     if geom is None or geom.is_empty:
@@ -321,11 +359,16 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
             _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
 
-        # Radial lines (constant z, varying θ)
+        # Radial lines (constant z, varying θ) — stitch seam-split arcs
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
             ls = shapely.LineString([[0, z], [2 * np.pi, z]])
-            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+            inter = shapely.intersection(ls, support_geom)
+            if hasattr(inter, 'geoms'):
+                for seg in stitch_radial_seam(inter.geoms):
+                    _collect_lines(seg, result, min_length)
+            else:
+                _collect_lines(inter, result, min_length)
     else:
         spacing = slicing_params["support_body_spacing"]
         thetas = np.arange(0, 2 * np.pi, spacing / r_base)
@@ -335,11 +378,16 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
             _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
 
-        # Radial lines (constant z, varying θ)
+        # Radial lines (constant z, varying θ) — stitch seam-split arcs
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
             ls = shapely.LineString([[0, z], [2 * np.pi, z]])
-            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+            inter = shapely.intersection(ls, support_geom)
+            if hasattr(inter, 'geoms'):
+                for seg in stitch_radial_seam(inter.geoms):
+                    _collect_lines(seg, result, min_length)
+            else:
+                _collect_lines(inter, result, min_length)
 
     return result
 
@@ -446,11 +494,17 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
             geoms = inter.geoms
 
         if geoms is not None:
-            # Multiple disjoint segments → partial crossings (radial_infill).
-            for line_segment in geoms:
+            stitched = stitch_radial_seam(geoms)
+            if len(stitched) == 1:
+                # Seam-crossing arc stitched into one segment → fully radial.
                 if plot_infill:
-                    plot_line(do_transform(line_segment), ax=ax, color="orange", add_points=False)
-                radial_infill.append(line_segment)
+                    plot_line(do_transform(stitched[0]), ax=ax, color="red", add_points=False)
+                fully_radial_infill.append(stitched[0])
+            else:
+                for line_segment in stitched:
+                    if plot_infill:
+                        plot_line(do_transform(line_segment), ax=ax, color="orange", add_points=False)
+                    radial_infill.append(line_segment)
         else:
             if type(inter) == shapely.geometry.multipoint.MultiPoint:
                 # Degenerate: line only grazed polygon vertices — skip, just log.
@@ -646,11 +700,11 @@ slicing_params = {
     "wall_count": 3,
     "feed_mm_per_min" : 2400,
     "travel_mm_per_min" : 2400,
-    "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
+    "support_interface_spacing": 2,  # mm — grid spacing for top/bottom surfaces of support
     "support_body_spacing": 2,       # mm — axial-line spacing for support interior
-    "support_min_area": 4.0,         # mm² — inflate overhang patches below this area to at least this size
+    "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
-    "support_taper_per_layer_mm": -0.05,  # mm — how much the support footprint shrinks per layer going inward
+    "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
     "support_xy_distance_mm": 0.3,   # mm — lateral gap between support and model walls
     "retract_mm": 1.0,               # mm — retraction distance on travel moves
     "retract_speed_mm_per_min": 1800, # mm/min — retraction speed (30 mm/s)
@@ -658,15 +712,7 @@ slicing_params = {
     "first_layer_speed_factor": 0.5, # fraction of feed/travel speeds for the first model layer
     "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
 }
-printer_params = {
-    "bed_radius": 15.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
-    "max_radius": 25.0,    # mm — maximum printable radius; slicing stops here
-    "axial_length": 150.0, # mm — printable length along the cylinder axis
-    "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
-    "hotend_temp": 205,    # °C — PLA
-    "min_x_pos": 50.0,    # mm — X coordinate where the printable bed begins (prime line here)
-    "min_x_margin": 5.0,  # mm — gap between bed start and model start
-}
+
 printer_params = {
     "bed_radius": 60.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
     "max_radius": 160.0,    # mm — maximum printable radius; slicing stops here
@@ -1124,10 +1170,9 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
         f.write(f"G0 Z{r - _bed_r:.4f}\n")
-        gcode_paths = shapely_to_paths(support_infill, r)
+        gcode_paths = [p for p in shapely_to_paths(support_infill, r) if p is not None]
+        gcode_paths = optimize_path_order(gcode_paths, last_pos)
         for path in gcode_paths:
-            if path is None:
-                continue
             f.write(";TYPE:SUPPORT\n")
             g, last_pos, last_e = path.to_gcode(slicing_params, last_pos, last_e)
             f.write(g)
@@ -1354,9 +1399,9 @@ for i in sorted(layer_data.keys()):
                 gcode_paths = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
             else:
                 gcode_paths = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
+            gcode_paths = [p for p in gcode_paths if p is not None]
+            gcode_paths = optimize_path_order(gcode_paths, last_pos)
             for path in gcode_paths:
-                if path is None:
-                    continue
                 f.write(f";TYPE:{section_name}\n")
                 g,last_pos,last_e = path.to_gcode(_layer_params,last_pos,last_e)
                 f.write(g)

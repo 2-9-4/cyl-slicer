@@ -219,6 +219,73 @@ class PathObject:
         pts_3d = cylinder_to_cartesian(pt[:, 0], pt[:, 1], self.radius)
         return pts_3d
         
+def _travel_dist(radius, x1, t1_canon, x2, t2_canon):
+    """Shortest-arc travel distance between two canonical (θ, x) positions."""
+    dt = ((t2_canon - t1_canon) + np.pi) % (2 * np.pi) - np.pi
+    return ((x2 - x1) ** 2 + (dt * radius) ** 2) ** 0.5
+
+
+def optimize_path_order(paths: List[PathObject], current_pos) -> List[PathObject]:
+    """Greedy nearest-neighbor reordering to minimize travel distance within a section.
+
+    current_pos is (accumulated_theta_radians, x_mm) — the printer's position
+    before this section starts.  Open paths may be traversed in either
+    direction; closed paths are left in their original orientation.
+    """
+    if len(paths) <= 1:
+        return paths
+
+    remaining = list(range(len(paths)))
+    result = []
+    canon_theta = current_pos[0] % (2 * np.pi)
+    x = current_pos[1]
+
+    while remaining:
+        best_idx = None
+        best_dist = float("inf")
+        best_reversed = False
+
+        for idx in remaining:
+            path = paths[idx]
+            if not path.points:
+                continue
+            pts = np.asarray(path.points)
+            s = pts[0]   # (theta, x)
+            e = pts[-1]  # (theta, x)
+            r = path.radius
+
+            d_start = _travel_dist(r, x, canon_theta, s[1], s[0] % (2 * np.pi))
+            if path.closed:
+                d, rev = d_start, False
+            else:
+                d_end = _travel_dist(r, x, canon_theta, e[1], e[0] % (2 * np.pi))
+                if d_end < d_start:
+                    d, rev = d_end, True
+                else:
+                    d, rev = d_start, False
+
+            if d < best_dist:
+                best_dist = d
+                best_idx = idx
+                best_reversed = rev
+
+        if best_idx is None:
+            for idx in remaining:
+                result.append(paths[idx])
+            break
+
+        remaining.remove(best_idx)
+        result.append(paths[best_idx])
+
+        # Advance position to the endpoint we'll finish at.
+        pts = np.asarray(paths[best_idx].points)
+        end_pt = pts[0] if best_reversed else pts[-1]
+        canon_theta = end_pt[0] % (2 * np.pi)
+        x = end_pt[1]
+
+    return result
+
+
 def shapely_to_paths(geom, radius, max_seg_len=0.5) -> List[PathObject]:
     """Convert a shapely geometry to a list of PathObjects (densified)."""
 
