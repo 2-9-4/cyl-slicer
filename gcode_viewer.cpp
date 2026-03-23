@@ -138,75 +138,21 @@ static void build_tube(
                                    v3norm(v3sub(path[i+1], path[i]))));
     }
 
-    // Compute average tangent to determine dominant path direction
-    Vec3 avg_tang = {0, 0, 0};
-    for (int i = 0; i < N; ++i) {
-        avg_tang = v3add(avg_tang, tang[i]);
-    }
-    avg_tang = v3norm(avg_tang);
-
-    // Determine if path is primarily axial (along X) or circumferential
-    bool primarily_axial = fabsf(avg_tang.x) > 0.7f;
-
     // Cross-section (4 corners + r/s axes) at each vertex
     struct XS { Vec3 c[4]; Vec3 r, s; };
     std::vector<XS> xs(N);
 
-    // For circumferential paths, s stays constant (along cylinder axis)
-    // For axial paths, we use parallel transport to maintain consistent orientation
-    Vec3 fixed_s;  // Used for circumferential paths
-    if (!primarily_axial) {
-        // s = X-axis projected perpendicular to average tangent
-        Vec3 axis = {1, 0, 0};
-        fixed_s.x = axis.x - v3dot(axis, avg_tang) * avg_tang.x;
-        fixed_s.y = axis.y - v3dot(axis, avg_tang) * avg_tang.y;
-        fixed_s.z = axis.z - v3dot(axis, avg_tang) * avg_tang.z;
-        float len = sqrtf(v3dot(fixed_s, fixed_s));
-        if (len > 0.01f) {
-            fixed_s.x /= len; fixed_s.y /= len; fixed_s.z /= len;
-        } else {
-            fixed_s = v3norm(v3cross(avg_tang, radial_dir(path[0])));
-        }
-    }
-
-    // Initialize first cross-section
-    {
-        Vec3 r = radial_dir(path[0]);
-        Vec3 s = primarily_axial ? v3norm(v3cross(tang[0], r)) : fixed_s;
-        if (v3dot(s, s) < 0.01f) {
-            Vec3 up = primarily_axial ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
-            s = v3norm(v3cross(tang[0], up));
-        }
-        xs[0].r = r; xs[0].s = s;
-    }
-
-    // Propagate cross-section
-    for (int i = 1; i < N; ++i) {
+    // s = cross(r, tang): always perpendicular to both radial and path direction.
+    // For circumferential paths: cross(radial, circumferential) = axial  ✓
+    // For axial paths:           cross(radial, axial)           = circumferential ✓
+    // No path-type classification needed.
+    for (int i = 0; i < N; ++i) {
         Vec3 r = radial_dir(path[i]);
-        Vec3 s;
-        
-        if (primarily_axial) {
-            // Parallel transport for axial paths
-            s = xs[i-1].s;
-            float dot_ts = v3dot(s, tang[i]);
-            s.x -= dot_ts * tang[i].x;
-            s.y -= dot_ts * tang[i].y;
-            s.z -= dot_ts * tang[i].z;
-            float s_len = sqrtf(v3dot(s, s));
-            if (s_len > 0.01f) {
-                s.x /= s_len; s.y /= s_len; s.z /= s_len;
-            } else {
-                s = v3norm(v3cross(tang[i], r));
-                if (v3dot(s, s) < 0.01f) {
-                    Vec3 up = {0, 1, 0};
-                    s = v3norm(v3cross(tang[i], up));
-                }
-            }
-        } else {
-            // Fixed s direction for circumferential paths
-            s = fixed_s;
+        Vec3 s = v3norm(v3cross(r, tang[i]));
+        if (v3dot(s, s) < 0.01f) {
+            // Degenerate: tang parallel to r — fall back to axial direction
+            s = v3norm(v3cross(r, Vec3{1, 0, 0}));
         }
-
         xs[i].r = r; xs[i].s = s;
     }
 
