@@ -138,24 +138,85 @@ static void build_tube(
                                    v3norm(v3sub(path[i+1], path[i]))));
     }
 
+    // Compute average tangent to determine dominant path direction
+    Vec3 avg_tang = {0, 0, 0};
+    for (int i = 0; i < N; ++i) {
+        avg_tang = v3add(avg_tang, tang[i]);
+    }
+    avg_tang = v3norm(avg_tang);
+
+    // Determine if path is primarily axial (along X) or circumferential
+    bool primarily_axial = fabsf(avg_tang.x) > 0.7f;
+
     // Cross-section (4 corners + r/s axes) at each vertex
     struct XS { Vec3 c[4]; Vec3 r, s; };
     std::vector<XS> xs(N);
 
-    for (int i = 0; i < N; ++i) {
-        Vec3 r = radial_dir(path[i]);
-        Vec3 s = v3norm(v3cross(tang[i], r));
-        // Fallback when tang ≈ radial (degenerate)
-        if (v3dot(s, s) < 0.01f) {
-            Vec3 up = {1, 0, 0};
-            s = v3norm(v3cross(tang[i], up));
+    // For circumferential paths, s stays constant (along cylinder axis)
+    // For axial paths, we use parallel transport to maintain consistent orientation
+    Vec3 fixed_s;  // Used for circumferential paths
+    if (!primarily_axial) {
+        // s = X-axis projected perpendicular to average tangent
+        Vec3 axis = {1, 0, 0};
+        fixed_s.x = axis.x - v3dot(axis, avg_tang) * avg_tang.x;
+        fixed_s.y = axis.y - v3dot(axis, avg_tang) * avg_tang.y;
+        fixed_s.z = axis.z - v3dot(axis, avg_tang) * avg_tang.z;
+        float len = sqrtf(v3dot(fixed_s, fixed_s));
+        if (len > 0.01f) {
+            fixed_s.x /= len; fixed_s.y /= len; fixed_s.z /= len;
+        } else {
+            fixed_s = v3norm(v3cross(avg_tang, radial_dir(path[0])));
         }
+    }
+
+    // Initialize first cross-section
+    {
+        Vec3 r = radial_dir(path[0]);
+        Vec3 s = primarily_axial ? v3norm(v3cross(tang[0], r)) : fixed_s;
+        if (v3dot(s, s) < 0.01f) {
+            Vec3 up = primarily_axial ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+            s = v3norm(v3cross(tang[0], up));
+        }
+        xs[0].r = r; xs[0].s = s;
+    }
+
+    // Propagate cross-section
+    for (int i = 1; i < N; ++i) {
+        Vec3 r = radial_dir(path[i]);
+        Vec3 s;
+        
+        if (primarily_axial) {
+            // Parallel transport for axial paths
+            s = xs[i-1].s;
+            float dot_ts = v3dot(s, tang[i]);
+            s.x -= dot_ts * tang[i].x;
+            s.y -= dot_ts * tang[i].y;
+            s.z -= dot_ts * tang[i].z;
+            float s_len = sqrtf(v3dot(s, s));
+            if (s_len > 0.01f) {
+                s.x /= s_len; s.y /= s_len; s.z /= s_len;
+            } else {
+                s = v3norm(v3cross(tang[i], r));
+                if (v3dot(s, s) < 0.01f) {
+                    Vec3 up = {0, 1, 0};
+                    s = v3norm(v3cross(tang[i], up));
+                }
+            }
+        } else {
+            // Fixed s direction for circumferential paths
+            s = fixed_s;
+        }
+
         xs[i].r = r; xs[i].s = s;
+    }
+
+    // Compute corners for each cross-section
+    for (int i = 0; i < N; ++i) {
         Vec3 p = path[i];
-        xs[i].c[0] = {p.x + hh*r.x + hw*s.x, p.y + hh*r.y + hw*s.y, p.z + hh*r.z + hw*s.z};
-        xs[i].c[1] = {p.x + hh*r.x - hw*s.x, p.y + hh*r.y - hw*s.y, p.z + hh*r.z - hw*s.z};
-        xs[i].c[2] = {p.x - hh*r.x - hw*s.x, p.y - hh*r.y - hw*s.y, p.z - hh*r.z - hw*s.z};
-        xs[i].c[3] = {p.x - hh*r.x + hw*s.x, p.y - hh*r.y + hw*s.y, p.z - hh*r.z + hw*s.z};
+        xs[i].c[0] = {p.x + hh*xs[i].r.x + hw*xs[i].s.x, p.y + hh*xs[i].r.y + hw*xs[i].s.y, p.z + hh*xs[i].r.z + hw*xs[i].s.z};
+        xs[i].c[1] = {p.x + hh*xs[i].r.x - hw*xs[i].s.x, p.y + hh*xs[i].r.y - hw*xs[i].s.y, p.z + hh*xs[i].r.z - hw*xs[i].s.z};
+        xs[i].c[2] = {p.x - hh*xs[i].r.x - hw*xs[i].s.x, p.y - hh*xs[i].r.y - hw*xs[i].s.y, p.z - hh*xs[i].r.z - hw*xs[i].s.z};
+        xs[i].c[3] = {p.x - hh*xs[i].r.x + hw*xs[i].s.x, p.y - hh*xs[i].r.y + hw*xs[i].s.y, p.z - hh*xs[i].r.z + hw*xs[i].s.z};
     }
 
     // Emit a quad (a,b,c,d in CCW order) with the given face normal
@@ -400,6 +461,33 @@ GcodeData load_gcode(const char* path) {
                 g.add_pt(nv);
             }
         } else {
+            // Compute angular delta with wrap-around handling
+            float raw_delta_t = nt - cur_t;
+            // For tessellation, we want the actual angular travel, not shortest path
+            // A move from Y360 to Y720 is a full 360° circle, not 0°
+            // But we still need to handle cases where the slicer uses Y0 vs Y360 interchangeably
+            
+            // Check if this is a "large" angular move (> 180°) - likely intentional full/partial circle
+            bool large_angular = fabsf(raw_delta_t) > 180.f;
+            
+            // Compute Cartesian positions
+            Vec3 cur_pos = cyl_to_cart(cur_t, cur_x, radius);
+            Vec3 new_pos = cyl_to_cart(nt, nx, radius);
+            float dx = new_pos.x - cur_pos.x;
+            float dy = new_pos.y - cur_pos.y;
+            float dz = new_pos.z - cur_pos.z;
+            float dist_sq = dx*dx + dy*dy + dz*dz;
+            
+            // Skip only truly degenerate segments (no axial AND no significant angular motion)
+            float axial_dist_sq = (nx - cur_x) * (nx - cur_x);
+            bool has_axial_motion = axial_dist_sq > 1e-6f;
+            bool has_angular_motion = large_angular || (dist_sq > 1e-6f && fabsf(raw_delta_t) > 0.1f);
+            
+            if (!has_axial_motion && !has_angular_motion) {
+                cur_x = nx; cur_t = nt;
+                continue;
+            }
+
             if (!in_ext || sec_type != ext_type) {
                 // Type change: end previous path in old group
                 if (in_ext) d.groups[ext_type].flush_path();
@@ -407,14 +495,25 @@ GcodeData load_gcode(const char* path) {
                 ext_type = sec_type;
                 auto& g = d.groups[ext_type];
                 // Seed new path with current position
-                if (has_pos) g.add_pt(cyl_to_cart(cur_t, cur_x, radius));
+                if (has_pos) g.add_pt(cur_pos);
             }
-            // Tessellate large angular spans so arcs render correctly
-            float delta_t = nt - cur_t;
+            
+            // Tessellate angular spans
+            float delta_t = raw_delta_t;
+            if (!large_angular) {
+                // For small moves, use shortest path across 0/360 boundary
+                if (delta_t > 180.f)      delta_t -= 360.f;
+                else if (delta_t < -180.f) delta_t += 360.f;
+            }
+            // For large angular moves (>180°), use the raw delta_t as-is (full circle, etc.)
+            
             int steps = std::max(1, (int)(std::abs(delta_t) / 2.f));
             for (int s = 1; s <= steps; ++s) {
                 float frac = (float)s / (float)steps;
                 float it = cur_t + delta_t * frac;
+                // Keep interpolated angle in [0, 360) for consistent Cartesian conversion
+                it = std::fmod(it, 360.f);
+                if (it < 0.f) it += 360.f;
                 float ix = cur_x + (nx - cur_x) * frac;
                 d.groups[ext_type].add_pt(cyl_to_cart(it, ix, radius));
             }
