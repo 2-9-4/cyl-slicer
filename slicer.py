@@ -1220,10 +1220,15 @@ for i in reversed(sorted_layer_keys):
     current_ext = layer_data[i]["external_peris"]
     current_r   = layer_data[i]["radius"]
 
-    # Ground: subtract model, expanded by xy gap so support doesn't press against walls
+    # Ground: subtract model, expanded by xy gap so support doesn't press against walls.
+    # xy_dist is a lateral (arc-length) gap only — clamp to the model's original Z bounds
+    # so the buffer doesn't also push support away from the cone's top/bottom surfaces in
+    # Z, which would create a spurious vertical gap at the narrow end of tapered geometry.
     if xy_dist_mm > 0 and not current_ext.is_empty:
         metric_ext     = shapely.affinity.scale(current_ext, xfact=current_r, yfact=1.0, origin=(0, 0))
         metric_exp     = metric_ext.buffer(xy_dist_mm)
+        _zb            = metric_ext.bounds          # (xmin, z_min, xmax, z_max)
+        metric_exp     = metric_exp.intersection(shapely.geometry.box(-1e9, _zb[1], 1e9, _zb[3]))
         model_expanded = shapely.affinity.scale(metric_exp, xfact=1.0 / current_r, yfact=1.0, origin=(0, 0))
         support_needed = support_needed.difference(model_expanded)
     else:
