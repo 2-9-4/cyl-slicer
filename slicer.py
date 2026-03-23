@@ -384,17 +384,16 @@ def _make_sine_wave_ls(theta_center, z_min, z_max, amplitude_rad, period_mm, pts
     return shapely.LineString(np.column_stack([thetas, zs]))
 
 
-def do_support_infill(support_geom, slicing_params, current_r, is_interface=False):
+def do_support_infill(support_geom, slicing_params, current_r, direction="body"):
     """
     Generate support infill in (θ,z) space.
 
-    Interface layers (top/bottom of a support column):
-        axial + radial grid at support_interface_spacing.
-    Body layers, mode "grid":
-        axial + radial grid at support_body_spacing.
-    Body layers, mode "sine":
-        parallel sine waves along z, spaced support_body_spacing apart in arc-length.
-        Amplitude and period controlled by support_sine_amplitude_mm / support_sine_period_mm.
+    direction="radial"  — radial lines only (constant z) at support_interface_spacing.
+    direction="axial"   — axial lines only (constant θ) at support_interface_spacing.
+    direction="body"    — full body pattern (sine or grid) at support_body_spacing.
+
+    Interface layers spread the grid over multiple layers by alternating direction
+    based on depth from the nearest model layer (depth 1 → radial, depth 2 → axial, …).
 
     Returns a list of Shapely LineStrings.
     """
@@ -413,17 +412,9 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
     # naturally short.  Only filter true zero-length degenerate geometry.
     min_length = 1e-6
 
-    if is_interface:
+    if direction == "radial":
         spacing = slicing_params["support_interface_spacing"]
-        _ts = spacing / r_base
-        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
-
-        # Axial lines (constant θ, varying z)
-        for theta in thetas:
-            ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
-            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
-
-        # Radial lines (constant z, varying θ) — stitch seam-split arcs
+        # Radial lines only (constant z, varying θ) — stitch seam-split arcs
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
             ls = shapely.LineString([[0, z], [2 * np.pi, z]])
@@ -433,7 +424,17 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
                     _collect_lines(seg, result, min_length)
             else:
                 _collect_lines(inter, result, min_length)
-    else:
+
+    elif direction == "axial":
+        spacing = slicing_params["support_interface_spacing"]
+        _ts = spacing / r_base
+        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
+        # Axial lines only (constant θ, varying z)
+        for theta in thetas:
+            ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
+            _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
+
+    else:  # "body"
         spacing = slicing_params["support_body_spacing"]
         _ts = spacing / r_base
         thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
@@ -826,7 +827,8 @@ slicing_params = {
     "support_infill_mode": "sine",   # "grid" or "sine"
     "support_sine_amplitude_mm": 2.0, # mm — sine wave half-amplitude (grid mode ignores this)
     "support_sine_period_mm": 8.0,   # mm — sine wave period along z (grid mode ignores this)
-    "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
+    "support_interface_spacing": 2,  # mm — line spacing for interface layers
+    "support_interface_layers": 2,   # number of layers at each end of a support column that use alternating interface pattern
     "support_body_spacing": 5,       # mm — line spacing for support interior (arc-length mm)
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
@@ -1319,21 +1321,21 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
     is_first = gap_layer_idx == 0
     is_last = gap_layer_idx == n_gap - 1
 
-    if n_gap <= 2:
-        # Very few gap layers — treat everything as interface
-        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=True)
-    elif is_last:
-        # Top of gap column: only the part under the model is interface
-        top_iface = gap_sup.intersection(first_model_ext) if not first_model_ext.is_empty else shapely.GeometryCollection()
-        body = gap_sup.difference(top_iface) if not top_iface.is_empty else gap_sup
-        support_infill = (
-            do_support_infill(top_iface, slicing_params, r, is_interface=True) +
-            do_support_infill(body, slicing_params, r, is_interface=False)
-        )
-    elif is_first:
-        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=True)
+    interface_n = slicing_params.get("support_interface_layers", 2)
+    # depth_from_bottom: 1-based distance from bed side (innermost = 1, printed first)
+    # depth_from_top:    1-based distance from model side (outermost = 1, printed last)
+    depth_from_bottom = gap_layer_idx + 1
+    depth_from_top    = n_gap - gap_layer_idx
+
+    if depth_from_top <= interface_n and depth_from_top <= depth_from_bottom:
+        # Top interface: depth 1 is outermost (printed last) — flip parity
+        direction = "axial" if depth_from_top % 2 == 1 else "radial"
+    elif depth_from_bottom <= interface_n:
+        # Bottom interface: depth 1 is innermost (printed first) — radial first
+        direction = "radial" if depth_from_bottom % 2 == 1 else "axial"
     else:
-        support_infill = do_support_infill(gap_sup, slicing_params, r, is_interface=False)
+        direction = "body"
+    support_infill = do_support_infill(gap_sup, slicing_params, r, direction=direction)
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
@@ -1399,29 +1401,42 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
     layer_data[i]["solid_infill"] += bottom_solid_infill
 
-    # Support infill: interface (top/bottom of column) gets a grid; body gets axial lines only.
+    # Support infill: interface layers (near model) alternate radial/axial direction across
+    # support_interface_layers shells; body layers use the body pattern.
     support_geom = layer_data[i].get("support", shapely.GeometryCollection())
     if not support_geom.is_empty:
-        # Top interface: support here that directly contacts model on the next (outer) layer
-        next_ext = layer_data.get(i + 1, {}).get("external_peris", shapely.GeometryCollection())
-        if not next_ext.is_empty:
-            top_interface = support_geom.intersection(fold_to_canonical(next_ext, theta_clip_box))
-        else:
-            top_interface = shapely.GeometryCollection()
-        # Bottom interface: support here that directly contacts model on the previous (inner) layer
-        prev_ext = layer_data.get(i - 1, {}).get("external_peris", shapely.GeometryCollection())
-        if not prev_ext.is_empty:
-            bottom_interface = support_geom.intersection(fold_to_canonical(prev_ext, theta_clip_box))
-        else:
-            bottom_interface = shapely.GeometryCollection()
+        interface_n = slicing_params.get("support_interface_layers", 2)
 
-        interface = top_interface.union(bottom_interface).intersection(theta_clip_box)
-        body = support_geom.difference(interface).intersection(theta_clip_box)
+        # Check distance to upper model boundary (i+d) and lower model boundary (i-d) separately.
+        # For bottom interface, depth 1 is the innermost layer (printed first) → radial.
+        # For top interface, depth 1 is the outermost layer (printed last) → parity is flipped
+        # so the first-printed layer is still radial.
+        def _iface_depth(delta_sign):
+            for d in range(1, interface_n + 1):
+                ext = layer_data.get(i + delta_sign * d, {}).get("external_peris", shapely.GeometryCollection())
+                if not ext.is_empty:
+                    candidate = support_geom.intersection(fold_to_canonical(ext, theta_clip_box))
+                    if not candidate.is_empty:
+                        return d
+            return None
 
-        layer_data[i]["support_infill"] = (
-            do_support_infill(interface, slicing_params, current_r, is_interface=True) +
-            do_support_infill(body,      slicing_params, current_r, is_interface=False)
-        )
+        top_depth = _iface_depth(+1)   # distance to model above (outward)
+        bot_depth = _iface_depth(-1)   # distance to model below (inward)
+
+        support_clipped = support_geom.intersection(theta_clip_box)
+
+        if top_depth is not None and (bot_depth is None or top_depth <= bot_depth):
+            # Top interface: depth 1 is outermost (printed last), so flip parity
+            # → odd depth = axial, even depth = radial (first-printed layer = radial)
+            direction = "axial" if top_depth % 2 == 1 else "radial"
+        elif bot_depth is not None:
+            # Bottom interface: depth 1 is innermost (printed first) → radial
+            direction = "radial" if bot_depth % 2 == 1 else "axial"
+        else:
+            direction = "body"
+
+        layer_data[i]["support_infill"] = do_support_infill(support_clipped, slicing_params, current_r, direction=direction)
+
         if plot_per_layer:
             plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
     else:
