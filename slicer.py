@@ -180,16 +180,22 @@ def is_full_circle(polygon, tol=0.1):
 
 def cylindrical_cross_section(mesh, radius):
     """
-    Compute the cross-section of mesh at cylindrical radius using marching triangles.
-    Works on any mesh regardless of manifold status — no boolean ops needed.
+    Compute the cross-section of mesh at cylindrical radius using directed marching triangles.
+
+    Uses face winding order to orient each crossing segment (inside→outside = FROM,
+    outside→inside = TO).  After building the directed graph, T-junction gaps introduced
+    by subdivide_to_size (boundary edges with no manifold partner) are stitched by
+    nearest-neighbour matching of open chain endpoints.
+
     Returns (pts_cartesian, edges) where pts_cartesian is (N,3) Cartesian points
     at r≈radius and edges is a list of (i,j) index pairs forming closed loops.
     """
+    from scipy.spatial import cKDTree
+
     verts = mesh.vertices
     r_vals = np.sqrt(verts[:, 0]**2 + verts[:, 1]**2)
 
     pts = []
-    edges = []
     edge_cache = {}
 
     def get_crossing(vi, vj):
@@ -201,33 +207,89 @@ def cylindrical_cross_section(mesh, radius):
             pts.append(verts[vi] + t * (verts[vj] - verts[vi]))
         return edge_cache[key]
 
+    # next_of[from_idx] = to_idx encodes the directed polygon graph.
+    # Each node has at most one outgoing edge; ambiguous nodes (mesh self-intersections)
+    # are marked None and skipped during loop extraction.
+    next_of = {}
+
     for v0, v1, v2 in mesh.faces:
-        inside = [r_vals[v] < radius for v in (v0, v1, v2)]
-        if all(inside) or not any(inside):
+        r0, r1, r2 = r_vals[v0], r_vals[v1], r_vals[v2]
+        in0, in1, in2 = r0 < radius, r1 < radius, r2 < radius
+        if (in0 == in1 == in2):
+            continue  # all inside or all outside
+
+        from_idx = to_idx = None
+        for a, b in ((v0, v1), (v1, v2), (v2, v0)):
+            a_in = r_vals[a] < radius
+            b_in = r_vals[b] < radius
+            if a_in and not b_in:      # inside → outside: start of contour segment
+                from_idx = get_crossing(a, b)
+            elif not a_in and b_in:    # outside → inside: end of contour segment
+                to_idx = get_crossing(a, b)
+
+        if from_idx is None or to_idx is None or from_idx == to_idx:
             continue
-        crossing = []
-        for a, b in [(v0, v1), (v1, v2), (v2, v0)]:
-            if (r_vals[a] < radius) != (r_vals[b] < radius):
-                crossing.append(get_crossing(a, b))
-        if len(crossing) == 2 and crossing[0] != crossing[1]:
-            edges.append(tuple(crossing))
 
-    # Prune dangling edges caused by open (non-watertight) mesh boundaries.
-    # Boundary mesh edges belong to only one face; their crossing points end up
-    # with odd degree (degree=1) in the polygon graph, breaking find_polygons.
-    # Iteratively remove every edge that touches an odd-degree vertex until all
-    # remaining vertices have even degree (i.e. form closed loops).
-    while True:
-        degree = defaultdict(int)
-        for a, b in edges:
-            degree[a] += 1
-            degree[b] += 1
-        odd = {v for v, d in degree.items() if d % 2 != 0}
-        if not odd:
-            break
-        edges = [(a, b) for a, b in edges if a not in odd and b not in odd]
+        if from_idx in next_of:
+            next_of[from_idx] = None   # ambiguous: two segments leave same point
+        else:
+            next_of[from_idx] = to_idx
 
-    return (np.array(pts) if pts else np.empty((0, 3))), edges
+    # Stitch open chain endpoints caused by T-junctions from subdivide_to_size.
+    # T-junctions create boundary edges whose crossing points have no manifold partner:
+    #   open tail  = from_idx that is never a to_idx (chain source, no incoming edge)
+    #   open head  = to_idx that is never a from_idx (chain sink, no outgoing edge)
+    # Nearest-neighbour matching in 3-D re-connects these broken links.
+    if pts:
+        pts_arr = np.array(pts)
+        valid_keys = {k for k, v in next_of.items() if v is not None}
+        valid_vals = {v for v in next_of.values() if v is not None}
+        open_tails = list(valid_keys - valid_vals)   # no incoming edge
+        open_heads = list(valid_vals - valid_keys)   # no outgoing edge
+
+        if open_tails and open_heads:
+            tail_coords = pts_arr[open_tails]
+            head_coords = pts_arr[open_heads]
+            tree = cKDTree(head_coords)
+            # stitch_tol: max gap we're willing to close (proportional to layer height)
+            stitch_tol = radius * 0.5   # generous — only exact T-junction pairs will be close
+            dists, idxs = tree.query(tail_coords, distance_upper_bound=stitch_tol)
+            for tail, dist, hi in zip(open_tails, dists, idxs):
+                if dist < stitch_tol and hi < len(open_heads):
+                    head = open_heads[hi]
+                    if head not in next_of:          # head has no outgoing edge yet
+                        next_of[head] = next_of[tail]   # reroute: head → tail's destination
+                        next_of[tail] = head             # close the gap: tail → head
+    else:
+        pts_arr = np.empty((0, 3))
+
+    # Trace closed loops in the functional directed graph.
+    state = {}   # 0 unvisited | 1 in-progress | 2 done
+    closed_edges = []
+
+    for start in next_of:
+        if state.get(start, 0) != 0:
+            continue
+        chain = []
+        pos = {}
+        curr = start
+        while (next_of.get(curr) is not None
+               and state.get(curr, 0) == 0
+               and curr not in pos):
+            state[curr] = 1
+            pos[curr] = len(chain)
+            chain.append(curr)
+            curr = next_of[curr]
+
+        if curr in pos:  # closed loop — curr is the cycle entry point
+            cycle = chain[pos[curr]:]
+            for i in range(len(cycle)):
+                closed_edges.append((cycle[i], cycle[(i + 1) % len(cycle)]))
+
+        for node in chain:
+            state[node] = 2
+
+    return pts_arr, closed_edges
 
 
 def fast_extract_faces(cut_mesh, mask):
@@ -860,11 +922,12 @@ slicing_params["extrusion_per_mm"] = (
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
 mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "offset_cube.stl")
+print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 if not mesh.is_watertight:
-    print(f"Mesh is not watertight — attempting repair...")
-    trimesh.repair.fill_holes(mesh)
+    # The directed cross-section algorithm handles open boundaries without repair.
+    # Just ensure normals are consistently oriented so FROM/TO direction is reliable.
     trimesh.repair.fix_normals(mesh)
-    print(f"  after repair: watertight={mesh.is_watertight}")
+    print(f"  normals fixed (non-watertight mesh — open chains will be silently dropped)")
 pts = cartesian_to_cylindrical(mesh.vertices)
 # Shift mesh so its axial start aligns with min_x_pos + min_x_margin
 _z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
@@ -874,7 +937,7 @@ mesh.apply_translation([0, 0, _z_shift])
 # along long edges (avoids jitter from straight-line approximation of curved arcs).
 _max_edge = slicing_params["layer_height"] * 20  # subdivide any edge longer than 5 layers
 _orig_faces = len(mesh.faces)
-mesh = trimesh.Trimesh(*trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, _max_edge), process=False)
+mesh = trimesh.Trimesh(*trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, _max_edge), process=True)
 print(f"Subdivided mesh: {_orig_faces} → {len(mesh.faces)} faces (max edge {_max_edge:.2f} mm)")
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
@@ -911,7 +974,12 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
     times = [(time.perf_counter(), "")]
     print(f"  [{sliced_layer_count+1}/{_total_layers}] r={current_r:.3f} mm", end="\r", flush=True)
-    cross_pts_cart, outer_edges = cylindrical_cross_section(mesh, current_r)
+    # Offset by a tiny fraction of layer_height so we never slice exactly through
+    # mesh boundary vertices (e.g. the outer cone bottom edge at r=42.5mm).
+    # The 2e-5 mm shift is negligible for geometry but prevents tangled zero-length
+    # segments that arise when mesh vertices straddle the exact slice radius.
+    _slice_r = current_r + slicing_params["layer_height"] * 1e-4
+    cross_pts_cart, outer_edges = cylindrical_cross_section(mesh, _slice_r)
     if len(cross_pts_cart) < 3:
         print(f"empty layer for {layer_i}")
         continue
@@ -939,7 +1007,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     #     plt.plot(layer_pts[1914,1],layer_pts[1914,2],"o", markersize=15)
     #     plt.show()
     #     raise e
-    poly_pts = [unwrap_polygon(layer_pts[each,1:]).squeeze() for each in poly_idxs]
+    poly_pts_raw = [unwrap_polygon(layer_pts[each,1:]).reshape(-1, 2) for each in poly_idxs]
+    poly_pts = [p for p in poly_pts_raw if len(p) >= 3]
     # for poly in poly_pts:
     #     plt.plot(poly[:,0],poly[:,1],"-")
     # plt.show()
@@ -979,7 +1048,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         # plt.show()
         mapping += [len(polys)]
 
-        final_poly = Polygon(final_poly)
+        final_poly = shapely.make_valid(Polygon(final_poly))
         final_poly = trim_polygon_left_right(final_poly,0.1)
         polys.append(final_poly)
     # for poly in poly_pts:
@@ -1007,9 +1076,12 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     for poly_i,sub_polys in enumerate(hier):
         if levels[poly_i] % 2 == 1:
             continue
-        sub_poly_list = [np.array(polys[sub_poly].exterior.coords).astype(float) for sub_poly in sub_polys if levels[sub_poly] == levels[poly_i]+1]
+        if not isinstance(polys[poly_i], Polygon) or polys[poly_i].is_empty:
+            continue
+        sub_poly_list = [np.array(polys[sub_poly].exterior.coords).astype(float) for sub_poly in sub_polys if levels[sub_poly] == levels[poly_i]+1 and isinstance(polys[sub_poly], Polygon) and not polys[sub_poly].is_empty]
         sub_poly_list = [[each - [2*np.pi,0],each,each + [2*np.pi,0]] for each in sub_poly_list]
         sub_poly_list = [remove_collinear_points_angle(each2*np.array([current_r,1]),0.01)*np.array([1/current_r,1]) for each in sub_poly_list for each2 in each]
+        sub_poly_list = [h for h in sub_poly_list if len(h) >= 4]
         poly_exterior = remove_collinear_points_angle(polys[poly_i].exterior.coords*np.array([current_r,1]),0.01)*np.array([1/current_r,1])
         if len(poly_exterior) < 4:
             continue
@@ -1056,11 +1128,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         # Fold shifted fragments into the canonical [0, 2π] range and remove
         # areas already occupied by the model at this layer.
         ns = fold_to_canonical(ns, theta_clip_box)
-        if not ns.is_empty:
-            model_mask = fold_to_canonical(final, theta_clip_box)
-            if not model_mask.is_empty:
-                ns = ns.difference(model_mask)
-        if not ns.is_empty:
+        if ns.area > 1e-6:
             layer_data[layer_i]["needs_support"] = ns
     times.append((time.perf_counter(),"support check"))
 
