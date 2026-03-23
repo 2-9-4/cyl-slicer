@@ -717,17 +717,23 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         coords = np.array(ring.coords)
         raw_span = coords[:, 0].max() - coords[:, 0].min()
         if raw_span > 2 * math.pi - 0.5:
-            # Full-circle ring: the polygon spans more than one period (e.g. the
-            # triple-copy rectangle used for full-circle features).  np.unwrap
-            # would collapse the large θ jumps to near-zero.  Instead, clip to
-            # the canonical [0, 2π] window so the ring has real extent, then
-            # return those coords without unwrapping — to_gcode handles the ±2π
-            # steps via its own improved unwrap logic.
+            # Full-circle ring: spans more than one period.  Clip to [0, 2π],
+            # then emit only the arc segments (varying θ) as separate open
+            # LineStrings — skip the constant-θ seam edges so no extra material
+            # is deposited at the seam.  to_gcode handles the ±2π step in each
+            # arc via its improved unwrap logic.
             canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
             clipped = poly.intersection(canonical_clip)
             if clipped.is_empty or not isinstance(clipped, Polygon):
                 continue
-            coords = np.array(clipped.exterior.coords)
+            rc = np.array(clipped.exterior.coords)
+            for k in range(len(rc) - 1):
+                p0, p1 = rc[k], rc[k + 1]
+                dtheta = p1[0] - p0[0]
+                if abs(dtheta) > 0.1:          # arc segment (not a seam line)
+                    seg = [p1, p0] if dtheta < 0 else [p0, p1]  # always θ-increasing
+                    result.append(LineString(seg))
+            continue
         else:
             coords[:, 0] = np.unwrap(coords[:, 0])
         # Skip degenerate rings whose θ-extent is negligibly thin (e.g. a
