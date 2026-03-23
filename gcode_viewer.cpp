@@ -289,6 +289,69 @@ static void build_sphere_marker(
     }
 }
 
+// ── Cone/arrow marker (playback position indicator) ──────────────────────────
+
+static void build_cone_marker(
+    std::vector<Vert>&     verts,
+    std::vector<uint32_t>& idx,
+    Vec3 tip, Vec3 direction, float length, float radius)
+{
+    // Cone pointing in direction, with tip at 'tip'
+    Vec3 dir = v3norm(direction);
+    Vec3 base_center = {tip.x - dir.x * length, tip.y - dir.y * length, tip.z - dir.z * length};
+    
+    // Build orthonormal basis
+    Vec3 up = fabsf(dir.x) < 0.9f ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
+    Vec3 right = v3norm(v3cross(dir, up));
+    Vec3 fwd = v3norm(v3cross(right, dir));
+    
+    int slices = 16;
+    uint32_t base_idx = (uint32_t)verts.size();
+    
+    // Tip vertex
+    verts.push_back({tip.x, tip.y, tip.z, dir.x, dir.y, dir.z});
+    
+    // Base circle vertices
+    for (int i = 0; i <= slices; ++i) {
+        float angle = 2.f * (float)M_PI * i / slices;
+        float c = cosf(angle), s = sinf(angle);
+        Vec3 p = {
+            base_center.x + radius * (c * right.x + s * fwd.x),
+            base_center.y + radius * (c * right.y + s * fwd.y),
+            base_center.z + radius * (c * right.z + s * fwd.z)
+        };
+        Vec3 n = v3norm(v3sub(p, base_center));
+        verts.push_back({p.x, p.y, p.z, n.x, n.y, n.z});
+    }
+    
+    // Cone sides (triangles from tip to base edge)
+    for (int i = 0; i < slices; ++i) {
+        idx.push_back(base_idx);
+        idx.push_back(base_idx + 1 + i);
+        idx.push_back(base_idx + 2 + i);
+    }
+    
+    // Base cap (fan from base center)
+    uint32_t cap_base = (uint32_t)verts.size();
+    Vec3 cap_n = v3neg(dir);
+    verts.push_back({base_center.x, base_center.y, base_center.z, cap_n.x, cap_n.y, cap_n.z});
+    for (int i = 0; i <= slices; ++i) {
+        float angle = 2.f * (float)M_PI * i / slices;
+        float c = cosf(angle), s = sinf(angle);
+        Vec3 p = {
+            base_center.x + radius * (c * right.x + s * fwd.x),
+            base_center.y + radius * (c * right.y + s * fwd.y),
+            base_center.z + radius * (c * right.z + s * fwd.z)
+        };
+        verts.push_back({p.x, p.y, p.z, cap_n.x, cap_n.y, cap_n.z});
+    }
+    for (int i = 0; i < slices; ++i) {
+        idx.push_back(cap_base);
+        idx.push_back(cap_base + 2 + i);
+        idx.push_back(cap_base + 1 + i);
+    }
+}
+
 // ── Path group ────────────────────────────────────────────────────────────────
 
 struct LayerRange {
@@ -312,16 +375,17 @@ struct PathGroup {
 
     void add_pt(Vec3 p)  { cur_path.push_back(p); }
 
-    std::function<void(SType, uint32_t, uint32_t)> on_flush;
+    std::function<void(SType, uint32_t, uint32_t, Vec3)> on_flush;
 
     void flush_path() {
         uint32_t before = (uint32_t)idx.size();
+        Vec3 end_pos = cur_path.size() >= 1 ? cur_path.back() : Vec3{0,0,0};
         if (cur_path.size() >= 2)
             build_tube(verts, idx, cur_path, tube_lh, tube_lw);
         cur_path.clear();
         uint32_t after = (uint32_t)idx.size();
         if (after > before && on_flush)
-            on_flush(type, before, after - before);
+            on_flush(type, before, after - before, end_pos);
     }
 
     void break_path() { flush_path(); }
@@ -333,6 +397,7 @@ struct DrawCmd {
     int      seq;        // sequence within layer (0-based)
     uint32_t idx_offset;
     uint32_t idx_count;
+    Vec3     end_pos;    // end position of this path (for playback pointer)
 };
 
 struct GcodeData {
@@ -371,8 +436,8 @@ GcodeData load_gcode(const char* path) {
 
     // Record each flushed path as a DrawCmd ordered by sequence within its layer
     for (int i = 0; i < ST_COUNT; ++i) {
-        d.groups[i].on_flush = [&](SType t, uint32_t off, uint32_t cnt) {
-            d.draw_cmds.push_back({t, cur_layer, cur_layer_seq++, off, cnt});
+        d.groups[i].on_flush = [&](SType t, uint32_t off, uint32_t cnt, Vec3 end_pos) {
+            d.draw_cmds.push_back({t, cur_layer, cur_layer_seq++, off, cnt, end_pos});
         };
     }
 
@@ -647,8 +712,9 @@ struct App {
     int    W = 1400, H = 900;
     int    show_layer_min = 0, show_layer_max = 0;
     int    total_layer_min = 0, total_layer_max = 0;
-    int    show_seq = -1;   // -1 = show all; used only when single layer selected
-    int    seq_layer = INT_MIN; // which layer show_seq is tracking (for reset on change)
+    float  show_seq_float = -1.f;  // float for fine control
+    int    show_seq = -1;          // -1 = show all; used only when single layer selected
+    int    seq_layer = INT_MIN;    // which layer show_seq is tracking (for reset on change)
 } g;
 
 void cb_mouse(GLFWwindow* w, int btn, int act, int) {
@@ -879,11 +945,33 @@ int main(int argc, char** argv) {
                 g.show_seq  = total_seq - 1;
             }
             g.show_seq = std::max(0, std::min(g.show_seq, total_seq - 1));
+
+            // Display path counter
+            ImGui::Text("Path %d / %d", g.show_seq, total_seq);
+            
+            // Use float slider with power-law scaling for fine control on layers with many paths
+            float slider_max = 1000.f;
+            float power = 0.3f;  // < 1.0 gives more resolution at start
+
+            // Convert show_seq to slider value
+            float slider_val = total_seq > 1
+                ? powf((float)g.show_seq / (float)(total_seq - 1), power) * slider_max
+                : 0.f;
+            
             float btn_w = ImGui::CalcTextSize("End").x + ImGui::GetStyle().FramePadding.x * 2;
             ImGui::SetNextItemWidth(-(btn_w + ImGui::GetStyle().ItemSpacing.x));
-            ImGui::SliderInt("##seq", &g.show_seq, 0, std::max(0, total_seq - 1), "Path %d");
+            
+            if (ImGui::SliderFloat("##seq", &slider_val, 0.f, slider_max, "", 
+                                   ImGuiSliderFlags_NoInput)) {
+                // Convert slider value back to show_seq
+                float t = slider_val / slider_max;
+                g.show_seq = (int)(powf(t, 1.f / power) * (float)(total_seq - 1) + 0.5f);
+                g.show_seq = std::max(0, std::min(g.show_seq, total_seq - 1));
+            }
             ImGui::SameLine();
-            if (ImGui::Button("End")) g.show_seq = total_seq - 1;
+            if (ImGui::Button("End")) {
+                g.show_seq = total_seq - 1;
+            }
         } else {
             g.seq_layer = INT_MIN;
             g.show_seq  = -1;
@@ -999,6 +1087,59 @@ int main(int argc, char** argv) {
                     glBindVertexArray(0);
                     if (transparent) glDepthMask(GL_TRUE);
                 }
+            }
+        }
+
+        // Draw playback position pointer in sequential mode
+        if (seq_mode && g.visible[ST_RETRACT]) {
+            // Find the last drawn command to get the current position
+            Vec3 current_pos = {0, 0, 0};
+            bool found = false;
+            for (auto it = gcode.draw_cmds.rbegin(); it != gcode.draw_cmds.rend(); ++it) {
+                if (it->layer == g.show_layer_min && it->seq <= g.show_seq && g.visible[it->type]) {
+                    current_pos = it->end_pos;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                // Build and draw cone marker at current position
+                std::vector<Vert> cone_verts;
+                std::vector<uint32_t> cone_idx;
+                float cone_len = 3.f;  // mm
+                float cone_rad = 1.5f; // mm
+                // Point in +X direction (axial)
+                build_cone_marker(cone_verts, cone_idx, current_pos, Vec3{1, 0, 0}, cone_len, cone_rad);
+                
+                // Upload and draw
+                GLuint cone_vao, cone_vbo, cone_ebo;
+                glGenVertexArrays(1, &cone_vao);
+                glGenBuffers(1, &cone_vbo);
+                glGenBuffers(1, &cone_ebo);
+                glBindVertexArray(cone_vao);
+                glBindBuffer(GL_ARRAY_BUFFER, cone_vbo);
+                glBufferData(GL_ARRAY_BUFFER,
+                    (GLsizeiptr)(cone_verts.size() * sizeof(Vert)),
+                    cone_verts.data(), GL_DYNAMIC_DRAW);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cone_ebo);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                    (GLsizeiptr)(cone_idx.size() * sizeof(uint32_t)),
+                    cone_idx.data(), GL_DYNAMIC_DRAW);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)0);
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)(3 * sizeof(float)));
+                glEnableVertexAttribArray(1);
+                
+                // Draw with bright white color, fully opaque
+                glDepthMask(GL_TRUE);
+                glUniform4f(col_loc, 1.f, 1.f, 0.f, 1.f);  // Yellow
+                glBindVertexArray(cone_vao);
+                glDrawElements(GL_TRIANGLES, (GLsizei)cone_idx.size(), GL_UNSIGNED_INT, nullptr);
+                glBindVertexArray(0);
+                
+                glDeleteVertexArrays(1, &cone_vao);
+                glDeleteBuffers(1, &cone_vbo);
+                glDeleteBuffers(1, &cone_ebo);
             }
         }
 
