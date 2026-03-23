@@ -25,18 +25,9 @@ import solid2
 def find_polygons(edges, num_points):
     # Build undirected edge map
     adjacency = defaultdict(list)
-    degree = [0] * num_points
-
     for a, b in edges:
         adjacency[a].append(b)
         adjacency[b].append(a)
-        degree[a] += 1
-        degree[b] += 1
-
-    # Check for dead ends: all vertices must have even degree
-    for i, d in enumerate(degree):
-        if d % 2 != 0:
-            raise ValueError(f"Deadend or unmatched edge at vertex {i}: degree={d}")
 
     # Traverse to extract polygons
     visited_edges = set()
@@ -55,23 +46,24 @@ def find_polygons(edges, num_points):
             # Begin a new polygon
             poly = [start]
             curr = neighbor
-            prev = start
+            came_from = ek  # track the specific edge we arrived on, not just prev vertex
             visited_edges.add(ek)
 
             while curr != start:
                 poly.append(curr)
                 for next_node in adjacency[curr]:
-                    if next_node == prev:
-                        continue
                     ek2 = edge_key(curr, next_node)
-                    if ek2 not in visited_edges:
-                        visited_edges.add(ek2)
-                        prev, curr = curr, next_node
-                        break
+                    if ek2 == came_from or ek2 in visited_edges:
+                        continue
+                    visited_edges.add(ek2)
+                    came_from = ek2
+                    curr = next_node
+                    break
                 else:
-                    raise ValueError(f"Dead-end or cycle break at vertex {curr}")
+                    break  # degenerate topology — abandon this polygon
 
-            polygons.append(poly)
+            if curr == start:  # only keep properly closed loops
+                polygons.append(poly)
 
     return polygons
 
@@ -217,8 +209,23 @@ def cylindrical_cross_section(mesh, radius):
         for a, b in [(v0, v1), (v1, v2), (v2, v0)]:
             if (r_vals[a] < radius) != (r_vals[b] < radius):
                 crossing.append(get_crossing(a, b))
-        if len(crossing) == 2:
+        if len(crossing) == 2 and crossing[0] != crossing[1]:
             edges.append(tuple(crossing))
+
+    # Prune dangling edges caused by open (non-watertight) mesh boundaries.
+    # Boundary mesh edges belong to only one face; their crossing points end up
+    # with odd degree (degree=1) in the polygon graph, breaking find_polygons.
+    # Iteratively remove every edge that touches an odd-degree vertex until all
+    # remaining vertices have even degree (i.e. form closed loops).
+    while True:
+        degree = defaultdict(int)
+        for a, b in edges:
+            degree[a] += 1
+            degree[b] += 1
+        odd = {v for v, d in degree.items() if d % 2 != 0}
+        if not odd:
+            break
+        edges = [(a, b) for a, b in edges if a not in odd and b not in odd]
 
     return (np.array(pts) if pts else np.empty((0, 3))), edges
 
@@ -708,7 +715,21 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     result = []
     for ring in [poly.exterior] + list(poly.interiors):
         coords = np.array(ring.coords)
-        coords[:, 0] = np.unwrap(coords[:, 0])
+        raw_span = coords[:, 0].max() - coords[:, 0].min()
+        if raw_span > 2 * math.pi - 0.5:
+            # Full-circle ring: the polygon spans more than one period (e.g. the
+            # triple-copy rectangle used for full-circle features).  np.unwrap
+            # would collapse the large θ jumps to near-zero.  Instead, clip to
+            # the canonical [0, 2π] window so the ring has real extent, then
+            # return those coords without unwrapping — to_gcode handles the ±2π
+            # steps via its own improved unwrap logic.
+            canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
+            clipped = poly.intersection(canonical_clip)
+            if clipped.is_empty or not isinstance(clipped, Polygon):
+                continue
+            coords = np.array(clipped.exterior.coords)
+        else:
+            coords[:, 0] = np.unwrap(coords[:, 0])
         # Skip degenerate rings whose θ-extent is negligibly thin (e.g. a
         # near-tangent cylindrical cross-section of a flat face).  Such rings
         # produce a back-and-forth line in G-code rather than a closed loop.
@@ -784,7 +805,7 @@ slicing_params = {
     "support_sine_amplitude_mm": 2.0, # mm — sine wave half-amplitude (grid mode ignores this)
     "support_sine_period_mm": 8.0,   # mm — sine wave period along z (grid mode ignores this)
     "support_interface_spacing": 1,  # mm — grid spacing for top/bottom surfaces of support
-    "support_body_spacing": 2,       # mm — line spacing for support interior (arc-length mm)
+    "support_body_spacing": 5,       # mm — line spacing for support interior (arc-length mm)
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
     "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
@@ -813,6 +834,11 @@ slicing_params["extrusion_per_mm"] = (
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
 mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "offset_cube.stl")
+if not mesh.is_watertight:
+    print(f"Mesh is not watertight — attempting repair...")
+    trimesh.repair.fill_holes(mesh)
+    trimesh.repair.fix_normals(mesh)
+    print(f"  after repair: watertight={mesh.is_watertight}")
 pts = cartesian_to_cylindrical(mesh.vertices)
 # Shift mesh so its axial start aligns with min_x_pos + min_x_margin
 _z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
@@ -820,7 +846,7 @@ mesh.apply_translation([0, 0, _z_shift])
 
 # Subdivide large faces so that cylindrical cross-sections have enough sample points
 # along long edges (avoids jitter from straight-line approximation of curved arcs).
-_max_edge = slicing_params["layer_height"] * 5  # subdivide any edge longer than 5 layers
+_max_edge = slicing_params["layer_height"] * 20  # subdivide any edge longer than 5 layers
 _orig_faces = len(mesh.faces)
 mesh = trimesh.Trimesh(*trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, _max_edge), process=False)
 print(f"Subdivided mesh: {_orig_faces} → {len(mesh.faces)} faces (max edge {_max_edge:.2f} mm)")
@@ -892,8 +918,18 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     #     plt.plot(poly[:,0],poly[:,1],"-")
     # plt.show()
     full_circles = [is_full_circle(poly) for poly in poly_pts]
-    full_circle_pairs = find_connected_shapes([poly for i,poly in enumerate(poly_idxs) if full_circles[i]],triangles)
-    full_circle_pairs = [np.argwhere(full_circles)[each].squeeze() for each in full_circle_pairs if len(each) >= 2]
+    # triangles is always [] with the cylindrical_cross_section approach, so
+    # find_connected_shapes can't pair full-circle loops via shared faces.
+    # Instead, sort by average z and pair consecutive loops (bottom/top of each
+    # solid region).
+    fc_original_indices = [i for i, fc in enumerate(full_circles) if fc]
+    if len(fc_original_indices) >= 2:
+        fc_z_mean = [np.mean(np.array(poly_pts[i])[:, 1]) for i in fc_original_indices]
+        sorted_order = np.argsort(fc_z_mean)
+        sorted_fc = [fc_original_indices[j] for j in sorted_order]
+        full_circle_pairs = [np.array([sorted_fc[k], sorted_fc[k+1]]) for k in range(0, len(sorted_fc) - 1, 2)]
+    else:
+        full_circle_pairs = []
     full_circle_pairs = np.array(full_circle_pairs) if full_circle_pairs else np.empty((0, 2), dtype=int)
     polys = [Polygon(p) for i,p in enumerate(poly_pts) if not full_circles[i]]
     mapping = []
@@ -967,6 +1003,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             external_perimeters.append(shift_polygon(poly_with_holes,-2*np.pi))
         if plot_perimeters:
             plot_polygon(do_transform(external_perimeters[-1]),add_points=False,color="green",facecolor=(0, 0, 0, 0))
+    if plot_perimeters:
+        plt.show()
     times.append((time.perf_counter(),"form poly with holes"))
     
     final = shapely.unary_union(external_perimeters)

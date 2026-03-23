@@ -138,7 +138,14 @@ class PathObject:
         # np.unwrap removes >π jumps (handles seam crossings inside a path),
         # then shift so the sequence starts at t0_accum.
         canon_thetas  = pts[:, 0]
-        unwrapped     = np.unwrap(canon_thetas)                       # still starts near t0_canonical
+        # Improved unwrap: standard np.unwrap wraps any |diff| > π, which
+        # collapses an exact ±2π step (full circle) to 0.  Detect those cases
+        # and restore the original diff so full-circle perimeters aren't lost.
+        _diffs = np.diff(canon_thetas)
+        _wdiffs = (_diffs + np.pi) % (2 * np.pi) - np.pi
+        _fc = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1e-9)
+        _wdiffs[_fc] = _diffs[_fc]
+        unwrapped     = np.concatenate([[canon_thetas[0]], canon_thetas[0] + np.cumsum(_wdiffs)])
         accum_thetas  = unwrapped + (t0_accum - unwrapped[0])        # shift to match t0_accum
 
         p1 = pts[:-1]
