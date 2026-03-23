@@ -1459,7 +1459,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     final_top_surface = final_top_surface.intersection(_canonical_x_clip)
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
-    _solid_direction = "axial" if _model_idx % 2 == 0 else "radial"
+    _solid_direction = "axial"
     layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
 
     final_bottom_surface = do_transform(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection())).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
