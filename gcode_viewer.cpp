@@ -293,6 +293,7 @@ static void build_sphere_marker(
 
 struct LayerRange {
     int      layer_num;
+    int      seq;        // sequence within layer (-1 if not applicable)
     uint32_t idx_offset;
     uint32_t idx_count;
 };
@@ -336,7 +337,8 @@ struct DrawCmd {
 
 struct GcodeData {
     PathGroup groups[ST_COUNT];
-    std::vector<std::pair<Vec3, int>> retract_pts;  // (position, layer_num)
+    struct RetractPt { Vec3 pos; int layer; int seq; };
+    std::vector<RetractPt>        retract_pts;  // (position, layer_num, seq)
     std::vector<DrawCmd>              draw_cmds;
     std::unordered_map<int, int>      layer_seq_count; // layer -> # seqs
     float x_min = 1e9f, x_max = -1e9f;
@@ -382,7 +384,7 @@ GcodeData load_gcode(const char* path) {
             uint32_t start = layer_idx_start[i];
             uint32_t end   = (uint32_t)d.groups[i].idx.size();
             if (end > start)
-                d.groups[i].layer_ranges.push_back({cur_layer, start, end - start});
+                d.groups[i].layer_ranges.push_back({cur_layer, -1, start, end - start});
             layer_idx_start[i] = end;
         }
         cur_layer_seq = 0;  // reset for next layer
@@ -441,7 +443,7 @@ GcodeData load_gcode(const char* path) {
 
         // Detect retraction: G1 with E going down and no X/Y motion
         if (!rapid && has_e_tok && ne < cur_e - 1e-6f && !has_x_tok && !has_t_tok && has_pos)
-            d.retract_pts.push_back({cyl_to_cart(cur_t, cur_x, radius), cur_layer});
+            d.retract_pts.push_back({cyl_to_cart(cur_t, cur_x, radius), cur_layer, cur_layer_seq});
         cur_e = ne;
 
         d.x_min = std::min(d.x_min, nx);
@@ -700,24 +702,26 @@ int main(int argc, char** argv) {
               << "  Line width: "  << gcode.groups[0].tube_lw << " mm\n";
     std::cout << "Retractions: " << gcode.retract_pts.size() << "\n";
 
-    // Build retraction marker geometry (octahedra, 1.5× line width), grouped by layer
+    // Build retraction marker geometry (octahedra, 1.5× line width), grouped by (layer, seq)
     {
         float marker_r = gcode.groups[0].tube_lw * 1.5f;
         auto& rg = gcode.groups[ST_RETRACT];
         int   cur_layer = INT_MIN;
+        int   cur_seq = -1;
         uint32_t lr_start = 0;
-        for (auto& [pt, layer] : gcode.retract_pts) {
-            if (layer != cur_layer) {
+        for (auto& rpt : gcode.retract_pts) {
+            if (rpt.layer != cur_layer || rpt.seq != cur_seq) {
                 if (cur_layer != INT_MIN)
-                    rg.layer_ranges.push_back({cur_layer, lr_start,
+                    rg.layer_ranges.push_back({cur_layer, cur_seq, lr_start,
                                                (uint32_t)rg.idx.size() - lr_start});
-                cur_layer = layer;
+                cur_layer = rpt.layer;
+                cur_seq = rpt.seq;
                 lr_start  = (uint32_t)rg.idx.size();
             }
-            build_sphere_marker(rg.verts, rg.idx, pt, marker_r);
+            build_sphere_marker(rg.verts, rg.idx, rpt.pos, marker_r);
         }
         if (cur_layer != INT_MIN)
-            rg.layer_ranges.push_back({cur_layer, lr_start,
+            rg.layer_ranges.push_back({cur_layer, cur_seq, lr_start,
                                        (uint32_t)rg.idx.size() - lr_start});
     }
 
@@ -967,6 +971,8 @@ int main(int argc, char** argv) {
                         glBindVertexArray(rg.vao);
                         for (auto& lr : rg.layer_ranges) {
                             if (lr.layer_num != g.show_layer_min) continue;
+                            // In sequential mode, only show retractions up to current sequence
+                            if (seq_mode && lr.seq > g.show_seq) continue;
                             glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
                                            (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
                         }
