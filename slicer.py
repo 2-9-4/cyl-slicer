@@ -472,7 +472,12 @@ def do_support_infill(support_geom, slicing_params, current_r, is_interface=Fals
 
     return result
 
-def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
+def do_solid_infill(peri, slicing_params, current_r, plot_infill=False, ax=None, direction="axial"):
+    """Generate solid infill lines clipped to *peri* (in raw (θ,z) space).
+
+    direction="axial"  — constant-θ lines (runs along the cylinder axis)
+    direction="radial" — constant-z lines (arcs around the cylinder)
+    """
     if peri.is_empty:
         return
     def do_transform(x):
@@ -482,30 +487,41 @@ def do_solid_infill(peri,slicing_params,current_r,plot_infill=False,ax=None):
     infill = []
     bounds = shapely.bounds(peri)
 
-    _solid_step = slicing_params["nozzle_size"] / current_r
-    _n_solid = int(np.floor(2 * np.pi / _solid_step))
-    for current_line_h in np.arange(_n_solid) * _solid_step:
-        lp_x,lp_y = [current_line_h,current_line_h],[bounds[1],bounds[3]]
-        ls = shapely.LineString(np.array([lp_x,lp_y]).swapaxes(0,1))
-        inter = shapely.intersection(ls,peri)
+    def _collect(inter):
         geoms = None
         if type(inter) == shapely.MultiLineString:
             geoms = inter.geoms
         elif type(inter) == shapely.geometry.collection.GeometryCollection:
             geoms = inter.geoms
         if geoms is not None:
-            for line_segment in geoms:
+            for seg in geoms:
                 if plot_infill:
-                    plot_line(do_transform(line_segment),ax=ax,color="greenyellow",add_points=False)
-                infill.append(line_segment)
+                    plot_line(do_transform(seg), ax=ax, color="greenyellow", add_points=False)
+                infill.append(seg)
         else:
-            if(type(inter) == shapely.geometry.multipoint.MultiPoint):
+            if type(inter) == shapely.geometry.multipoint.MultiPoint:
                 print("got MultiPoint in solid infill")
-                shapely.plotting.plot_points(do_transform(inter),color="greenyellow")
             else:
                 if plot_infill:
-                    plot_line(do_transform(inter),ax=ax,color="greenyellow",add_points=False)
+                    plot_line(do_transform(inter), ax=ax, color="greenyellow", add_points=False)
                 infill.append(inter)
+
+    if direction == "axial":
+        # Constant-θ lines — runs along the cylinder axis (z direction)
+        _solid_step = slicing_params["nozzle_size"] / current_r
+        _n_solid = int(np.floor(2 * np.pi / _solid_step))
+        # linspace distributes the leftover evenly instead of leaving a single
+        # wide gap at the theta=0/2π seam.
+        for theta in np.linspace(0, 2 * np.pi, _n_solid, endpoint=False):
+            ls = shapely.LineString([[theta, bounds[1]], [theta, bounds[3]]])
+            _collect(shapely.intersection(ls, peri))
+    else:
+        # Constant-z lines — arcs around the cylinder (radial / circumferential)
+        z_step = slicing_params["nozzle_size"]   # mm; z axis is already in mm
+        z_lo = np.floor(bounds[1] / z_step) * z_step
+        for z in np.arange(z_lo, bounds[3] + z_step, z_step):
+            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+            _collect(shapely.intersection(ls, peri))
 
     return infill
 
@@ -614,7 +630,7 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
     r_base = slicing_params["r_base"]
     fixed_step = slicing_params["infill_spacing"] / r_base     # never changes
     n_base = int(np.floor(2 * np.pi / fixed_step))             # same on every layer
-    all_thetas = np.arange(n_base) * fixed_step
+    all_thetas = np.linspace(0, 2 * np.pi, n_base, endpoint=False)
 
     for current_line_h in all_thetas:
         # Build a vertical line in (θ,z) space at this fixed θ value.
@@ -822,6 +838,8 @@ slicing_params = {
     "flow_rate": 1.0,                # multiplier on extrusion_per_mm (tune for over/underextrusion)
     "first_layer_speed_factor": 0.5, # fraction of feed/travel speeds for the first model layer
     "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
+    "top_layers": 3,                 # number of solid shells on the outer (top) surface
+    "bottom_layers": 3,              # number of solid shells on the inner (bottom) surface
 }
 
 printer_params = {
@@ -1070,6 +1088,46 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
+
+# ── Propagate top/bottom solid surfaces inward/outward ──────────────────
+# top_layers: the outermost shell already has top_surfaces set; extend it
+# to the next (top_layers-1) inner shells so they also print solid there.
+# bottom_layers: same idea for inner-surface solid shells, propagating outward.
+# Snapshot original source layers BEFORE modifying any, so propagated geometry
+# doesn't cascade further on subsequent loop iterations.
+_sorted_keys = sorted(layer_data.keys())
+_empty_geom = shapely.GeometryCollection()
+_top_sources  = [(pos, key, layer_data[key]["top_surfaces"])
+                 for pos, key in enumerate(_sorted_keys)
+                 if not layer_data[key].get("top_surfaces", _empty_geom).is_empty]
+_bot_sources  = [(pos, key, layer_data[key]["bottom_surfaces"])
+                 for pos, key in enumerate(_sorted_keys)
+                 if not layer_data[key].get("bottom_surfaces", _empty_geom).is_empty]
+
+for _pos, _key, _ts in _top_sources:
+    for _depth in range(1, slicing_params["top_layers"]):
+        _inner_pos = _pos - _depth
+        if _inner_pos < 0:
+            break
+        _ik = _sorted_keys[_inner_pos]
+        _prop = _ts.intersection(layer_data[_ik]["external_peris"])
+        if _prop.is_empty:
+            break
+        _existing = layer_data[_ik].get("top_surfaces", _empty_geom)
+        layer_data[_ik]["top_surfaces"] = _existing.union(_prop)
+
+for _pos, _key, _bs in _bot_sources:
+    for _depth in range(1, slicing_params["bottom_layers"]):
+        _outer_pos = _pos + _depth
+        if _outer_pos >= len(_sorted_keys):
+            break
+        _ok = _sorted_keys[_outer_pos]
+        _prop = _bs.intersection(layer_data[_ok]["external_peris"])
+        if _prop.is_empty:
+            break
+        _existing = layer_data[_ok].get("bottom_surfaces", _empty_geom)
+        layer_data[_ok]["bottom_surfaces"] = _existing.union(_prop)
+
 print(f"\nPass 1 complete — {sliced_layer_count} layers sliced.")
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1287,7 +1345,8 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
             g, last_pos, last_e = path.to_gcode(slicing_params, last_pos, last_e)
             f.write(g)
 
-for i in sorted(layer_data.keys()):
+_sorted_model_keys = sorted(layer_data.keys())
+for _model_idx, i in enumerate(_sorted_model_keys):
     real_layer_count += 1
     if max_real_layers is not None and real_layer_count > max_real_layers:
         print(f"\nReached {max_real_layers} layer cap, exiting.")
@@ -1330,13 +1389,14 @@ for i in sorted(layer_data.keys()):
     final_top_surface = final_top_surface.intersection(_canonical_x_clip)
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
-    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
+    _solid_direction = "axial" if _model_idx % 2 == 0 else "radial"
+    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
 
     final_bottom_surface = do_transform(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection())).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     final_bottom_surface = final_bottom_surface.intersection(_canonical_x_clip)
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
-    bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer) or []
+    bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
     layer_data[i]["solid_infill"] += bottom_solid_infill
 
     # Support infill: interface (top/bottom of column) gets a grid; body gets axial lines only.
