@@ -845,10 +845,10 @@ slicing_params = {
 printer_params = {
     "bed_radius": 30.0,    # mm — mandrel/cylinder surface radius; no paths printed below this
     "max_radius": 120.0,    # mm — maximum printable radius; slicing stops here
-    "axial_length": 150.0, # mm — printable length along the cylinder axis
+    "axial_length": 165.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
     "hotend_temp": 205,    # °C — PLA
-    "min_x_pos": 50.0,    # mm — X coordinate where the printable bed begins (prime line here)
+    "min_x_pos": 0.0,    # mm — X coordinate where the printable bed begins (prime line here)
     "min_x_margin": 5.0,  # mm — gap between bed start and model start
 }
 # Derived: how many mm of filament per mm of real travel
@@ -1432,7 +1432,20 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     # plt.savefig(f"frames/{i}.png",dpi=600)
 
-    shape_to_infill = do_transform_inverse(final_perimeter - final_top_surface - final_bottom_surface)
+    _diff = final_perimeter - final_top_surface - final_bottom_surface
+    # Clip to the canonical [0, 2π·r] arc-length window.  external_peris carries
+    # ±2π shifted copies so final_perimeter spans [−2π·r, 4π·r], but
+    # final_top_surface is already clipped to [0, 2π·r].  Without this step the
+    # difference leaves two strips (one at x<0, one at x>2π·r) whose boundaries
+    # sit exactly at θ=0 and θ=2π — causing the first sparse-infill axial scan
+    # to graze them and emit a stray line at the seam.
+    _diff = _diff.intersection(_canonical_x_clip)
+    if not _diff.is_empty:
+        # Morphological opening: removes any remaining floating-point slivers
+        # narrower than half a nozzle width.
+        _half_noz = slicing_params["nozzle_size"] * 0.5
+        _diff = _diff.buffer(-_half_noz, join_style="mitre").buffer(_half_noz, join_style="mitre")
+    shape_to_infill = do_transform_inverse(_diff)
 
     fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
     layer_data[i]["fully_radial_infill"] = fully_radial_infill
