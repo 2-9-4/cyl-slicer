@@ -891,6 +891,7 @@ slicing_params = {
     "support_sine_period_mm": 8.0,   # mm — sine wave period along z (grid mode ignores this)
     "support_interface_spacing": 2,  # mm — line spacing for interface layers
     "support_interface_layers": 2,   # number of layers at each end of a support column that use alternating interface pattern
+    "support_gap_layers": 1,         # number of empty (air-gap) layers between the top of support and the part bottom
     "support_body_spacing": 5,       # mm — line spacing for support interior (arc-length mm)
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
@@ -1395,15 +1396,18 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
     depth_from_bottom = gap_layer_idx + 1
     depth_from_top    = n_gap - gap_layer_idx
 
+    # Gap support layers are the bed-to-model foundation pillar — the air-gap feature
+    # does not apply here; every shell is printed.
     if depth_from_top <= interface_n and depth_from_top <= depth_from_bottom:
         # Top interface: depth 1 is outermost (printed last) — flip parity
         direction = "axial" if depth_from_top % 2 == 1 else "radial"
+        support_infill = do_support_infill(gap_sup, slicing_params, r, direction=direction)
     elif depth_from_bottom <= interface_n:
         # Bottom interface: depth 1 is innermost (printed first) — radial first
         direction = "radial" if depth_from_bottom % 2 == 1 else "axial"
+        support_infill = do_support_infill(gap_sup, slicing_params, r, direction=direction)
     else:
-        direction = "body"
-    support_infill = do_support_infill(gap_sup, slicing_params, r, direction=direction)
+        support_infill = do_support_infill(gap_sup, slicing_params, r, direction="body")
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
@@ -1474,6 +1478,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     support_geom = layer_data[i].get("support", shapely.GeometryCollection())
     if not support_geom.is_empty:
         interface_n = slicing_params.get("support_interface_layers", 2)
+        gap_n = slicing_params.get("support_gap_layers", 0)
 
         # Check distance to upper model boundary (i+d) and lower model boundary (i-d) separately.
         # For bottom interface, depth 1 is the innermost layer (printed first) → radial.
@@ -1493,17 +1498,27 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
         support_clipped = support_geom.intersection(theta_clip_box)
 
-        if top_depth is not None and (bot_depth is None or top_depth <= bot_depth):
-            # Top interface: depth 1 is outermost (printed last), so flip parity
-            # → odd depth = axial, even depth = radial (first-printed layer = radial)
-            direction = "axial" if top_depth % 2 == 1 else "radial"
-        elif bot_depth is not None:
-            # Bottom interface: depth 1 is innermost (printed first) → radial
-            direction = "radial" if bot_depth % 2 == 1 else "axial"
-        else:
-            direction = "body"
+        # Gap detection: this layer is in the air-gap zone if there is no further support
+        # gap_n shells outward — i.e. we are at the top of the support column here.
+        # This is independent of how close the model is, so it works correctly for sloped
+        # surfaces (like a cone) where the model is always at d=1 above every support layer.
+        is_gap_layer = gap_n > 0 and layer_data.get(i + gap_n, {}).get("support", shapely.GeometryCollection()).is_empty
 
-        layer_data[i]["support_infill"] = do_support_infill(support_clipped, slicing_params, current_r, direction=direction)
+        if is_gap_layer:
+            # Air-gap zone: leave these layers empty so the part separates cleanly
+            layer_data[i]["support_infill"] = []
+        else:
+            if top_depth is not None and (bot_depth is None or top_depth <= bot_depth):
+                # Top interface: depth 1 is outermost (printed last), so flip parity
+                # → odd depth = axial, even depth = radial (first-printed layer = radial)
+                direction = "axial" if top_depth % 2 == 1 else "radial"
+            elif bot_depth is not None:
+                # Bottom interface: depth 1 is innermost (printed first) → radial
+                direction = "radial" if bot_depth % 2 == 1 else "axial"
+            else:
+                direction = "body"
+
+            layer_data[i]["support_infill"] = do_support_infill(support_clipped, slicing_params, current_r, direction=direction)
 
         if plot_per_layer:
             plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
