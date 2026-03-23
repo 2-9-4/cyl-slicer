@@ -499,7 +499,8 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
     else:  # "body"
         spacing = slicing_params["support_body_spacing"]
         _ts = spacing / r_base
-        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
+        n_body = int(np.floor(2 * np.pi / _ts))
+        thetas = np.linspace(0, 2 * np.pi, n_body, endpoint=False)
 
         mode = slicing_params.get("support_infill_mode", "grid")
 
