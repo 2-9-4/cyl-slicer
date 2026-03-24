@@ -444,6 +444,40 @@ def stitch_radial_seam(segments, period=2*np.pi, tol=1e-9):
     return list(merged.geoms) + other
 
 
+def stitch_axial_gap(segments, max_gap):
+    """
+    Merge axial (constant-θ) LineString segments whose z-gap is ≤ max_gap.
+
+    Mesh-intersection and buffer artifacts occasionally leave a tiny notch in the
+    interior polygon at a specific z, splitting one axial line into two close
+    segments.  Bridging gaps up to max_gap (typically nozzle_size) eliminates the
+    resulting travel move / visible gap without merging intentional voids.
+    """
+    lines = [g for g in segments
+             if isinstance(g, shapely.geometry.LineString) and not g.is_empty]
+    if len(lines) <= 1:
+        return lines
+
+    def z_range(seg):
+        coords = np.array(seg.coords)
+        return coords[:, 1].min(), coords[:, 1].max()
+
+    lines.sort(key=lambda l: z_range(l)[0])
+
+    result = [lines[0]]
+    for seg in lines[1:]:
+        prev_z_min, prev_z_max = z_range(result[-1])
+        seg_z_min, seg_z_max = z_range(seg)
+        if seg_z_min - prev_z_max <= max_gap:
+            theta = np.array(result[-1].coords)[0, 0]
+            result[-1] = shapely.LineString(
+                [[theta, prev_z_min], [theta, max(prev_z_max, seg_z_max)]]
+            )
+        else:
+            result.append(seg)
+    return result
+
+
 def fold_to_canonical(geom, clip_box, period=2 * np.pi):
     """Fold (θ,z)-space geometry into [0, 2π] by unioning ±period shifted copies, then clipping."""
     if geom is None or geom.is_empty:
@@ -515,7 +549,8 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
     elif direction == "axial":
         spacing = slicing_params["support_interface_spacing"]
         _ts = spacing / r_base
-        thetas = np.arange(int(np.floor(2 * np.pi / _ts))) * _ts
+        _n = int(np.floor(2 * np.pi / _ts))
+        thetas = np.arange(_n) * _ts + _ts / 2   # offset by half-step to avoid θ=0 seam
         # Axial lines only (constant θ, varying z)
         for theta in thetas:
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
@@ -525,7 +560,7 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
         spacing = slicing_params["support_body_spacing"]
         _ts = spacing / r_base
         n_body = int(np.floor(2 * np.pi / _ts))
-        thetas = np.linspace(0, 2 * np.pi, n_body, endpoint=False)
+        thetas = np.arange(n_body) * _ts + _ts / 2   # offset by half-step to avoid θ=0 seam
 
         mode = slicing_params.get("support_infill_mode", "grid")
 
@@ -599,9 +634,10 @@ def do_solid_infill(peri, slicing_params, current_r, plot_infill=False, ax=None,
         # Constant-θ lines — runs along the cylinder axis (z direction)
         _solid_step = slicing_params["nozzle_size"] / current_r
         _n_solid = int(np.floor(2 * np.pi / _solid_step))
-        # linspace distributes the leftover evenly instead of leaving a single
-        # wide gap at the theta=0/2π seam.
-        for theta in np.linspace(0, 2 * np.pi, _n_solid, endpoint=False):
+        # Offset by half a step so no line lands on the θ=0/2π seam boundary,
+        # where polygon clip artifacts can split a line into two segments.
+        _solid_step = 2 * np.pi / _n_solid
+        for theta in np.arange(_n_solid) * _solid_step + _solid_step / 2:
             ls = shapely.LineString([[theta, bounds[1]], [theta, bounds[3]]])
             _collect(shapely.intersection(ls, peri))
     else:
@@ -742,8 +778,9 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
             geoms = inter.geoms
 
         if geoms is not None:
-            # Multiple disjoint segments (line crossed a hollow region mid-way).
-            for line_segment in geoms:
+            # Multiple disjoint segments — stitch tiny z-gaps before appending.
+            stitched = stitch_axial_gap(geoms, max_gap=slicing_params["nozzle_size"])
+            for line_segment in stitched:
                 if plot_infill:
                     plot_line(do_transform(line_segment), ax=ax, color="darkviolet", add_points=False)
                 axial_infill.append(line_segment)
