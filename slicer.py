@@ -694,7 +694,10 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
     r_base = slicing_params["r_base"]
     fixed_step = slicing_params["infill_spacing"] / r_base     # never changes
     n_base = int(np.floor(2 * np.pi / fixed_step))             # same on every layer
-    all_thetas = np.linspace(0, 2 * np.pi, n_base, endpoint=False)
+    # Offset by half a step so no line falls exactly on the θ=0/2π polygon boundary.
+    # After the morphological open in arc-length space the polygon's left edge retracts
+    # slightly inward from θ=0, so a line at exactly 0 would miss the polygon.
+    all_thetas = np.linspace(fixed_step / 2, 2 * np.pi + fixed_step / 2, n_base, endpoint=False)
 
     for current_line_h in all_thetas:
         # Build a vertical line in (θ,z) space at this fixed θ value.
@@ -1536,7 +1539,10 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     # plt.savefig(f"frames/{i}.png",dpi=600)
 
-    _diff = final_perimeter - final_top_surface - final_bottom_surface
+    # Inset by half a nozzle so sparse infill lines land just inside the innermost
+    # perimeter without overlapping it (its center line is at the boundary of final_perimeter).
+    _infill_boundary = final_perimeter.buffer(-slicing_params["nozzle_size"] * 0.5, join_style="mitre")
+    _diff = _infill_boundary - final_top_surface - final_bottom_surface
     # Clip to the canonical [0, 2π·r] arc-length window.  external_peris carries
     # ±2π shifted copies so final_perimeter spans [−2π·r, 4π·r], but
     # final_top_surface is already clipped to [0, 2π·r].  Without this step the
