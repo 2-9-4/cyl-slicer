@@ -961,14 +961,18 @@ slicing_params = {
     "support_interface_spacing": 2,  # mm — line spacing for interface layers
     "support_interface_layers": 2,   # number of layers at each end of a support column that use alternating interface pattern
     "support_gap_layers": 1,         # number of empty (air-gap) layers between the top of support and the part bottom
-    "support_body_spacing": 5,       # mm — line spacing for support interior (arc-length mm)
+    "support_body_spacing": 2.5,     # mm — line spacing for support interior (arc-length mm)
+    "support_speed_factor": 1.5,     # multiply feed/travel speed for support sections (faster = less sag on bridges)
+    "support_flow_rate": 0.8,        # flow multiplier for support (reduce to shrink blobs on contact)
+    "infill_speed_factor": 1.3,      # multiply feed/travel speed for sparse infill (reduces bridging blobs)
+    "infill_flow_rate": 0.9,         # flow multiplier for sparse infill
     "support_min_area": 1.0,         # mm² — inflate overhang patches below this area to at least this size
     "support_merge_gap": 15.0,       # mm — merge support branches closer than this into a shared trunk
     "support_taper_per_layer_mm": -0.1,  # mm — how much the support footprint shrinks per layer going inward
     "support_xy_distance_mm": 0.3,   # mm — lateral gap between support and model walls
     "retract_mm": 2.0,               # mm — retraction distance on travel moves
     "retract_speed_mm_per_min": 1800, # mm/min — retraction speed (30 mm/s)
-    "min_retract_travel_mm": 6.0,    # mm — skip retraction for travel moves shorter than this
+    "min_retract_travel_mm": 2.0,    # mm — skip retraction for travel moves shorter than this
     "flow_rate": 1.0,                # multiplier on extrusion_per_mm (tune for over/underextrusion)
     "first_layer_speed_factor": 0.5, # fraction of feed/travel speeds for the first model layer
     "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
@@ -1773,7 +1777,25 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             _futs = {s: _ex.submit(_prep_section, s) for s, _ in sections}
             _prepped = {s: _futs[s].result() for s, _ in sections}
 
+        _support_params = _layer_params.copy()
+        _support_params["feed_mm_per_min"]   *= slicing_params.get("support_speed_factor", 1.0)
+        _support_params["travel_mm_per_min"] *= slicing_params.get("support_speed_factor", 1.0)
+        _support_params["flow_rate"]          = slicing_params.get("support_flow_rate", _layer_params.get("flow_rate", 1.0))
+
+        _infill_params = _layer_params.copy()
+        _infill_params["feed_mm_per_min"]   *= slicing_params.get("infill_speed_factor", 1.0)
+        _infill_params["travel_mm_per_min"] *= slicing_params.get("infill_speed_factor", 1.0)
+        _infill_params["flow_rate"]          = slicing_params.get("infill_flow_rate", _layer_params.get("flow_rate", 1.0))
+
+        _infill_sections = {"fully_radial_infill", "radial_infill", "axial_infill"}
+
         for subsection, section_name in sections:
+            if subsection == "support_infill":
+                _path_params = _support_params
+            elif subsection in _infill_sections:
+                _path_params = _infill_params
+            else:
+                _path_params = _layer_params
             for path in _prepped[subsection]:
                 f.write(f";TYPE:{section_name}\n")
                 # For fully_radial_infill (full circles), rotate to start at current theta
@@ -1784,7 +1806,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 # Check by subsection name since paths from polygon_to_wrapped_lines are open LineStrings
                 elif subsection in ("external_peris", "internal_peris"):
                     path = rotate_closed_path_to_nearest(path, last_pos)
-                g,last_pos,last_e = path.to_gcode(_layer_params,last_pos,last_e)
+                g,last_pos,last_e = path.to_gcode(_path_params,last_pos,last_e)
                 f.write(g)
 
     _ns  = layer_data[i].get("needs_support")
