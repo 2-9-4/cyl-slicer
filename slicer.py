@@ -348,6 +348,31 @@ def _collect_lines(geom, result, min_length=0.0):
         for g in geom.geoms:
             _collect_lines(g, result, min_length)
 
+
+def _snap_radial_to_full_circle(seg, period=2 * np.pi, tol=0.02):
+    """Snap a constant-z radial segment to [0, period] if it nearly spans a full circle.
+
+    Root cause: when a support/infill polygon has a tiny gap at the θ=0/2π seam
+    (a numerical artefact from fold_to_canonical or ±2π union ops), the intersection
+    with the horizontal line [[0,z],[2π,z]] produces a single LineString whose
+    endpoints are just inside [0, 2π] (e.g. θ=0.000175 → θ=6.28299).
+    stitch_radial_seam ignores this (tol=1e-9), so PathObject stores it with
+    pts = [(6.28299,z),(0.000175,z)] after to_gcode reversal.  np.unwrap then maps
+    the −6.28 rad diff to the shortest arc (+0.000364 rad), producing a 0.019° move
+    that triggers the seam-cross real_dist bug.  Snapping to [0, 2π] instead lets
+    rotate_full_circle_path handle it correctly as a genuine full-circle arc.
+
+    tol: tolerated gap in radians (default 0.02 rad ≈ 1.1°).
+    """
+    if not isinstance(seg, shapely.geometry.LineString) or seg.is_empty:
+        return seg
+    coords = np.array(seg.coords)
+    if len(coords) < 2 or np.ptp(coords[:, 1]) > 1e-4:  # not a constant-z segment
+        return seg
+    if coords[:, 0].max() - coords[:, 0].min() < period - tol:
+        return seg
+    return shapely.geometry.LineString([[0.0, coords[0, 1]], [period, coords[0, 1]]])
+
 def clean_support_region(geom_theta_z, r_base, min_area_mm2, merge_gap_mm):
     """
     1. Inflate sub-polygons below min_area_mm2 to at least that area.
@@ -483,9 +508,9 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
             inter = shapely.intersection(ls, support_geom)
             if hasattr(inter, 'geoms'):
                 for seg in stitch_radial_seam(inter.geoms):
-                    _collect_lines(seg, result, min_length)
+                    _collect_lines(_snap_radial_to_full_circle(seg), result, min_length)
             else:
-                _collect_lines(inter, result, min_length)
+                _collect_lines(_snap_radial_to_full_circle(inter), result, min_length)
 
     elif direction == "axial":
         spacing = slicing_params["support_interface_spacing"]
@@ -530,9 +555,9 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
                 inter = shapely.intersection(ls, support_geom)
                 if hasattr(inter, 'geoms'):
                     for seg in stitch_radial_seam(inter.geoms):
-                        _collect_lines(seg, result, min_length)
+                        _collect_lines(_snap_radial_to_full_circle(seg), result, min_length)
                 else:
-                    _collect_lines(inter, result, min_length)
+                    _collect_lines(_snap_radial_to_full_circle(inter), result, min_length)
 
     return result
 
@@ -660,11 +685,13 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
             stitched = stitch_radial_seam(geoms)
             if len(stitched) == 1:
                 # Seam-crossing arc stitched into one segment → fully radial.
+                seg = _snap_radial_to_full_circle(stitched[0])
                 if plot_infill:
-                    plot_line(do_transform(stitched[0]), ax=ax, color="red", add_points=False)
-                fully_radial_infill.append(stitched[0])
+                    plot_line(do_transform(seg), ax=ax, color="red", add_points=False)
+                fully_radial_infill.append(seg)
             else:
                 for line_segment in stitched:
+                    line_segment = _snap_radial_to_full_circle(line_segment)
                     if plot_infill:
                         plot_line(do_transform(line_segment), ax=ax, color="orange", add_points=False)
                     radial_infill.append(line_segment)
@@ -675,6 +702,7 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
                 shapely.plotting.plot_points(do_transform(inter), color="red")
             else:
                 # Single continuous segment spanning the full interior crossing.
+                inter = _snap_radial_to_full_circle(inter)
                 if plot_infill:
                     plot_line(do_transform(inter), ax=ax, color="red", add_points=False)
                 fully_radial_infill.append(inter)

@@ -399,11 +399,15 @@ class PathObject:
         p1 = pts[:-1]
         p2 = pts[1:]
 
-        # Real distances use canonical thetas (correct arc length regardless of accumulation)
+        # Real distances: use accum_thetas (already seam-unwrapped) so a segment
+        # whose canonical endpoints straddle the 0→2π boundary gets the correct
+        # arc length rather than the full-circumference (~2πr) "long-way-around"
+        # distance.  Using raw pts[:,0] here was the cause of ~6 E-units extruded
+        # over a 0.02° move and F=0.4 mm/min on seam-crossing support lines.
         try:
-            real_dist = self.dist(p2[:,1], p1[:,1], p2[:,0], p1[:,0])
+            real_dist = self.dist(p2[:,1], p1[:,1], accum_thetas[1:], accum_thetas[:-1])
         except (TypeError, AttributeError):
-            real_dist = np.array([self.dist(p2[i,1], p1[i,1], p2[i,0], p1[i,0])
+            real_dist = np.array([self.dist(p2[i,1], p1[i,1], accum_thetas[i+1], accum_thetas[i])
                                   for i in range(len(p1))])
 
         # fake_dist uses ACCUMULATED deltas so seam-crossing segments get the
@@ -418,6 +422,22 @@ class PathObject:
         e_vals  = np.cumsum(e_incr) + current_e
         fvals   = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
 
+        # Guard: warn on any segment with absurd extrusion or crawling feedrate —
+        # both are symptoms of a seam-coordinate bug where real_dist is computed
+        # as ~2πr instead of the true tiny arc length.
+        _exp_e_per_mm = slicing_params["extrusion_per_mm"] * slicing_params.get("flow_rate", 1.0)
+        _bad_e = (real_dist > 1e-6) & (e_incr / np.maximum(real_dist, 1e-12) > _exp_e_per_mm * 10)
+        _bad_f = (safe_real_dist > 1e-3) & (fvals < slicing_params.get("min_feed_mm_per_min", 10.0))
+        if np.any(_bad_e) | np.any(_bad_f):
+            import sys
+            print(
+                f"WARNING to_gcode: degenerate segment — "
+                f"e/mm max={( e_incr / np.maximum(real_dist, 1e-12)).max():.4f} "
+                f"(expected ≤{_exp_e_per_mm * 10:.4f}), "
+                f"feed min={fvals.min():.1f} mm/min",
+                file=sys.stderr,
+            )
+
         angles_deg = accum_thetas[1:] * 180 / np.pi   # accumulated degrees for G1
 
         g.extend(
@@ -430,7 +450,7 @@ class PathObject:
             t1_canon, x1 = pts[-1]
             t2_canon, x2 = pts[0]
             if not np.allclose([t1_canon, x1], [t2_canon, x2], atol=1e-10):
-                real_dist_close = self.dist(x2, x1, t2_canon, t1_canon)
+                real_dist_close = self.dist(x2, x1, accum_thetas[0], accum_thetas[-1])
                 if real_dist_close > 1e-10:
                     current_e = e_vals[-1] + real_dist_close * slicing_params["extrusion_per_mm"] * slicing_params.get("flow_rate", 1.0)
                     dt_close  = (accum_thetas[0] - accum_thetas[-1]) * 180 / np.pi
