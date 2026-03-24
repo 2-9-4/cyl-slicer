@@ -26,12 +26,249 @@ def unwrap_angle(theta, prev_theta):
     # shift d into [-pi, pi)
     d = (d + np.pi) % (2*np.pi) - np.pi
     return prev_theta + d
+
+def rotate_full_circle_path(path: 'PathObject', current_pos: tuple) -> 'PathObject':
+    """Rotate a full-circle (2π-spanning, constant-z) open path to start at the
+    current printer position, avoiding a travel back to θ=0.
+
+    current_pos: (accumulated_theta_radians, x_mm) — the printer's current position.
+
+    Each point's canonical theta is mapped to its forward distance from the
+    current canonical angle, then added to the accumulated printer position.
+    The result spans [current_pos[0], current_pos[0] + 2π] in accumulated space
+    and has is_accumulated=True so to_gcode skips the unwrap step.
+
+    Returns the original path unchanged if it isn't a full-circle radial line.
+    """
+    if not path.points or len(path.points) < 2:
+        return path
+
+    pts = np.asarray(path.points, dtype=float)
+    TWO_PI = 2 * np.pi
+
+    # Must span ~2π in theta and be constant z
+    theta_span = pts[-1, 0] - pts[0, 0]
+    if not np.isclose(theta_span, TWO_PI, atol=0.1):
+        return path
+    if np.ptp(pts[:, 1]) > 0.01:
+        return path
+
+    accum_start = current_pos[0]              # printer's accumulated theta
+    canon_start = accum_start % TWO_PI        # canonical [0, 2π)
+
+    # Forward distance of each original point from canon_start around the circle.
+    # Points exactly at canon_start get relative=0; all others are in (0, 2π].
+    relative = (pts[:, 0] - canon_start + TWO_PI) % TWO_PI
+
+    # Sort by forward distance so the path runs canon_start → canon_start+2π.
+    order = np.argsort(relative, kind='stable')
+    new_pts = list(zip(accum_start + relative[order], pts[order, 1]))
+
+    # Guarantee exact start and end in accumulated space (argsort alone leaves
+    # both the original 0 and 2π endpoints collapsed to the same relative value).
+    z0 = float(pts[0, 1])
+    if not np.isclose(new_pts[0][0], accum_start, atol=1e-9):
+        new_pts.insert(0, (accum_start, z0))
+    if not np.isclose(new_pts[-1][0], accum_start + TWO_PI, atol=1e-9):
+        new_pts.append((accum_start + TWO_PI, z0))
+
+    result = PathObject(new_pts, path.closed, path.kind, path.radius)
+    result.is_accumulated = True
+    return result
+
+def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'PathObject':
+    """Rotate a closed path to start at the point nearest to current position.
+
+    For closed paths (like perimeters), we can start at any point along the path.
+    This finds the point closest to the current printer position and rotates the
+    path to start there, minimizing travel distance.
+
+    path: PathObject (closed or open perimeter path)
+    current_pos: (accumulated_theta_radians, x_mm) - printer's current position
+
+    Returns a new PathObject with rotated points (in ACCUMULATED theta space,
+    near current_pos[0]), or the original if not suitable.
+    """
+    if not path.points or len(path.points) < 2:
+        return path
+
+    # Check if this is a perimeter path (either closed or spanning ~2π)
+    pts = np.asarray(path.points, dtype=float)
+    TWO_PI = 2 * np.pi
+    
+    theta_span = np.max(pts[:, 0]) - np.min(pts[:, 0])
+    is_perimeter = path.closed or theta_span >= TWO_PI * 0.9
+    
+    if not is_perimeter:
+        return path  # Not a perimeter, don't rotate
+
+    current_theta, current_x = current_pos
+
+    # Find the nearest point on the path to current position.
+    # For each edge, compute the closest point on that edge segment.
+    min_dist = float('inf')
+    best_t = 0.0  # Interpolation parameter along best edge
+    best_edge_start = 0
+    best_closest_t_accum = 0.0  # In accumulated space
+    best_closest_x = 0.0
+
+    for i in range(len(pts) - 1):
+        t1_orig, x1 = pts[i, 0], pts[i, 1]
+        t2_orig, x2 = pts[i + 1, 0], pts[i + 1, 1]
+        
+        # Compute edge span from original (possibly unwrapped) theta values
+        edge_dt_orig = t2_orig - t1_orig
+        
+        # Convert to canonical for wrap calculation
+        t1_canon = t1_orig % TWO_PI
+        
+        # Find the wrap of t1 that's closest to current_theta
+        t1_accum = t1_canon + round((current_theta - t1_canon) / TWO_PI) * TWO_PI
+        
+        # t2_accum = t1_accum + edge_dt_orig (preserving the original edge span)
+        t2_accum = t1_accum + edge_dt_orig
+        
+        # Ensure the edge contains current_theta by adjusting the wrap if needed
+        if edge_dt_orig > 0:
+            # Edge goes from t1 to t2 (increasing theta)
+            if current_theta < t1_accum:
+                t1_accum -= TWO_PI
+                t2_accum -= TWO_PI
+            elif current_theta > t2_accum:
+                t1_accum += TWO_PI
+                t2_accum += TWO_PI
+        else:
+            # Edge goes from t1 to t2 (decreasing theta)
+            if current_theta > t1_accum:
+                t1_accum += TWO_PI
+                t2_accum += TWO_PI
+            elif current_theta < t2_accum:
+                t1_accum -= TWO_PI
+                t2_accum -= TWO_PI
+        
+        # Vector from (t1_accum, x1) to (t2_accum, x2)
+        edge_dt = t2_accum - t1_accum
+        edge_dx = x2 - x1
+        edge_len_sq = edge_dt * edge_dt * path.radius * path.radius + edge_dx * edge_dx
+        
+        # Vector from (t1_accum, x1) to current position
+        to_curr_dt = current_theta - t1_accum
+        to_curr_dx = current_x - x1
+        
+        # Project current position onto edge (clamped to [0, 1])
+        if edge_len_sq > 1e-10:
+            t_param = (to_curr_dt * edge_dt * path.radius * path.radius + to_curr_dx * edge_dx) / edge_len_sq
+            t_param = max(0, min(1, t_param))
+        else:
+            t_param = 0
+        
+        # Closest point on this edge (in accumulated space)
+        closest_t_accum = t1_accum + t_param * edge_dt
+        closest_x = x1 + t_param * edge_dx
+        
+        # Distance from current position to closest point
+        dtheta = closest_t_accum - current_theta
+        dx = closest_x - current_x
+        dist_sq = dx * dx + (dtheta * path.radius) ** 2
+        
+        if dist_sq < min_dist:
+            min_dist = dist_sq
+            best_t = t_param
+            best_edge_start = i
+            best_closest_t_accum = closest_t_accum
+            best_closest_x = closest_x
+
+    # Insert a new vertex at the closest point if it's not already a vertex
+    # Then rotate to start at that point
+    if best_t > 0.01 and best_t < 0.99:
+        # Insert new vertex at closest point
+        new_pts = []
+        for i in range(len(pts) - 1):
+            # Convert to accumulated space
+            t_accum = (pts[i, 0] % TWO_PI) + round((current_theta - (pts[i, 0] % TWO_PI)) / TWO_PI) * TWO_PI
+            new_pts.append([t_accum, pts[i, 1]])
+            if i == best_edge_start:
+                # Insert the new point
+                new_pts.append([best_closest_t_accum, best_closest_x])
+        # Don't close the loop - preserve the original span
+        new_pts.append([new_pts[0][0] + (pts[-1, 0] - pts[0, 0]), new_pts[0][1]])
+        pts = np.array(new_pts)
+        best_idx = best_edge_start + 1  # The new point is at this index
+    else:
+        # Closest point is near a vertex, convert all to accumulated space and use that vertex
+        new_pts = []
+        for i in range(len(pts)):
+            t_accum = (pts[i, 0] % TWO_PI) + round((current_theta - (pts[i, 0] % TWO_PI)) / TWO_PI) * TWO_PI
+            new_pts.append([t_accum, pts[i, 1]])
+        # Preserve the original span
+        new_pts.append([new_pts[0][0] + (pts[-1, 0] - pts[0, 0]), new_pts[0][1]])
+        pts = np.array(new_pts)
+
+        best_idx = best_edge_start
+        if best_t >= 0.5:
+            best_idx = best_edge_start + 1
+            if best_idx >= len(pts) - 1:
+                best_idx = 0
+
+    if best_idx == 0:
+        return path  # Already starts at nearest point
+
+    # Build rotated path: start at best_idx, continue to end, then wrap to beginning
+    # Output in accumulated theta space (near current_theta)
+    rotated_pts = []
+    orig_span = pts[-1, 0] - pts[0, 0]  # Original theta span (should be ~2π for perimeters)
+    
+    # Start at best_idx
+    start_theta_accum = pts[best_idx, 0]
+    rotated_pts.append([start_theta_accum, pts[best_idx, 1]])
+    
+    # Go from best_idx+1 to end (excluding the duplicate end point if present)
+    last_theta = start_theta_accum
+    for i in range(best_idx + 1, len(pts)):
+        curr_theta = pts[i, 0]
+        # Choose the representation closest to last_theta
+        best_candidate = curr_theta
+        best_diff = abs(curr_theta - last_theta)
+        for wrap in [TWO_PI, -TWO_PI]:
+            candidate = curr_theta + wrap
+            diff = abs(candidate - last_theta)
+            if diff < best_diff:
+                best_candidate = candidate
+                best_diff = diff
+        rotated_pts.append([best_candidate, pts[i, 1]])
+        last_theta = best_candidate
+    
+    # Continue from start to best_idx-1 (wrapping around)
+    for i in range(best_idx):
+        curr_theta = pts[i, 0]
+        # Choose the representation closest to last_theta
+        best_candidate = curr_theta
+        best_diff = abs(curr_theta - last_theta)
+        for wrap in [TWO_PI, -TWO_PI]:
+            candidate = curr_theta + wrap
+            diff = abs(candidate - last_theta)
+            if diff < best_diff:
+                best_candidate = candidate
+                best_diff = diff
+        rotated_pts.append([best_candidate, pts[i, 1]])
+        last_theta = best_candidate
+    
+    # Ensure path ends at start_theta + original_span
+    if rotated_pts:
+        rotated_pts[-1] = [rotated_pts[0][0] + orig_span, rotated_pts[-1][1]]
+
+    result = PathObject(rotated_pts, path.closed, path.kind, path.radius)
+    result.is_accumulated = True
+    return result
+
+
 class PathObject:
     def __init__(self, points: List[Coord], closed: bool, kind: str, radius: float):
         self.points = points  # list of (x,y)
         self.closed = closed
         self.kind = kind      # "polygon_exterior", "polygon_hole", "line", "point"
         self.radius = radius
+        self.is_accumulated = False  # True → thetas already in accumulated printer space
 
     def __str__(self):
         return self.to_gcode()
@@ -98,24 +335,30 @@ class PathObject:
         # canonical [0,2π) — it only increases).  This lets Marlin always move forward.
         # The viewer recovers canonical position with Y_gcode % 360.
 
-        # For the closest-endpoint check use canonical current angle and
-        # shortest-arc distance so stitched seam-crossing lines (whose stored
-        # theta may exceed 2π) are handled correctly — matching the same metric
-        # used by optimize_path_order.
-        current_canonical = current_pos[0] % (2 * np.pi)
-        if (not self.closed and len(pts) >= 2 and
-            _travel_dist(self.radius, current_pos[1], current_canonical,
-                         pts[-1,1], pts[-1,0] % (2*np.pi)) <
-            _travel_dist(self.radius, current_pos[1], current_canonical,
-                         pts[0,1],  pts[0,0]  % (2*np.pi))):
-            pts = pts[::-1]
+        is_accumulated = self.is_accumulated  # set by rotate_*_path helpers
+
+        # For non-accumulated paths: pick the closer endpoint to minimise travel.
+        # Skip for accumulated paths — their start was already chosen by the
+        # rotation helper and reversing would send the printer 2π away.
+        if not is_accumulated:
+            current_canonical = current_pos[0] % (2 * np.pi)
+            if (not self.closed and len(pts) >= 2 and
+                _travel_dist(self.radius, current_pos[1], current_canonical,
+                             pts[-1,1], pts[-1,0] % (2*np.pi)) <
+                _travel_dist(self.radius, current_pos[1], current_canonical,
+                             pts[0,1],  pts[0,0]  % (2*np.pi))):
+                pts = pts[::-1]
 
         # --- Travel (G0) to path start ---
-        # Advance by the shortest FORWARD arc from current accumulated Y to t0.
-        t0_canonical = pts[0, 0]            # canonical radians [0, 2π)
-        accum_y      = current_pos[0]       # printer's accumulated Y (radians)
-        dt           = ((t0_canonical - accum_y) + np.pi) % (2 * np.pi) - np.pi  # shortest-path, [-π, π)
-        t0_accum     = accum_y + dt
+        if is_accumulated:
+            # Thetas already in accumulated printer space — use directly.
+            t0_accum = pts[0, 0]
+        else:
+            # Canonical space: advance by shortest arc from current accumulated Y.
+            t0_canonical = pts[0, 0]
+            accum_y      = current_pos[0]
+            dt           = ((t0_canonical - accum_y) + np.pi) % (2 * np.pi) - np.pi
+            t0_accum     = accum_y + dt
         x0           = pts[0, 1]
         _retract_mm    = slicing_params.get("retract_mm", 0.0)
         _retract_speed = slicing_params.get("retract_speed_mm_per_min", 1800)
@@ -137,16 +380,21 @@ class PathObject:
         # --- Unwrap canonical thetas within the path ---
         # np.unwrap removes >π jumps (handles seam crossings inside a path),
         # then shift so the sequence starts at t0_accum.
-        canon_thetas  = pts[:, 0]
-        # Improved unwrap: standard np.unwrap wraps any |diff| > π, which
-        # collapses an exact ±2π step (full circle) to 0.  Detect those cases
-        # and restore the original diff so full-circle perimeters aren't lost.
-        _diffs = np.diff(canon_thetas)
-        _wdiffs = (_diffs + np.pi) % (2 * np.pi) - np.pi
-        _fc = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1e-9)
-        _wdiffs[_fc] = _diffs[_fc]
-        unwrapped     = np.concatenate([[canon_thetas[0]], canon_thetas[0] + np.cumsum(_wdiffs)])
-        accum_thetas  = unwrapped + (t0_accum - unwrapped[0])        # shift to match t0_accum
+        if is_accumulated:
+            # Thetas are already continuous in accumulated space — use directly.
+            accum_thetas = pts[:, 0]
+        else:
+            # Canonical space: unwrap then shift to start at t0_accum.
+            # Improved unwrap: np.unwrap collapses an exact ±2π step (full circle)
+            # to 0.  Detect those steps and restore them so full-circle perimeters
+            # aren't lost.
+            canon_thetas = pts[:, 0]
+            _diffs  = np.diff(canon_thetas)
+            _wdiffs = (_diffs + np.pi) % (2 * np.pi) - np.pi
+            _fc     = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1e-9)
+            _wdiffs[_fc] = _diffs[_fc]
+            unwrapped    = np.concatenate([[canon_thetas[0]], canon_thetas[0] + np.cumsum(_wdiffs)])
+            accum_thetas = unwrapped + (t0_accum - unwrapped[0])
 
         p1 = pts[:-1]
         p2 = pts[1:]

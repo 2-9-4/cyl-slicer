@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 import time
 import math
 from vispy.scene import visuals
-from togcode import shapely_to_paths, optimize_path_order
+from togcode import shapely_to_paths, optimize_path_order, rotate_full_circle_path, rotate_closed_path_to_nearest
 from concurrent.futures import ThreadPoolExecutor
 from plotutil import set_axes_equal
 
@@ -885,8 +885,8 @@ slicing_params = {
     "infill_spacing" : 3,
     "nozzle_size": 0.4,
     "wall_count": 3,
-    "feed_mm_per_min" : 2400,
-    "travel_mm_per_min" : 2400,
+    "feed_mm_per_min" : 3600,
+    "travel_mm_per_min" : 4800,
     "support_infill_mode": "sine",   # "grid" or "sine"
     "support_sine_amplitude_mm": 2.0, # mm — sine wave half-amplitude (grid mode ignores this)
     "support_sine_period_mm": 8.0,   # mm — sine wave period along z (grid mode ignores this)
@@ -913,7 +913,7 @@ printer_params = {
     "max_radius": 120.0,    # mm — maximum printable radius; slicing stops here
     "axial_length": 165.0, # mm — printable length along the cylinder axis
     "filament_diameter": 1.75, # mm — filament diameter (1.75 or 2.85)
-    "hotend_temp": 205,    # °C — PLA
+    "hotend_temp": 215,    # °C — PLA
     "min_x_pos": 0.0,    # mm — X coordinate where the printable bed begins (prime line here)
     "min_x_margin": 5.0,  # mm — gap between bed start and model start
 }
@@ -1705,6 +1705,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         for subsection, section_name in sections:
             for path in _prepped[subsection]:
                 f.write(f";TYPE:{section_name}\n")
+                # For fully_radial_infill (full circles), rotate to start at current theta
+                # to avoid unnecessary travel back to theta=0
+                if subsection == "fully_radial_infill":
+                    path = rotate_full_circle_path(path, last_pos)
+                # For perimeters (external/internal), rotate to start at nearest point
+                # Check by subsection name since paths from polygon_to_wrapped_lines are open LineStrings
+                elif subsection in ("external_peris", "internal_peris"):
+                    path = rotate_closed_path_to_nearest(path, last_pos)
                 g,last_pos,last_e = path.to_gcode(_layer_params,last_pos,last_e)
                 f.write(g)
 
