@@ -476,10 +476,11 @@ GcodeData load_gcode(const char* path) {
 
             if (has_pos) {
                 auto& g = d.groups[ST_TRAVEL];
-                g.flush_path();  // each G0 is its own short path (flushes pending travel lines)
-                pending_lines[ST_TRAVEL].push_back(line);  // assign this G0 to the new path
+                g.flush_path();  // flush any previous (should be empty after immediate-flush below)
+                pending_lines[ST_TRAVEL].push_back(line);
                 g.add_pt(cyl_to_cart(cur_t, cur_x, radius));
                 g.add_pt(nv);
+                g.flush_path();  // flush immediately so seq is assigned before the next G1
             }
         } else {
             // Compute angular delta with wrap-around handling
