@@ -344,6 +344,7 @@ struct DrawCmd {
     uint32_t idx_offset;
     uint32_t idx_count;
     Vec3     end_pos;    // end position of this path (for playback pointer)
+    std::vector<std::string> lines;  // raw G-code lines that make up this path
 };
 
 struct GcodeData {
@@ -380,10 +381,16 @@ GcodeData load_gcode(const char* path) {
 
     uint32_t layer_idx_start[ST_COUNT] = {};
 
+    // Per-type line buffers: lines accumulated since last flush for each section type
+    std::vector<std::string> pending_lines[ST_COUNT];
+
     // Record each flushed path as a DrawCmd ordered by sequence within its layer
     for (int i = 0; i < ST_COUNT; ++i) {
-        d.groups[i].on_flush = [&](SType t, uint32_t off, uint32_t cnt, Vec3 end_pos) {
-            d.draw_cmds.push_back({t, cur_layer, cur_layer_seq++, off, cnt, end_pos});
+        d.groups[i].on_flush = [&, i](SType t, uint32_t off, uint32_t cnt, Vec3 end_pos) {
+            DrawCmd cmd{t, cur_layer, cur_layer_seq++, off, cnt, end_pos, {}};
+            cmd.lines = std::move(pending_lines[i]);
+            pending_lines[i].clear();
+            d.draw_cmds.push_back(std::move(cmd));
         };
     }
 
@@ -469,7 +476,8 @@ GcodeData load_gcode(const char* path) {
 
             if (has_pos) {
                 auto& g = d.groups[ST_TRAVEL];
-                g.flush_path();  // each G0 is its own short path
+                g.flush_path();  // each G0 is its own short path (flushes pending travel lines)
+                pending_lines[ST_TRAVEL].push_back(line);  // assign this G0 to the new path
                 g.add_pt(cyl_to_cart(cur_t, cur_x, radius));
                 g.add_pt(nv);
             }
@@ -510,7 +518,8 @@ GcodeData load_gcode(const char* path) {
                 // Seed new path with current position
                 if (has_pos) g.add_pt(cur_pos);
             }
-            
+            pending_lines[ext_type].push_back(line);  // record G1 in this path's feed
+
             // Tessellate angular spans
             float delta_t = raw_delta_t;
             if (!large_angular) {
@@ -661,6 +670,7 @@ struct App {
     float  show_seq_float = -1.f;  // float for fine control
     int    show_seq = -1;          // -1 = show all; used only when single layer selected
     int    seq_layer = INT_MIN;    // which layer show_seq is tracking (for reset on change)
+    int    feed_prev_seq = -2;    // previous show_seq, used to detect changes for auto-scroll
 } g;
 
 void cb_mouse(GLFWwindow* w, int btn, int act, int) {
@@ -948,6 +958,42 @@ int main(int argc, char** argv) {
         ImGui::TextDisabled("R: reset camera");
 
         ImGui::End();
+
+        // ── G-code feed window (single-layer playback only) ──
+        bool seq_feed_mode = (g.show_layer_min == g.show_layer_max && g.show_seq >= 0);
+        if (seq_feed_mode) {
+            float feed_w = 420.f;
+            float feed_h = (float)g.H * 0.30f;
+            ImGui::SetNextWindowPos({8.f, (float)g.H - feed_h - 8.f}, ImGuiCond_Always);
+            ImGui::SetNextWindowSize({feed_w, feed_h}, ImGuiCond_Always);
+            ImGui::Begin("G-code Feed", nullptr,
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_HorizontalScrollbar);
+
+            bool seq_changed = (g.show_seq != g.feed_prev_seq);
+            g.feed_prev_seq = g.show_seq;
+
+            int lyr = g.show_layer_min;
+            for (auto& cmd : gcode.draw_cmds) {
+                if (cmd.layer != lyr) continue;
+                if (cmd.seq > g.show_seq) break;
+                bool is_current = (cmd.seq == g.show_seq);
+                const float* col = kColors[cmd.type];
+                for (auto& ln : cmd.lines) {
+                    if (is_current)
+                        ImGui::TextColored(ImVec4(col[0], col[1], col[2], 1.f), "%s", ln.c_str());
+                    else
+                        ImGui::TextDisabled("%s", ln.c_str());
+                }
+            }
+
+            if (seq_changed)
+                ImGui::SetScrollHereY(1.0f);
+
+            ImGui::End();
+        } else {
+            g.feed_prev_seq = -2;
+        }
 
         // ── 3D render ──
         glClearColor(0.12f, 0.12f, 0.12f, 1.f);
