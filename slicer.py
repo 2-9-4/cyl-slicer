@@ -93,7 +93,7 @@ def unwrap_polygon(polygon, period=2*np.pi):
     # Unwrap theta to remove jumps across 0/2pi
     theta_unwrapped = np.unwrap(theta, discont=np.pi)  # default jump is pi
     coords[:, 0] = theta_unwrapped
-    coords -= [np.floor(np.min(coords[:,0])/(2*np.pi))*2*np.pi,0]
+    coords -= [np.floor(max(0.0, np.min(coords[:,0]))/(2*np.pi))*2*np.pi,0]
     return coords
 
 def find_boundary_edges(triangles):

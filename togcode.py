@@ -127,25 +127,7 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
         
         # t2_accum = t1_accum + edge_dt_orig (preserving the original edge span)
         t2_accum = t1_accum + edge_dt_orig
-        
-        # Ensure the edge contains current_theta by adjusting the wrap if needed
-        if edge_dt_orig > 0:
-            # Edge goes from t1 to t2 (increasing theta)
-            if current_theta < t1_accum:
-                t1_accum -= TWO_PI
-                t2_accum -= TWO_PI
-            elif current_theta > t2_accum:
-                t1_accum += TWO_PI
-                t2_accum += TWO_PI
-        else:
-            # Edge goes from t1 to t2 (decreasing theta)
-            if current_theta > t1_accum:
-                t1_accum += TWO_PI
-                t2_accum += TWO_PI
-            elif current_theta < t2_accum:
-                t1_accum -= TWO_PI
-                t2_accum -= TWO_PI
-        
+
         # Vector from (t1_accum, x1) to (t2_accum, x2)
         edge_dt = t2_accum - t1_accum
         edge_dx = x2 - x1
@@ -197,7 +179,7 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     else:
         # Closest point is near a vertex, convert all to accumulated space and use that vertex
         new_pts = []
-        for i in range(len(pts)):
+        for i in range(len(pts) - 1):  # Skip the closing duplicate (first == last for closed polygons)
             t_accum = (pts[i, 0] % TWO_PI) + round((current_theta - (pts[i, 0] % TWO_PI)) / TWO_PI) * TWO_PI
             new_pts.append([t_accum, pts[i, 1]])
         # Preserve the original span
@@ -222,9 +204,9 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     start_theta_accum = pts[best_idx, 0]
     rotated_pts.append([start_theta_accum, pts[best_idx, 1]])
     
-    # Go from best_idx+1 to end (excluding the duplicate end point if present)
+    # Go from best_idx+1 to end (excluding the appended closing point)
     last_theta = start_theta_accum
-    for i in range(best_idx + 1, len(pts)):
+    for i in range(best_idx + 1, len(pts) - 1):
         curr_theta = pts[i, 0]
         # Choose the representation closest to last_theta
         best_candidate = curr_theta
@@ -253,9 +235,9 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
         rotated_pts.append([best_candidate, pts[i, 1]])
         last_theta = best_candidate
     
-    # Ensure path ends at start_theta + original_span
+    # Close the path back to the starting point
     if rotated_pts:
-        rotated_pts[-1] = [rotated_pts[0][0] + orig_span, rotated_pts[-1][1]]
+        rotated_pts.append([rotated_pts[0][0] + orig_span, rotated_pts[0][1]])
 
     result = PathObject(rotated_pts, path.closed, path.kind, path.radius)
     result.is_accumulated = True
@@ -323,7 +305,7 @@ class PathObject:
         if len(pts) > 1:
             dx   = pts[1:, 1] - pts[:-1, 1]
             dt   = (pts[1:, 0] - pts[:-1, 0]) * self.radius
-            keep = np.concatenate([[True], np.hypot(dx, dt) > 5e-3])
+            keep = np.concatenate([[True], np.hypot(dx, dt) > 1e-2])
             pts  = pts[keep]
             if len(pts) < 2:
                 return "", current_pos, current_e
