@@ -247,19 +247,30 @@ def cylindrical_cross_section(mesh, radius):
         open_tails = list(valid_keys - valid_vals)   # no incoming edge
         open_heads = list(valid_vals - valid_keys)   # no outgoing edge
 
-        if open_tails and open_heads:
+        # Iterative stitching: greedy nearest-neighbour can fail to match a pair when
+        # two tails tie for the same head (one grabs it, leaving the other's true partner
+        # unclaimed).  Re-running with the updated open set resolves these cascades.
+        stitch_tol = radius * 0.5   # generous — only exact T-junction pairs will be close
+        prev_n_open = float('inf')
+        while open_tails and open_heads and len(open_tails) < prev_n_open:
+            prev_n_open = len(open_tails)
             tail_coords = pts_arr[open_tails]
             head_coords = pts_arr[open_heads]
             tree = cKDTree(head_coords)
-            # stitch_tol: max gap we're willing to close (proportional to layer height)
-            stitch_tol = radius * 0.5   # generous — only exact T-junction pairs will be close
             dists, idxs = tree.query(tail_coords, distance_upper_bound=stitch_tol)
+            stitched_heads = set()
             for tail, dist, hi in zip(open_tails, dists, idxs):
                 if dist < stitch_tol and hi < len(open_heads):
                     head = open_heads[hi]
-                    if head not in next_of:          # head has no outgoing edge yet
-                        next_of[head] = next_of[tail]   # reroute: head → tail's destination
-                        next_of[tail] = head             # close the gap: tail → head
+                    if head not in next_of and head not in stitched_heads:
+                        next_of[head] = next_of[tail]
+                        next_of[tail] = head
+                        stitched_heads.add(head)
+            # Recompute open endpoints for the next iteration
+            valid_keys = {k for k, v in next_of.items() if v is not None}
+            valid_vals = {v for v in next_of.values() if v is not None}
+            open_tails = list(valid_keys - valid_vals)
+            open_heads = list(valid_vals - valid_keys)
     else:
         pts_arr = np.empty((0, 3))
 
@@ -866,21 +877,31 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         raw_span = coords[:, 0].max() - coords[:, 0].min()
         if raw_span > 2 * math.pi - 0.5:
             # Full-circle ring: spans more than one period.  Clip to [0, 2π],
-            # then emit only the arc segments (varying θ) as separate open
-            # LineStrings — skip the constant-θ seam edges so no extra material
-            # is deposited at the seam.  to_gcode handles the ±2π step in each
-            # arc via its improved unwrap logic.
+            # then collect all arc segments (dtheta != 0) as one LineString and
+            # skip only the constant-θ seam edges (dtheta == 0 from the clip box)
+            # so no extra backward-rotation move is emitted at the seam.
             canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
             clipped = poly.intersection(canonical_clip)
             if clipped.is_empty or not isinstance(clipped, Polygon):
                 continue
             rc = np.array(clipped.exterior.coords)
+            # Seam edges from the clip box are exactly vertical (dtheta=0).
+            # Collect consecutive arc points into runs, then emit each run as
+            # one LineString so the perimeter isn't chopped into thousands of
+            # tiny segments (which previously lost all segments with dtheta<0.1).
+            run = []
             for k in range(len(rc) - 1):
                 p0, p1 = rc[k], rc[k + 1]
-                dtheta = p1[0] - p0[0]
-                if abs(dtheta) > 0.1:          # arc segment (not a seam line)
-                    seg = [p1, p0] if dtheta < 0 else [p0, p1]  # always θ-increasing
-                    result.append(LineString(seg))
+                if abs(p1[0] - p0[0]) > 1e-9:   # arc segment
+                    if not run:
+                        run.append(p0)
+                    run.append(p1)
+                else:                            # seam edge — flush current run
+                    if len(run) >= 2:
+                        result.append(LineString(run))
+                    run = []
+            if len(run) >= 2:
+                result.append(LineString(run))
             continue
         else:
             coords[:, 0] = np.unwrap(coords[:, 0])
@@ -1017,9 +1038,22 @@ mesh.apply_translation([0, 0, _z_shift])
 
 # Subdivide large faces so that cylindrical cross-sections have enough sample points
 # along long edges (avoids jitter from straight-line approximation of curved arcs).
+# IMPORTANT: trimesh.remesh.subdivide_to_size is NOT manifold-preserving — it splits
+# each face's edges independently, creating T-junctions where one face is split but its
+# neighbour still has the original unsplit edge.  T-junctions cause the directed
+# cross-section algorithm to produce two outgoing crossing points (both tails) instead
+# of a tail+head pair, so stitching can't close them, and entire polygon loops are
+# silently discarded.  Loop subdivision (trimesh.remesh.subdivide) splits all edges of
+# each face and maintains manifold topology, at the cost of a few extra passes.
 _max_edge = slicing_params["layer_height"] * 20  # subdivide any edge longer than 5 layers
 _orig_faces = len(mesh.faces)
-mesh = trimesh.Trimesh(*trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, _max_edge), process=True)
+_sub_verts, _sub_faces = mesh.vertices, mesh.faces
+for _ in range(8):
+    _cur_max = trimesh.Trimesh(_sub_verts, _sub_faces, process=False).edges_unique_length.max()
+    if _cur_max <= _max_edge:
+        break
+    _sub_verts, _sub_faces = trimesh.remesh.subdivide(_sub_verts, _sub_faces)
+mesh = trimesh.Trimesh(_sub_verts, _sub_faces, process=False)
 print(f"Subdivided mesh: {_orig_faces} → {len(mesh.faces)} faces (max edge {_max_edge:.2f} mm)")
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
