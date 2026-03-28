@@ -309,8 +309,10 @@ struct LayerRange {
 
 struct PathGroup {
     SType type;
-    std::vector<Vert>     verts;
-    std::vector<uint32_t> idx;
+    bool  is_lines = false;          // if true: line-strip mode (no tubes)
+    std::vector<Vert>     verts;     // tube geometry (unused when is_lines)
+    std::vector<uint32_t> idx;       // tube element indices (unused when is_lines)
+    std::vector<Vec3>     line_verts;// flat position pairs for GL_LINES
     std::vector<LayerRange> layer_ranges;
     GLuint vao = 0, vbo = 0, ebo = 0;
 
@@ -321,15 +323,26 @@ struct PathGroup {
 
     void add_pt(Vec3 p)  { cur_path.push_back(p); }
 
+    uint32_t geometry_size() const {
+        return is_lines ? (uint32_t)line_verts.size() : (uint32_t)idx.size();
+    }
+
     std::function<void(SType, uint32_t, uint32_t, Vec3)> on_flush;
 
     void flush_path() {
-        uint32_t before = (uint32_t)idx.size();
+        uint32_t before = geometry_size();
         Vec3 end_pos = cur_path.size() >= 1 ? cur_path.back() : Vec3{0,0,0};
-        if (cur_path.size() >= 2)
-            build_tube(verts, idx, cur_path, tube_lh, tube_lw);
+        if (is_lines) {
+            for (int i = 0; i + 1 < (int)cur_path.size(); ++i) {
+                line_verts.push_back(cur_path[i]);
+                line_verts.push_back(cur_path[i + 1]);
+            }
+        } else {
+            if (cur_path.size() >= 2)
+                build_tube(verts, idx, cur_path, tube_lh, tube_lw);
+        }
         cur_path.clear();
-        uint32_t after = (uint32_t)idx.size();
+        uint32_t after = geometry_size();
         if (after > before && on_flush)
             on_flush(type, before, after - before, end_pos);
     }
@@ -363,6 +376,8 @@ struct GcodeData {
 GcodeData load_gcode(const char* path) {
     GcodeData d;
     for (int i = 0; i < ST_COUNT; ++i) d.groups[i].type = (SType)i;
+    d.groups[ST_SUPPORT].is_lines = true;
+    d.groups[ST_TRAVEL].is_lines  = true;
 
     std::ifstream f(path);
     if (!f) { std::cerr << "Cannot open: " << path << "\n"; return d; }
@@ -400,7 +415,7 @@ GcodeData load_gcode(const char* path) {
             d.groups[i].flush_path();
         for (int i = 0; i < ST_COUNT; ++i) {
             uint32_t start = layer_idx_start[i];
-            uint32_t end   = (uint32_t)d.groups[i].idx.size();
+            uint32_t end   = d.groups[i].geometry_size();
             if (end > start)
                 d.groups[i].layer_ranges.push_back({cur_layer, -1, start, end - start});
             layer_idx_start[i] = end;
@@ -530,7 +545,8 @@ GcodeData load_gcode(const char* path) {
             }
             // For large angular moves (>180°), use the raw delta_t as-is (full circle, etc.)
             
-            int steps = std::max(1, (int)(std::abs(delta_t) / 2.f));
+            bool is_perim = (sec_type == ST_EXTERNAL || sec_type == ST_INTERNAL);
+            int steps = std::max(1, (int)(std::abs(delta_t) / (is_perim ? 2.f : 10.f)));
             for (int s = 1; s <= steps; ++s) {
                 float frac = (float)s / (float)steps;
                 float it = cur_t + delta_t * frac;
@@ -612,14 +628,15 @@ void main() {
 static const char* kFrag = R"glsl(
 #version 330 core
 in  vec3 vNormal;
-uniform vec4 color;
-uniform vec3 lightDir;   // normalised, set once at startup
+uniform vec4  color;
+uniform vec3  lightDir;    // normalised, set once at startup
+uniform float uAmbient;    // 0.3 for lit tubes, 1.0 for flat lines
 out vec4 fragColor;
 void main() {
-    float diff    = abs(dot(normalize(vNormal), lightDir));
-    float ambient = 0.30;
-    float lit     = ambient + (1.0 - ambient) * diff;
-    fragColor = vec4(color.rgb * lit, color.a);
+    float diff = 0.0;
+    if (uAmbient < 1.0) diff = abs(dot(normalize(vNormal), lightDir));
+    float lit  = uAmbient + (1.0 - uAmbient) * diff;
+    fragColor  = vec4(color.rgb * lit, color.a);
 }
 )glsl";
 
@@ -772,36 +789,53 @@ int main(int argc, char** argv) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     // No primitive restart needed — tube meshes use plain GL_TRIANGLES
 
-    GLuint prog     = make_program();
-    GLint  mvp_loc  = glGetUniformLocation(prog, "MVP");
-    GLint  col_loc  = glGetUniformLocation(prog, "color");
-    GLint  ldir_loc = glGetUniformLocation(prog, "lightDir");
+    GLuint prog         = make_program();
+    GLint  mvp_loc      = glGetUniformLocation(prog, "MVP");
+    GLint  col_loc      = glGetUniformLocation(prog, "color");
+    GLint  ldir_loc     = glGetUniformLocation(prog, "lightDir");
+    GLint  uAmbient_loc = glGetUniformLocation(prog, "uAmbient");
 
-    // Upload tube geometry
-    // Vertex layout: px py pz nx ny nz  (6 floats = sizeof(Vert))
+    // Upload geometry — tubes use indexed triangles; lines use flat GL_LINES vertex arrays
     for (auto& grp : gcode.groups) {
-        if (grp.verts.empty()) continue;
-        glGenVertexArrays(1, &grp.vao);
-        glGenBuffers(1, &grp.vbo);
-        glGenBuffers(1, &grp.ebo);
-        glBindVertexArray(grp.vao);
-        glBindBuffer(GL_ARRAY_BUFFER, grp.vbo);
-        glBufferData(GL_ARRAY_BUFFER,
-            (GLsizeiptr)(grp.verts.size() * sizeof(Vert)),
-            grp.verts.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grp.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-            (GLsizeiptr)(grp.idx.size() * sizeof(uint32_t)),
-            grp.idx.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)0);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-        glBindVertexArray(0);
-
-        std::cout << kNames[grp.type] << ": "
-                  << grp.verts.size() << " verts, "
-                  << grp.idx.size() / 3 << " triangles\n";
+        if (grp.is_lines) {
+            if (grp.line_verts.empty()) continue;
+            glGenVertexArrays(1, &grp.vao);
+            glGenBuffers(1, &grp.vbo);
+            glBindVertexArray(grp.vao);
+            glBindBuffer(GL_ARRAY_BUFFER, grp.vbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                (GLsizeiptr)(grp.line_verts.size() * sizeof(Vec3)),
+                grp.line_verts.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vec3), (void*)0);
+            glEnableVertexAttribArray(0);
+            glBindVertexArray(0);
+            std::cout << kNames[grp.type] << ": "
+                      << grp.line_verts.size() << " line verts ("
+                      << grp.line_verts.size() / 2 << " segments)\n";
+        } else {
+            // Tube geometry: px py pz nx ny nz  (6 floats = sizeof(Vert))
+            if (grp.verts.empty()) continue;
+            glGenVertexArrays(1, &grp.vao);
+            glGenBuffers(1, &grp.vbo);
+            glGenBuffers(1, &grp.ebo);
+            glBindVertexArray(grp.vao);
+            glBindBuffer(GL_ARRAY_BUFFER, grp.vbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                (GLsizeiptr)(grp.verts.size() * sizeof(Vert)),
+                grp.verts.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grp.ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                (GLsizeiptr)(grp.idx.size() * sizeof(uint32_t)),
+                grp.idx.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vert), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+            glBindVertexArray(0);
+            std::cout << kNames[grp.type] << ": "
+                      << grp.verts.size() << " verts, "
+                      << grp.idx.size() / 3 << " triangles\n";
+        }
     }
 
     // Occluder at min radius
@@ -1006,6 +1040,7 @@ int main(int argc, char** argv) {
         glUseProgram(prog);
         glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, glm::value_ptr(mvp));
         glUniform3fv(ldir_loc, 1, glm::value_ptr(ldir));
+        glUniform1f(uAmbient_loc, 0.3f);  // default: lit tubes
 
         // Occluder
         glDepthMask(GL_TRUE);
@@ -1034,11 +1069,15 @@ int main(int argc, char** argv) {
                     if ((int)cmd.type != bound_i) {
                         glUniform4f(col_loc, kColors[cmd.type][0], kColors[cmd.type][1],
                                     kColors[cmd.type][2], kAlpha[cmd.type]);
+                        glUniform1f(uAmbient_loc, grp.is_lines ? 1.0f : 0.3f);
                         bound_i = (int)cmd.type;
                     }
                     if (grp.vao != bound_vao) { glBindVertexArray(grp.vao); bound_vao = grp.vao; }
-                    glDrawElements(GL_TRIANGLES, (GLsizei)cmd.idx_count, GL_UNSIGNED_INT,
-                                   (void*)(uintptr_t)(cmd.idx_offset * sizeof(uint32_t)));
+                    if (grp.is_lines)
+                        glDrawArrays(GL_LINES, (GLint)cmd.idx_offset, (GLsizei)cmd.idx_count);
+                    else
+                        glDrawElements(GL_TRIANGLES, (GLsizei)cmd.idx_count, GL_UNSIGNED_INT,
+                                       (void*)(uintptr_t)(cmd.idx_offset * sizeof(uint32_t)));
                     if (pass == 1) glDepthMask(GL_TRUE);
                 }
                 if (bound_vao) glBindVertexArray(0);
@@ -1071,11 +1110,15 @@ int main(int argc, char** argv) {
                     if (!grp.vao) continue;
                     if (transparent) glDepthMask(GL_FALSE);
                     glUniform4f(col_loc, kColors[i][0], kColors[i][1], kColors[i][2], kAlpha[i]);
+                    glUniform1f(uAmbient_loc, grp.is_lines ? 1.0f : 0.3f);
                     glBindVertexArray(grp.vao);
                     for (auto& lr : grp.layer_ranges) {
                         if (lr.layer_num < g.show_layer_min || lr.layer_num > g.show_layer_max) continue;
-                        glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
-                                       (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
+                        if (grp.is_lines)
+                            glDrawArrays(GL_LINES, (GLint)lr.idx_offset, (GLsizei)lr.idx_count);
+                        else
+                            glDrawElements(GL_TRIANGLES, (GLsizei)lr.idx_count, GL_UNSIGNED_INT,
+                                           (void*)(uintptr_t)(lr.idx_offset * sizeof(uint32_t)));
                     }
                     glBindVertexArray(0);
                     if (transparent) glDepthMask(GL_TRUE);

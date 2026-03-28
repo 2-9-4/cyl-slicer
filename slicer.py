@@ -997,6 +997,14 @@ slicing_params["extrusion_per_mm"] = (
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
 mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "offset_cube.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
+# Remove duplicate faces before anything else — Blender STL exports each face twice,
+# which makes every edge appear 4× instead of 2×, causing the directed cross-section
+# algorithm to mark every crossing point as ambiguous and produce zero geometry.
+_orig_face_count = len(mesh.faces)
+mesh.update_faces(mesh.unique_faces())
+mesh.remove_unreferenced_vertices()
+if len(mesh.faces) < _orig_face_count:
+    print(f"  removed {_orig_face_count - len(mesh.faces)} duplicate faces ({_orig_face_count} → {len(mesh.faces)})")
 if not mesh.is_watertight:
     # The directed cross-section algorithm handles open boundaries without repair.
     # Just ensure normals are consistently oriented so FROM/TO direction is reliable.
