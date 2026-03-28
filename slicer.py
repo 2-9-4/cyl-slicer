@@ -872,39 +872,52 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         return []
 
     result = []
+
+    # Check span at the polygon level (exterior ring) once.
+    _ext_coords = np.array(poly.exterior.coords)
+    raw_span = _ext_coords[:, 0].max() - _ext_coords[:, 0].min()
+
+    if raw_span > 2 * math.pi - 0.5:
+        # Polygon spans more than one period — either a true full-circle ring or a
+        # helical strip whose end caps straddle the 0/2π seam.
+        # Fold ±2π copies in before clipping so those end-cap slivers are retained
+        # (a true ring folds back onto itself and is unchanged; a helical strip
+        # gains the missing end caps from the shifted copies).
+        canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
+        folded = shapely.unary_union([
+            poly,
+            shift_polygon(poly,  2 * math.pi),
+            shift_polygon(poly, -2 * math.pi),
+        ]).intersection(canonical_clip)
+        if folded.is_empty:
+            return []
+        folded_polys = ([folded] if isinstance(folded, Polygon)
+                        else [g for g in folded.geoms
+                              if isinstance(g, Polygon) and not g.is_empty])
+        for fp in folded_polys:
+            for ring in [fp.exterior] + list(fp.interiors):
+                rc = np.array(ring.coords)
+                # Seam edges from the clip box are exactly vertical (dtheta=0).
+                # Collect consecutive arc points into runs, flush on seam edges,
+                # so no backward-rotation move is emitted at the seam.
+                run = []
+                for k in range(len(rc) - 1):
+                    p0, p1 = rc[k], rc[k + 1]
+                    if abs(p1[0] - p0[0]) > 1e-9:   # arc segment
+                        if not run:
+                            run.append(p0)
+                        run.append(p1)
+                    else:                            # seam edge — flush current run
+                        if len(run) >= 2:
+                            result.append(LineString(run))
+                        run = []
+                if len(run) >= 2:
+                    result.append(LineString(run))
+        return result
+
     for ring in [poly.exterior] + list(poly.interiors):
         coords = np.array(ring.coords)
-        raw_span = coords[:, 0].max() - coords[:, 0].min()
-        if raw_span > 2 * math.pi - 0.5:
-            # Full-circle ring: spans more than one period.  Clip to [0, 2π],
-            # then collect all arc segments (dtheta != 0) as one LineString and
-            # skip only the constant-θ seam edges (dtheta == 0 from the clip box)
-            # so no extra backward-rotation move is emitted at the seam.
-            canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
-            clipped = poly.intersection(canonical_clip)
-            if clipped.is_empty or not isinstance(clipped, Polygon):
-                continue
-            rc = np.array(clipped.exterior.coords)
-            # Seam edges from the clip box are exactly vertical (dtheta=0).
-            # Collect consecutive arc points into runs, then emit each run as
-            # one LineString so the perimeter isn't chopped into thousands of
-            # tiny segments (which previously lost all segments with dtheta<0.1).
-            run = []
-            for k in range(len(rc) - 1):
-                p0, p1 = rc[k], rc[k + 1]
-                if abs(p1[0] - p0[0]) > 1e-9:   # arc segment
-                    if not run:
-                        run.append(p0)
-                    run.append(p1)
-                else:                            # seam edge — flush current run
-                    if len(run) >= 2:
-                        result.append(LineString(run))
-                    run = []
-            if len(run) >= 2:
-                result.append(LineString(run))
-            continue
-        else:
-            coords[:, 0] = np.unwrap(coords[:, 0])
+        coords[:, 0] = np.unwrap(coords[:, 0])
         # Skip degenerate rings whose θ-extent is negligibly thin (e.g. a
         # near-tangent cylindrical cross-section of a flat face).  Such rings
         # produce a back-and-forth line in G-code rather than a closed loop.
