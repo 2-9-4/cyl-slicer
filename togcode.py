@@ -98,9 +98,19 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     
     theta_span = np.max(pts[:, 0]) - np.min(pts[:, 0])
     is_perimeter = path.closed or theta_span >= TWO_PI * 0.9
-    
+
     if not is_perimeter:
         return path  # Not a perimeter, don't rotate
+
+    # Helical paths span ~2π in θ but have different z values at start and end
+    # (they advance by one pitch per revolution).  Rotating such a path creates a
+    # seam that connects two physically-different z positions (the thread jump bug).
+    # Detect by comparing z at θ=0 and θ=2π ends; skip rotation if they differ
+    # by more than one nozzle width.
+    _z_start = pts[0, 1]
+    _z_end   = pts[-1, 1]
+    if abs(_z_end - _z_start) > 1.0:  # helical path: z advances per revolution → don't rotate
+        return path
 
     current_theta, current_x = current_pos
 
@@ -319,16 +329,11 @@ class PathObject:
 
         is_accumulated = self.is_accumulated  # set by rotate_*_path helpers
 
-        # For non-accumulated paths: pick the closer endpoint to minimise travel.
-        # Skip for accumulated paths — their start was already chosen by the
-        # rotation helper and reversing would send the printer 2π away.
-        if not is_accumulated:
-            current_canonical = current_pos[0] % (2 * np.pi)
-            if (not self.closed and len(pts) >= 2 and
-                _travel_dist(self.radius, current_pos[1], current_canonical,
-                             pts[-1,1], pts[-1,0] % (2*np.pi)) <
-                _travel_dist(self.radius, current_pos[1], current_canonical,
-                             pts[0,1],  pts[0,0]  % (2*np.pi))):
+        # For non-accumulated open paths: ensure the path goes forward (θ increasing).
+        # Y must always increase — flipping a forward path to "save travel" would
+        # cause backward G1 extrusion.  Flip only if the path is currently backward.
+        if not is_accumulated and not self.closed and len(pts) >= 2:
+            if pts[0, 0] > pts[-1, 0]:
                 pts = pts[::-1]
 
         # --- Travel (G0) to path start ---
@@ -336,10 +341,14 @@ class PathObject:
             # Thetas already in accumulated printer space — use directly.
             t0_accum = pts[0, 0]
         else:
-            # Canonical space: advance by shortest arc from current accumulated Y.
+            # Canonical space: advance by forward-only arc from current accumulated Y.
+            # Y must always increase (CW rotation) — if shortest arc would go backward
+            # (dt < 0), use the forward equivalent (dt + 2π) instead.
             t0_canonical = pts[0, 0]
             accum_y      = current_pos[0]
             dt           = ((t0_canonical - accum_y) + np.pi) % (2 * np.pi) - np.pi
+            if dt < 0:
+                dt += 2 * np.pi
             t0_accum     = accum_y + dt
         x0           = pts[0, 1]
         _retract_mm    = slicing_params.get("retract_mm", 0.0)
@@ -367,13 +376,16 @@ class PathObject:
             accum_thetas = pts[:, 0]
         else:
             # Canonical space: unwrap then shift to start at t0_accum.
-            # Improved unwrap: np.unwrap collapses an exact ±2π step (full circle)
-            # to 0.  Detect those steps and restore them so full-circle perimeters
-            # aren't lost.
+            # Improved unwrap: np.unwrap collapses a ≈±2π step (full circle)
+            # to ≈0.  Detect those steps and restore them so full-circle perimeters
+            # aren't lost.  After _reduce_collinear, a 140-point near-full-circle
+            # helix can collapse to 2 points with a single diff of ~6.07 rad,
+            # which wraps to -0.21 rad.  Threshold 1.0 rad covers paths starting
+            # up to ~57° from the seam.
             canon_thetas = pts[:, 0]
             _diffs  = np.diff(canon_thetas)
             _wdiffs = (_diffs + np.pi) % (2 * np.pi) - np.pi
-            _fc     = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1e-9)
+            _fc     = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1.0)
             _wdiffs[_fc] = _diffs[_fc]
             unwrapped    = np.concatenate([[canon_thetas[0]], canon_thetas[0] + np.cumsum(_wdiffs)])
             accum_thetas = unwrapped + (t0_accum - unwrapped[0])

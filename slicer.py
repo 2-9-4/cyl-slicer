@@ -897,22 +897,55 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         for fp in folded_polys:
             for ring in [fp.exterior] + list(fp.interiors):
                 rc = np.array(ring.coords)
-                # Seam edges from the clip box are exactly vertical (dtheta=0).
-                # Collect consecutive arc points into runs, flush on seam edges,
-                # so no backward-rotation move is emitted at the seam.
+                # Split the ring into monotone-θ runs.  Two triggers:
+                #   1. Seam edges (dθ=0) — created by the clip-box intersection.
+                #   2. Direction changes (dθ sign flip) — handle large polygons that
+                #      sit entirely within [0, 2π] and have no clip-box seam edges;
+                #      their ring has a "forward" half and a "backward" half that
+                #      must become separate runs so each can be reversed if needed.
+                def _flush_run(run):
+                    if len(run) >= 2:
+                        run_arr = np.array(run)
+                        if run_arr[-1, 0] < run_arr[0, 0]:  # backward — reverse
+                            run_arr = run_arr[::-1]
+                        # Skip seam-crossing fragments that connect different
+                        # helix threads rather than tracing a real edge.
+                        # Two checks: (1) nearly vertical with tiny θ, or
+                        # (2) short segment (≤3 pts) with steep z/arc ratio —
+                        # real perimeter arcs are densified to many points.
+                        theta_ext = run_arr[-1, 0] - run_arr[0, 0]
+                        z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
+                        if theta_ext < 0.05 and z_ext > 2.0:
+                            return
+                        if len(run_arr) <= 3 and z_ext > 5.0:
+                            return
+                        result.append(LineString(run_arr))
+
                 run = []
+                prev_sign = None  # sign of last non-zero dθ
                 for k in range(len(rc) - 1):
                     p0, p1 = rc[k], rc[k + 1]
-                    if abs(p1[0] - p0[0]) > 1e-9:   # arc segment
+                    dth = p1[0] - p0[0]
+                    if abs(dth) <= 1e-9:        # seam edge — flush
+                        _flush_run(run)
+                        run = []
+                        prev_sign = None
+                    else:
+                        curr_sign = 1 if dth > 0 else -1
+                        if prev_sign is not None and curr_sign != prev_sign:
+                            # θ direction reversed — this is the turning point
+                            # (top-right or bottom-left corner of the polygon).
+                            # Include p0 as the last point of the outgoing run,
+                            # then start the new run from p0.
+                            run.append(p0)
+                            _flush_run(run)
+                            run = []
+                            prev_sign = None
                         if not run:
                             run.append(p0)
                         run.append(p1)
-                    else:                            # seam edge — flush current run
-                        if len(run) >= 2:
-                            result.append(LineString(run))
-                        run = []
-                if len(run) >= 2:
-                    result.append(LineString(run))
+                        prev_sign = curr_sign
+                _flush_run(run)
         return result
 
     for ring in [poly.exterior] + list(poly.interiors):
@@ -1029,7 +1062,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "offset_cube.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "helix.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
@@ -1579,6 +1612,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     if plot_per_layer:
         plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),ax=ax_2d_layer,add_points=False,color="blue")
     final_perimeter = do_transform(layer_data[i]["external_peris"])
+
+
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
         internal_perimeter = do_transform(layer_data[i]["external_peris"]).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
