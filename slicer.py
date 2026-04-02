@@ -898,39 +898,45 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
             for ring in [fp.exterior] + list(fp.interiors):
                 rc = np.array(ring.coords)
                 # Split the ring into monotone-θ runs.  Two triggers:
-                #   1. Seam edges (dθ=0) — created by the clip-box intersection.
+                #   1. Seam edges (dθ=0) — created by the clip-box intersection
+                #      or by real endcap edges of the polygon.
                 #   2. Direction changes (dθ sign flip) — handle large polygons that
                 #      sit entirely within [0, 2π] and have no clip-box seam edges;
                 #      their ring has a "forward" half and a "backward" half that
                 #      must become separate runs so each can be reversed if needed.
-                def _flush_run(run):
+                def _flush_run(run, is_endcap=False):
                     if len(run) >= 2:
                         run_arr = np.array(run)
                         if run_arr[-1, 0] < run_arr[0, 0]:  # backward — reverse
                             run_arr = run_arr[::-1]
-                        # Skip seam-crossing fragments that connect different
-                        # helix threads rather than tracing a real edge.
-                        # Two checks: (1) nearly vertical with tiny θ, or
-                        # (2) short segment (≤3 pts) with steep z/arc ratio —
-                        # real perimeter arcs are densified to many points.
-                        theta_ext = run_arr[-1, 0] - run_arr[0, 0]
-                        z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
-                        if theta_ext < 0.05 and z_ext > 2.0:
-                            return
-                        if len(run_arr) <= 3 and z_ext > 5.0:
-                            return
+                        if not is_endcap:
+                            # Skip seam-crossing fragments that connect different
+                            # helix threads rather than tracing a real edge.
+                            theta_ext = run_arr[-1, 0] - run_arr[0, 0]
+                            z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
+                            if len(run_arr) <= 3 and z_ext > 5.0 and theta_ext < 0.3:
+                                return
                         result.append(LineString(run_arr))
 
                 run = []
+                endcap = []  # consecutive dθ=0 edges (vertical endcap)
                 prev_sign = None  # sign of last non-zero dθ
                 for k in range(len(rc) - 1):
                     p0, p1 = rc[k], rc[k + 1]
                     dth = p1[0] - p0[0]
-                    if abs(dth) <= 1e-9:        # seam edge — flush
+                    if abs(dth) <= 1e-9:        # seam/endcap edge (dθ=0)
                         _flush_run(run)
                         run = []
                         prev_sign = None
+                        # Collect consecutive vertical edges as an endcap path.
+                        if not endcap:
+                            endcap.append(p0)
+                        endcap.append(p1)
                     else:
+                        # Flush any pending endcap before starting an arc run.
+                        if endcap:
+                            _flush_run(endcap, is_endcap=True)
+                            endcap = []
                         curr_sign = 1 if dth > 0 else -1
                         if prev_sign is not None and curr_sign != prev_sign:
                             # θ direction reversed — this is the turning point
@@ -945,6 +951,8 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
                             run.append(p0)
                         run.append(p1)
                         prev_sign = curr_sign
+                if endcap:
+                    _flush_run(endcap, is_endcap=True)
                 _flush_run(run)
         return result
 
