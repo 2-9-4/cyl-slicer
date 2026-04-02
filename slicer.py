@@ -909,7 +909,15 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
                         run_arr = np.array(run)
                         if run_arr[-1, 0] < run_arr[0, 0]:  # backward — reverse
                             run_arr = run_arr[::-1]
-                        if not is_endcap:
+                        if is_endcap:
+                            # Vertical edges (dθ=0) are either real physical endcaps
+                            # or clip-box seam artifacts.  Seam artifacts sit exactly
+                            # on the clip boundaries (θ=lower or θ=upper=2π); real
+                            # endcaps are at interior θ values.  Skip seam artifacts.
+                            theta = run_arr[0, 0]
+                            if abs(theta - lower) < 1e-6 or abs(theta - upper) < 1e-6:
+                                return
+                        else:
                             # Skip seam-crossing fragments that connect different
                             # helix threads rather than tracing a real edge.
                             theta_ext = run_arr[-1, 0] - run_arr[0, 0]
