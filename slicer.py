@@ -645,12 +645,29 @@ def do_solid_infill(peri, slicing_params, current_r, plot_infill=False, ax=None,
         # Constant-θ lines — runs along the cylinder axis (z direction)
         _solid_step = slicing_params["nozzle_size"] / current_r
         _n_solid = int(np.floor(2 * np.pi / _solid_step))
-        # Offset by half a step so no line lands on the θ=0/2π seam boundary,
-        # where polygon clip artifacts can split a line into two segments.
+        # Round step so lines divide evenly into 2π (keeps grid aligned across layers).
         _solid_step = 2 * np.pi / _n_solid
+
+        # Fold peri into canonical [0, 2π] before sweeping.  external_peris includes
+        # ±2π shifted copies for seam handling; without folding, every canonical θ slot
+        # gets 3-6 stacked lines (one per copy) while the gaps between copies stay empty.
+        # Folding maps all copies onto the same [0, 2π] window and takes the union,
+        # preserving multiple z ranges for multi-turn helices.
+        _TWO_PI = 2 * np.pi
+        _n_lo = int(np.floor(bounds[0] / _TWO_PI))
+        _n_hi = int(np.ceil(bounds[2] / _TWO_PI))
+        _pieces = []
+        _clip_box = shapely.box(0, bounds[1], _TWO_PI, bounds[3])
+        for _n in range(_n_lo, _n_hi + 1):
+            _shifted = shapely.transform(peri, lambda p: p + [-_n * _TWO_PI, 0])
+            _clipped = _shifted.intersection(_clip_box)
+            if not _clipped.is_empty:
+                _pieces.append(_clipped)
+        _peri_canon = shapely.unary_union(_pieces) if _pieces else peri
+
         for theta in np.arange(_n_solid) * _solid_step + _solid_step / 2:
             ls = shapely.LineString([[theta, bounds[1]], [theta, bounds[3]]])
-            _collect(shapely.intersection(ls, peri))
+            _collect(shapely.intersection(ls, _peri_canon))
     else:
         # Constant-z lines — arcs around the cylinder (radial / circumferential)
         z_step = slicing_params["nozzle_size"]   # mm; z axis is already in mm
@@ -1594,6 +1611,10 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
         f.write(f"G0 Z{r - _bed_r:.4f}\n")
+        _y_accum_deg  = math.degrees(last_pos[0])
+        _y_canon_deg  = _y_accum_deg % 360.0
+        f.write(f"G92 Y{_y_canon_deg:.6f} ; reset Y accumulator to canonical\n")
+        last_pos = [math.radians(_y_canon_deg), last_pos[1]]
         gcode_paths = [p for p in shapely_to_paths(support_infill, r) if p is not None]
         gcode_paths = optimize_path_order(gcode_paths, last_pos)
         for path in gcode_paths:
@@ -1865,6 +1886,15 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         if i == slicing_params["fan_start_layer"]:
             f.write("M106 S255 ; part cooling fan on\n")
         f.write(f"G0 Z{current_r - _bed_r:.4f}\n")
+        # Reset accumulated Y to its canonical [0, 360) equivalent at each layer
+        # boundary.  At high layer counts last_pos[0] grows to millions of degrees,
+        # causing float64 precision loss that manifests as infill gaps and rendering
+        # loops in the viewer.  G92 Y<canon> tells the printer "this position is now
+        # <canon>" without moving, and we update last_pos to match.
+        _y_accum_deg  = math.degrees(last_pos[0])
+        _y_canon_deg  = _y_accum_deg % 360.0
+        f.write(f"G92 Y{_y_canon_deg:.6f} ; reset Y accumulator to canonical\n")
+        last_pos = [math.radians(_y_canon_deg), last_pos[1]]
 
         # Precompute shapely_to_paths + optimize_path_order for all sections in
         # parallel. All sections get the same last_pos snapshot (start of layer);
