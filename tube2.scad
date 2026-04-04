@@ -1,5 +1,5 @@
-$fn=1000;
+$fn=30;
 difference(){
-cylinder(h=100,r=40);
-cylinder(h=100,r=35);
+cylinder(h=25,r=40);
+cylinder(h=25,r=35);
 }

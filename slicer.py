@@ -901,11 +901,16 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         # (a true ring folds back onto itself and is unchanged; a helical strip
         # gains the missing end caps from the shifted copies).
         canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
-        folded = shapely.unary_union([
-            poly,
-            shift_polygon(poly,  2 * math.pi),
-            shift_polygon(poly, -2 * math.pi),
-        ]).intersection(canonical_clip)
+        if raw_span >= 2 * math.pi:
+            # Polygon already covers a full period — direct clip avoids T-junction
+            # collinear vertices that the ±2π union introduces on the ring boundary.
+            folded = poly.intersection(canonical_clip)
+        else:
+            folded = shapely.unary_union([
+                poly,
+                shift_polygon(poly,  2 * math.pi),
+                shift_polygon(poly, -2 * math.pi),
+            ]).intersection(canonical_clip)
         if folded.is_empty:
             return []
         folded_polys = ([folded] if isinstance(folded, Polygon)
@@ -951,6 +956,8 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
                     p0, p1 = rc[k], rc[k + 1]
                     dth = p1[0] - p0[0]
                     if abs(dth) <= 1e-9:        # seam/endcap edge (dθ=0)
+                        if abs(p1[1] - p0[1]) <= 1e-9:  # zero-length edge — Shapely artifact, skip
+                            continue
                         _flush_run(run)
                         run = []
                         prev_sign = None
@@ -1096,7 +1103,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "helix.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "justcylinder.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
