@@ -582,12 +582,24 @@ def optimize_path_order(paths: List[PathObject], current_pos) -> List[PathObject
             break
 
         visited[chosen_pi] = True
-        result.append(paths[chosen_pi])
+        path = paths[chosen_pi]
 
-        # Advance to the endpoint we'll finish at after to_gcode reversal logic.
-        pts = np.asarray(paths[chosen_pi].points)
-        end_pt = pts[0] if chosen_rev else pts[-1]
-        cur_pt = np.array([(end_pt[0] % TWO_PI) * r, end_pt[1]])
+        # If the nearest point was the end of the path, reverse it so to_gcode
+        # starts from the closer endpoint.  Skip reversal for helical full-circle
+        # paths (z varies over 2π): their start→end order encodes the helix direction
+        # and reversing would invert the Z progression.
+        if chosen_rev and not path.closed:
+            pts_chk = np.asarray(path.points)
+            theta_span = pts_chk[-1, 0] - pts_chk[0, 0]
+            z_span = np.ptp(pts_chk[:, 1])
+            is_helical_full_circle = (abs(theta_span) >= TWO_PI * 0.9 and z_span > 1.0)
+            if not is_helical_full_circle:
+                path = PathObject(path.points[::-1], path.closed, path.kind, path.radius)
+        result.append(path)
+
+        # Advance to the endpoint we'll finish at.
+        pts = np.asarray(path.points)
+        cur_pt = np.array([(pts[-1, 0] % TWO_PI) * r, pts[-1, 1]])
 
     return result
 

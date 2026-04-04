@@ -927,12 +927,13 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
                         if run_arr[-1, 0] < run_arr[0, 0]:  # backward — reverse
                             run_arr = run_arr[::-1]
                         if is_endcap:
-                            # Vertical edges (dθ=0) are either real physical endcaps
-                            # or clip-box seam artifacts.  Seam artifacts sit exactly
-                            # on the clip boundaries (θ=lower or θ=upper=2π); real
-                            # endcaps are at interior θ values.  Skip seam artifacts.
-                            theta = run_arr[0, 0]
-                            if abs(theta - lower) < 1e-6 or abs(theta - upper) < 1e-6:
+                            # Vertical edges (dθ=0) are either real physical seam/endcap
+                            # edges or clip-box artifacts connecting non-adjacent helix turns.
+                            # Distinguish by z extent: real seam edges span one thread
+                            # spacing (~5mm); cross-turn artifacts span a full helix pitch
+                            # (~30mm).  Discard only if z_ext exceeds a generous threshold.
+                            z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
+                            if z_ext > 10.0:
                                 return
                         else:
                             # Skip seam-crossing fragments that connect different
