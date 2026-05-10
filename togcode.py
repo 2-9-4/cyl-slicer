@@ -1,4 +1,5 @@
 from typing import List, Tuple
+import math
 from shapely.geometry import Polygon, LineString, MultiPolygon, MultiLineString, GeometryCollection, Point
 from matplotlib import pyplot
 import shapely
@@ -254,6 +255,34 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     return result
 
 
+def _restore_open_path_diffs(theta_values: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+    """Preserve true multi-turn spans for open paths while fixing seam wraps.
+
+    Open paths are later emitted with strictly nondecreasing accumulated theta.
+    After collinear reduction an almost-straight helical edge can collapse to two
+    endpoints whose raw theta diff is >2π. A plain modulo unwrap shrinks that to
+    the short remainder, losing one or more full turns. Instead, for each edge,
+    pick the nonnegative 2π-equivalent diff that is closest to the original raw
+    diff. That keeps intentional multi-turn spans intact while still converting a
+    canonical seam jump like 6.20→0.10 into a small forward step.
+    """
+    if len(theta_values) < 2:
+        return theta_values
+
+    diffs = np.diff(theta_values)
+    restored = np.empty_like(diffs)
+    two_pi = 2 * np.pi
+
+    for i, diff in enumerate(diffs):
+        wrapped = (diff + np.pi) % two_pi - np.pi
+        k = round((diff - wrapped) / two_pi)
+        restored[i] = wrapped + k * two_pi
+        if restored[i] < -tol:
+            restored[i] += math.ceil((-restored[i] - tol) / two_pi) * two_pi
+
+    return np.concatenate([[theta_values[0]], theta_values[0] + np.cumsum(restored)])
+
+
 class PathObject:
     def __init__(self, points: List[Coord], closed: bool, kind: str, radius: float):
         self.points = points  # list of (x,y)
@@ -375,19 +404,11 @@ class PathObject:
             # Thetas are already continuous in accumulated space — use directly.
             accum_thetas = pts[:, 0]
         else:
-            # Canonical space: unwrap then shift to start at t0_accum.
-            # Improved unwrap: np.unwrap collapses a ≈±2π step (full circle)
-            # to ≈0.  Detect those steps and restore them so full-circle perimeters
-            # aren't lost.  After _reduce_collinear, a 140-point near-full-circle
-            # helix can collapse to 2 points with a single diff of ~6.07 rad,
-            # which wraps to -0.21 rad.  Threshold 1.0 rad covers paths starting
-            # up to ~57° from the seam.
             canon_thetas = pts[:, 0]
-            _diffs  = np.diff(canon_thetas)
-            _wdiffs = (_diffs + np.pi) % (2 * np.pi) - np.pi
-            _fc     = (np.abs(_diffs) > np.pi) & (np.abs(_wdiffs) < 1.0)
-            _wdiffs[_fc] = _diffs[_fc]
-            unwrapped    = np.concatenate([[canon_thetas[0]], canon_thetas[0] + np.cumsum(_wdiffs)])
+            if self.closed:
+                unwrapped = np.unwrap(canon_thetas)
+            else:
+                unwrapped = _restore_open_path_diffs(canon_thetas)
             accum_thetas = unwrapped + (t0_accum - unwrapped[0])
 
         p1 = pts[:-1]
