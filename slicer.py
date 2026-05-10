@@ -522,6 +522,8 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
 
     direction="radial"  — radial lines only (constant z) at support_interface_spacing.
     direction="axial"   — axial lines only (constant θ) at support_interface_spacing.
+    direction="body_radial" — radial lines only (constant z) at support_body_spacing.
+    direction="body_axial"  — axial lines only (constant θ) at support_body_spacing.
     direction="body"    — full body pattern (sine or grid) at support_body_spacing.
 
     Interface layers spread the grid over multiple layers by alternating direction
@@ -544,8 +546,8 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
     # naturally short.  Only filter true zero-length degenerate geometry.
     min_length = 1e-6
 
-    if direction == "radial":
-        spacing = slicing_params["support_interface_spacing"]
+    if direction in ("radial", "body_radial"):
+        spacing = slicing_params["support_interface_spacing"] if direction == "radial" else slicing_params["support_body_spacing"]
         # Radial lines only (constant z, varying θ) — stitch seam-split arcs
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
@@ -557,8 +559,8 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
             else:
                 _collect_lines(_snap_radial_to_full_circle(inter), result, min_length)
 
-    elif direction == "axial":
-        spacing = slicing_params["support_interface_spacing"]
+    elif direction in ("axial", "body_axial"):
+        spacing = slicing_params["support_interface_spacing"] if direction == "axial" else slicing_params["support_body_spacing"]
         _ts = spacing / r_base
         _n = int(np.floor(2 * np.pi / _ts))
         thetas = np.arange(_n) * _ts + _ts / 2   # offset by half-step to avoid θ=0 seam
@@ -582,10 +584,16 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
             z_lo = z_min - period_mm
             z_hi = z_max + period_mm
             for theta in thetas:
-                # Generate ±2π shifted copies so waves that cross the 0/2π seam
-                # are captured correctly — same seam-handling strategy as the rest
-                # of the codebase.
-                for shift in (0.0, -2 * np.pi, 2 * np.pi):
+                # Only add a seam-wrap copy when this specific wave can actually
+                # cross the 0/2π boundary. Unconditionally emitting ±2π copies
+                # triples support density on canonical gap layers because most
+                # shifted waves still intersect the same support footprint.
+                shifts = [0.0]
+                if theta - amplitude_rad < 0.0:
+                    shifts.append(2 * np.pi)
+                if theta + amplitude_rad > 2 * np.pi:
+                    shifts.append(-2 * np.pi)
+                for shift in shifts:
                     ls = _make_sine_wave_ls(theta + shift, z_lo, z_hi, amplitude_rad, period_mm)
                     _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
         else:
@@ -897,6 +905,28 @@ def _split_theta_monotone_runs(line, tol=1e-9):
     _append_run(coords[run_start:], run_sign)
     return runs
 
+
+def _restore_theta_walk(coords, theta_tol=1e-9, z_tol=1e-6):
+    """Rebuild a continuous theta walk without collapsing real multi-turn edges.
+
+    `np.unwrap` treats any >pi jump as a seam wrap, but on multi-turn helices a
+    single boundary edge can legitimately span far more than one turn while also
+    advancing in Z. Preserve those large pitch-carrying jumps; only shorten
+    wrap-only jumps to their nearest seam-equivalent.
+    """
+    if len(coords) < 2:
+        return coords
+
+    out = np.asarray(coords, dtype=float).copy()
+    diffs = np.diff(out[:, 0])
+    dz = np.diff(out[:, 1])
+    wrapped = (diffs + np.pi) % (2 * np.pi) - np.pi
+
+    preserve_raw = (np.abs(diffs) > np.pi + theta_tol) & (np.abs(dz) > z_tol)
+    step = np.where(preserve_raw, diffs, wrapped)
+    out[:, 0] = np.concatenate([[out[0, 0]], out[0, 0] + np.cumsum(step)])
+    return out
+
 def _same_cyl_point(p0, p1, period=2 * math.pi, tol=1e-6):
     """Return True when two (theta, z) points are the same modulo one turn."""
     if abs(p0[1] - p1[1]) > tol:
@@ -976,8 +1006,7 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
     if len(coords) < 2:
         return []
 
-    coords = coords.copy()
-    coords[:, 0] = np.unwrap(coords[:, 0])
+    coords = _restore_theta_walk(coords)
     theta_span = coords[:, 0].max() - coords[:, 0].min()
     if theta_span < 1e-3:
         return []
@@ -1212,8 +1241,9 @@ part_height = (max_z-min_z)
 z_clip_min = min_z
 z_clip_max = min_z + printer_params["axial_length"]
 
-# layer (θ,z)-space clipping box — wide enough to cover all θ shifts (±2π copies)
-axial_clip_box = box(-2*np.pi, z_clip_min, 4*np.pi, z_clip_max)
+# Only clip the model in z here. A fixed theta window truncates valid multi-turn
+# geometry once the unwrapped perimeter exceeds that hardcoded span.
+axial_clip_box = box(-1e15, z_clip_min, 1e15, z_clip_max)
 # Canonical one-rotation clip box for support geometry
 theta_clip_box = box(0, z_clip_min, 2 * np.pi, z_clip_max)
 
@@ -1344,6 +1374,19 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     def do_transform_inverse(x):
         return shapely.transform(x, lambda p: p * [1/current_r, 1])
 
+    def _shift_periods_to_canonical_centroid(geom, lower=0.0, upper=2 * np.pi):
+        """Return an integer turn shift that places the centroid in [lower, upper)."""
+        if geom is None or geom.is_empty:
+            return 0
+        period = upper - lower
+        centroid_x = geom.centroid.x
+        k = math.floor((lower - centroid_x) / period)
+        while centroid_x + k * period < lower:
+            k += 1
+        while centroid_x + k * period >= upper:
+            k -= 1
+        return k
+
     for poly_i,sub_polys in enumerate(hier):
         if levels[poly_i] % 2 == 1:
             continue
@@ -1366,6 +1409,17 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
         poly_with_holes = do_transform_inverse(do_transform(poly_with_holes).buffer(-slicing_params["nozzle_size"]/2,join_style="mitre"))
         poly_with_holes = poly_with_holes.intersection(axial_clip_box)
+        if poly_with_holes.is_empty:
+            continue
+
+        # Normalize each physical perimeter into a canonical turn before adding
+        # seam-neighbor copies. This keeps one stored copy selectable by the
+        # centroid-based canonical filter even when the raw geometry spans many
+        # full turns.
+        _k_canon = _shift_periods_to_canonical_centroid(poly_with_holes)
+        if _k_canon:
+            poly_with_holes = shift_polygon(poly_with_holes, _k_canon * 2 * np.pi)
+
         external_perimeters.append(poly_with_holes)
         if poly_i not in mapping:
             external_perimeters.append(shift_polygon(poly_with_holes,2*np.pi))
@@ -1682,7 +1736,11 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
         direction = "radial" if depth_from_bottom % 2 == 1 else "axial"
         support_infill = do_support_infill(gap_sup, slicing_params, r, direction=direction)
     else:
-        support_infill = do_support_infill(gap_sup, slicing_params, r, direction="body")
+        # Gap-foundation shells already stack across many radii; printing the full
+        # 2D body pattern on every shell over-densifies support dramatically.
+        # Use body-spacing radial sweeps here so negative layers honor the support
+        # spacing setting instead of fragmenting into hundreds of short paths.
+        support_infill = do_support_infill(gap_sup, slicing_params, r, direction="body_radial")
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
