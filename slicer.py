@@ -851,15 +851,185 @@ def _stitch_lines(lines, lower=0.0, period=2*math.pi, tol=1e-9):
         return [merged]
     return [l for l in merged.geoms if isinstance(l, LineString)]
 
+def _split_theta_monotone_runs(line, tol=1e-9):
+    """Split a LineString into maximal runs with constant theta-direction sign."""
+    if line is None or line.is_empty:
+        return []
+
+    coords = np.asarray(line.coords, dtype=float)
+    if len(coords) < 2:
+        return []
+
+    # Drop consecutive duplicate vertices from clipping / merge artifacts.
+    step = np.abs(np.diff(coords, axis=0))
+    keep = np.concatenate([[True], np.any(step > tol, axis=1)])
+    coords = coords[keep]
+    if len(coords) < 2:
+        return []
+
+    def _edge_sign(dtheta):
+        if dtheta > tol:
+            return 1
+        if dtheta < -tol:
+            return -1
+        return 0
+
+    runs = []
+
+    def _append_run(run_coords, sign):
+        arr = np.asarray(run_coords, dtype=float)
+        if len(arr) < 2:
+            return
+        if sign < 0:
+            arr = arr[::-1]
+        ls = LineString(arr)
+        if not ls.is_empty and ls.length > 0:
+            runs.append(ls)
+
+    run_start = 0
+    run_sign = _edge_sign(coords[1, 0] - coords[0, 0])
+    for i in range(1, len(coords) - 1):
+        next_sign = _edge_sign(coords[i + 1, 0] - coords[i, 0])
+        if next_sign != run_sign:
+            _append_run(coords[run_start:i + 1], run_sign)
+            run_start = i
+            run_sign = next_sign
+    _append_run(coords[run_start:], run_sign)
+    return runs
+
+def _same_cyl_point(p0, p1, period=2 * math.pi, tol=1e-6):
+    """Return True when two (theta, z) points are the same modulo one turn."""
+    if abs(p0[1] - p1[1]) > tol:
+        return False
+    dtheta = ((p0[0] - p1[0]) + period / 2) % period - period / 2
+    return abs(dtheta) <= tol
+
+def _order_ring_segments(lines, period=2 * math.pi, tol=1e-6):
+    """Orient seam-split ring segments so adjacent paths chain in ring order.
+
+    `linemerge` / `unary_union` preserve geometry but not traversal order. For
+    helical perimeters that means valid segments can come back reversed or
+    permuted, producing start/end jumps in G-code. Reconstruct one walk around
+    the ring by matching segment endpoints modulo one full turn, then unwrap
+    each oriented segment so theta increases monotonically.
+    """
+    segs = []
+    for line in lines:
+        coords = np.asarray(line.coords, dtype=float)
+        if len(coords) >= 2:
+            if coords[-1, 0] < coords[0, 0] - tol:
+                coords = coords[::-1]
+            segs.append(coords)
+    if len(segs) <= 1:
+        return [LineString(segs[0])] if segs else []
+
+    used = [False] * len(segs)
+
+    start_idx = min(range(len(segs)), key=lambda i: np.min(segs[i][:, 0]))
+    current = segs[start_idx].copy()
+    ordered = [current]
+    used[start_idx] = True
+    current_end = current[-1].copy()
+
+    while not all(used):
+        found = False
+        for i, coords in enumerate(segs):
+            if used[i]:
+                continue
+            for reverse in (False, True):
+                cand = coords[::-1] if reverse else coords
+                if cand[-1, 0] < cand[0, 0] - tol:
+                    cand = cand[::-1]
+                if not _same_cyl_point(cand[0], current_end, period=period, tol=tol):
+                    continue
+                shift = round((current_end[0] - cand[0, 0]) / period) * period
+                cand = cand.copy()
+                cand[:, 0] += shift
+                cand[0, 0] = current_end[0]
+                ordered.append(cand)
+                used[i] = True
+                current_end = cand[-1].copy()
+                found = True
+                break
+            if found:
+                break
+        if not found:
+            # Fallback: start a new chain for any remaining unmatched fragment.
+            # This keeps output deterministic instead of silently dropping data.
+            next_idx = next(i for i, flag in enumerate(used) if not flag)
+            current = segs[next_idx].copy()
+            ordered.append(current)
+            used[next_idx] = True
+            current_end = current[-1].copy()
+
+    return [LineString(coords) for coords in ordered if len(coords) >= 2]
+
+def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
+    """Convert one polygon ring into printable lines in unwrapped theta space.
+
+    For seam-crossing / multi-turn rings, clip the boundary line itself against the
+    canonical strip instead of clipping the polygon.  That preserves the real edge
+    geometry and avoids creating synthetic seam/endcap edges that later need to be
+    guessed away with geometry-specific heuristics.
+    """
+    coords = np.asarray(ring.coords, dtype=float)
+    if len(coords) < 2:
+        return []
+
+    coords = coords.copy()
+    coords[:, 0] = np.unwrap(coords[:, 0])
+    theta_span = coords[:, 0].max() - coords[:, 0].min()
+    if theta_span < 1e-3:
+        return []
+
+    period = upper - lower
+    ring_ls = LineString(coords)
+
+    # Simple case: ring already fits in one canonical turn, so preserve it as-is.
+    if coords[:, 0].min() >= lower - tol and coords[:, 0].max() <= upper + tol and theta_span < period - tol:
+        return [ring_ls] if not ring_ls.is_empty else []
+
+    clip_box = box(lower, -1e15, upper, 1e15)
+    k_min = int(math.ceil((lower - coords[:, 0].max()) / period))
+    k_max = int(math.floor((upper - coords[:, 0].min()) / period))
+
+    pieces = []
+    for k in range(k_min, k_max + 1):
+        shifted = shift_polygon(ring_ls, k * period) if k else ring_ls
+        clipped = shifted.intersection(clip_box)
+        if clipped.is_empty:
+            continue
+        if k:
+            clipped = shift_polygon(clipped, -k * period)
+        _collect_lines(clipped, pieces, min_length=0.0)
+
+    if not pieces:
+        return []
+
+    merged = linemerge(shapely.unary_union(MultiLineString(pieces)))
+    merged_lines = []
+    _collect_lines(merged, merged_lines, min_length=0.0)
+
+    raw_runs = []
+    for line in merged_lines:
+        line_coords = np.asarray(line.coords, dtype=float)
+        line_span = line_coords[:, 0].max() - line_coords[:, 0].min()
+        if line.is_ring and line_span < period - tol:
+            raw_runs.append(line)
+        else:
+            raw_runs.extend(_split_theta_monotone_runs(line, tol=tol))
+    return _order_ring_segments(raw_runs, period=period, tol=tol)
+
 def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     """
     Convert a polygon (or collection) to LineStrings for gcode/plotting.
 
     external_peris stores each physical polygon THREE times (canonical + ±2π
     copies).  We keep only the canonical copy by checking that the centroid
-    theta is within [lower, upper).  The ring coords are then unwrapped with
-    np.unwrap so any seam-crossing polygon is returned as one continuous
-    LineString — no clipping, no stitching.
+    theta is within [lower, upper).  Rings that fit inside one canonical turn
+    are returned unchanged; rings that cross the seam or extend past one turn
+    are clipped as boundary lines, shifted back into unwrapped theta space, and
+    split only where their theta direction actually changes.
     """
     if poly is None or (hasattr(poly, 'is_empty') and poly.is_empty):
         return []
@@ -878,8 +1048,10 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         return ret
 
     if isinstance(poly, (LineString, shapely.MultiLineString)):
-        # Already a line (e.g. infill passed through here) — return as-is
-        return [poly] if not poly.is_empty else []
+        # Already a line (e.g. infill passed through here) — flatten and return as-is
+        ret = []
+        _collect_lines(poly, ret, min_length=0.0)
+        return ret
 
     if not isinstance(poly, Polygon):
         return []
@@ -889,119 +1061,8 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
         return []
 
     result = []
-
-    # Check span at the polygon level (exterior ring) once.
-    _ext_coords = np.array(poly.exterior.coords)
-    raw_span = _ext_coords[:, 0].max() - _ext_coords[:, 0].min()
-
-    if raw_span > 2 * math.pi - 0.5:
-        # Polygon spans more than one period — either a true full-circle ring or a
-        # helical strip whose end caps straddle the 0/2π seam.
-        # Fold ±2π copies in before clipping so those end-cap slivers are retained
-        # (a true ring folds back onto itself and is unchanged; a helical strip
-        # gains the missing end caps from the shifted copies).
-        canonical_clip = shapely.geometry.box(0, -1e15, 2 * math.pi, 1e15)
-        if raw_span >= 2 * math.pi:
-            # Polygon already covers a full period — direct clip avoids T-junction
-            # collinear vertices that the ±2π union introduces on the ring boundary.
-            folded = poly.intersection(canonical_clip)
-        else:
-            folded = shapely.unary_union([
-                poly,
-                shift_polygon(poly,  2 * math.pi),
-                shift_polygon(poly, -2 * math.pi),
-            ]).intersection(canonical_clip)
-        if folded.is_empty:
-            return []
-        folded_polys = ([folded] if isinstance(folded, Polygon)
-                        else [g for g in folded.geoms
-                              if isinstance(g, Polygon) and not g.is_empty])
-        for fp in folded_polys:
-            for ring in [fp.exterior] + list(fp.interiors):
-                rc = np.array(ring.coords)
-                # Split the ring into monotone-θ runs.  Two triggers:
-                #   1. Seam edges (dθ=0) — created by the clip-box intersection
-                #      or by real endcap edges of the polygon.
-                #   2. Direction changes (dθ sign flip) — handle large polygons that
-                #      sit entirely within [0, 2π] and have no clip-box seam edges;
-                #      their ring has a "forward" half and a "backward" half that
-                #      must become separate runs so each can be reversed if needed.
-                def _flush_run(run, is_endcap=False):
-                    if len(run) >= 2:
-                        run_arr = np.array(run)
-                        if run_arr[-1, 0] < run_arr[0, 0]:  # backward — reverse
-                            run_arr = run_arr[::-1]
-                        if is_endcap:
-                            # Vertical edges (dθ=0) are either real physical seam/endcap
-                            # edges or clip-box artifacts connecting non-adjacent helix turns.
-                            # Distinguish by z extent: real seam edges span one thread
-                            # spacing (~5mm); cross-turn artifacts span a full helix pitch
-                            # (~30mm).  Discard only if z_ext exceeds a generous threshold.
-                            z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
-                            if z_ext > 10.0:
-                                return
-                        else:
-                            # Skip seam-crossing fragments that connect different
-                            # helix threads rather than tracing a real edge.
-                            theta_ext = run_arr[-1, 0] - run_arr[0, 0]
-                            z_ext = run_arr[:, 1].max() - run_arr[:, 1].min()
-                            if len(run_arr) <= 3 and z_ext > 5.0 and theta_ext < 0.3:
-                                return
-                        result.append(LineString(run_arr))
-
-                run = []
-                endcap = []  # consecutive dθ=0 edges (vertical endcap)
-                prev_sign = None  # sign of last non-zero dθ
-                for k in range(len(rc) - 1):
-                    p0, p1 = rc[k], rc[k + 1]
-                    dth = p1[0] - p0[0]
-                    if abs(dth) <= 1e-9:        # seam/endcap edge (dθ=0)
-                        if abs(p1[1] - p0[1]) <= 1e-9:  # zero-length edge — Shapely artifact, skip
-                            continue
-                        _flush_run(run)
-                        run = []
-                        prev_sign = None
-                        # Collect consecutive vertical edges as an endcap path.
-                        if not endcap:
-                            endcap.append(p0)
-                        endcap.append(p1)
-                    else:
-                        # Flush any pending endcap before starting an arc run.
-                        if endcap:
-                            _flush_run(endcap, is_endcap=True)
-                            endcap = []
-                        curr_sign = 1 if dth > 0 else -1
-                        if prev_sign is not None and curr_sign != prev_sign:
-                            # θ direction reversed — this is the turning point
-                            # (top-right or bottom-left corner of the polygon).
-                            # Include p0 as the last point of the outgoing run,
-                            # then start the new run from p0.
-                            run.append(p0)
-                            _flush_run(run)
-                            run = []
-                            prev_sign = None
-                        if not run:
-                            run.append(p0)
-                        run.append(p1)
-                        prev_sign = curr_sign
-                if endcap:
-                    _flush_run(endcap, is_endcap=True)
-                _flush_run(run)
-        return result
-
     for ring in [poly.exterior] + list(poly.interiors):
-        coords = np.array(ring.coords)
-        coords[:, 0] = np.unwrap(coords[:, 0])
-        # Skip degenerate rings whose θ-extent is negligibly thin (e.g. a
-        # near-tangent cylindrical cross-section of a flat face).  Such rings
-        # produce a back-and-forth line in G-code rather than a closed loop.
-        # Threshold: 1e-3 rad ≈ 0.06° — well below any printable feature but
-        # above floating-point noise.
-        if coords[:, 0].max() - coords[:, 0].min() < 1e-3:
-            continue
-        ls = LineString(coords)
-        if not ls.is_empty:
-            result.append(ls)
+        result.extend(_ring_to_wrapped_lines(ring, lower=lower, upper=upper))
     return result
     
 def sum_poly(p):
@@ -1103,7 +1164,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "justcylinder.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "helix.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
@@ -1249,11 +1310,18 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         final_poly = np.concatenate([p1-[2*np.pi,0],p1,p1+[2*np.pi,0],(p2+[2*np.pi,0])[::-1,:],p2[::-1,:],(p2-[2*np.pi,0])[::-1,:]])
         # plt.plot(final_poly[:,0],final_poly[:,1],"o-")
         # plt.show()
-        mapping += [len(polys)]
-
         final_poly = shapely.make_valid(Polygon(final_poly))
         final_poly = trim_polygon_left_right(final_poly,0.1)
-        polys.append(final_poly)
+        # make_valid + trim can return a MultiPolygon when the concatenated
+        # 6π-wide ring has self-intersections.  Flatten into individual
+        # Polygons so the containment hierarchy loop (which only handles
+        # Polygon instances) processes each component.
+        fp_parts = list(final_poly.geoms) if hasattr(final_poly, "geoms") else [final_poly]
+        for part in fp_parts:
+            if not isinstance(part, Polygon) or part.is_empty:
+                continue
+            mapping += [len(polys)]
+            polys.append(part)
     # for poly in poly_pts:
     #     if is_full_circle(poly):
     #         plt.plot(poly[:,0],poly[:,1])
@@ -1911,10 +1979,11 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         def _prep_section(subsection):
             if subsection in ("external_peris", "internal_peris"):
                 raw = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
+                return [p for p in raw if p is not None]
             else:
                 raw = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
-            paths = [p for p in raw if p is not None]
-            return optimize_path_order(paths, _snap_pos)
+                paths = [p for p in raw if p is not None]
+                return optimize_path_order(paths, _snap_pos)
 
     
         with ThreadPoolExecutor() as _ex:
