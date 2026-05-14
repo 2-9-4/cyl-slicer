@@ -1067,7 +1067,15 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
     if not pieces:
         return []
 
-    merged = linemerge(shapely.unary_union(MultiLineString(pieces)))
+    unioned = shapely.unary_union(MultiLineString(pieces))
+    if isinstance(unioned, LineString):
+        merged = unioned
+    else:
+        merged_parts = []
+        _collect_lines(unioned, merged_parts, min_length=0.0)
+        if not merged_parts:
+            return []
+        merged = merged_parts[0] if len(merged_parts) == 1 else linemerge(MultiLineString(merged_parts))
     merged_lines = []
     _collect_lines(merged, merged_lines, min_length=0.0)
 
@@ -1258,7 +1266,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "helix.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "tube.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
