@@ -686,6 +686,13 @@ def shapely_to_paths(geom, radius, max_seg_len=None) -> List[PathObject]:
             out.append(out[0])
         return out
 
+    def is_effectively_closed(coords, tol=1e-9):
+        if not coords or len(coords) < 3:
+            return False
+        first = coords[0]
+        last = coords[-1]
+        return abs(first[0] - last[0]) <= tol and abs(first[1] - last[1]) <= tol
+
     paths = []
     if isinstance(geom, Polygon):
         paths.append(PathObject(densify(list(geom.exterior.coords), True), True, "polygon_exterior", radius))
@@ -695,7 +702,9 @@ def shapely_to_paths(geom, radius, max_seg_len=None) -> List[PathObject]:
         for poly in geom.geoms:
             paths.extend(shapely_to_paths(poly, radius, max_seg_len))
     elif isinstance(geom, LineString):
-        paths.append(PathObject(densify(list(geom.coords), geom.is_ring), geom.is_ring, "line", radius))
+        coords = list(geom.coords)
+        closed = geom.is_ring or is_effectively_closed(coords)
+        paths.append(PathObject(densify(coords, closed), closed, "line", radius))
     elif isinstance(geom, MultiLineString):
         for line in geom.geoms:
             paths.extend(shapely_to_paths(line, radius, max_seg_len))
