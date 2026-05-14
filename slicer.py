@@ -536,11 +536,22 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
 
     result = []
     bounds = shapely.bounds(support_geom)
-    z_min, z_max = bounds[1], bounds[3]
+    theta_min, z_min, theta_max, z_max = bounds
+    multi_turn = (theta_max - theta_min) > (2 * np.pi + 1e-6)
 
     # Anchor θ positions to r_base so lines stay at the same physical angles on every layer,
     # matching the strategy used by do_sparse_infill.
     r_base = slicing_params["r_base"]
+
+    def _theta_grid(spacing):
+        step = spacing / r_base
+        origin = step / 2
+        if multi_turn:
+            k_start = int(np.ceil((theta_min - origin) / step))
+            k_end = int(np.floor((theta_max - origin) / step))
+            return origin + np.arange(k_start, k_end + 1) * step
+        n = int(np.floor(2 * np.pi / step))
+        return np.arange(n) * step + origin
 
     # Support strips are ~layer_height thick in z, so their infill intersections are
     # naturally short.  Only filter true zero-length degenerate geometry.
@@ -551,19 +562,20 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
         # Radial lines only (constant z, varying θ) — stitch seam-split arcs
         z_lo = np.floor(z_min / spacing) * spacing
         for z in np.arange(z_lo, z_max + spacing, spacing):
-            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+            ls = shapely.LineString([[theta_min, z], [theta_max, z]])
             inter = shapely.intersection(ls, support_geom)
             if hasattr(inter, 'geoms'):
-                for seg in stitch_radial_seam(inter.geoms):
-                    _collect_lines(_snap_radial_to_full_circle(seg), result, min_length)
+                stitched = list(inter.geoms) if multi_turn else stitch_radial_seam(inter.geoms)
+                for seg in stitched:
+                    seg = seg if multi_turn else _snap_radial_to_full_circle(seg)
+                    _collect_lines(seg, result, min_length)
             else:
-                _collect_lines(_snap_radial_to_full_circle(inter), result, min_length)
+                inter = inter if multi_turn else _snap_radial_to_full_circle(inter)
+                _collect_lines(inter, result, min_length)
 
     elif direction in ("axial", "body_axial"):
         spacing = slicing_params["support_interface_spacing"] if direction == "axial" else slicing_params["support_body_spacing"]
-        _ts = spacing / r_base
-        _n = int(np.floor(2 * np.pi / _ts))
-        thetas = np.arange(_n) * _ts + _ts / 2   # offset by half-step to avoid θ=0 seam
+        thetas = _theta_grid(spacing)
         # Axial lines only (constant θ, varying z)
         for theta in thetas:
             ls = shapely.LineString([[theta, z_min - spacing], [theta, z_max + spacing]])
@@ -571,9 +583,7 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
 
     else:  # "body"
         spacing = slicing_params["support_body_spacing"]
-        _ts = spacing / r_base
-        n_body = int(np.floor(2 * np.pi / _ts))
-        thetas = np.arange(n_body) * _ts + _ts / 2   # offset by half-step to avoid θ=0 seam
+        thetas = _theta_grid(spacing)
 
         mode = slicing_params.get("support_infill_mode", "grid")
 
@@ -584,15 +594,18 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
             z_lo = z_min - period_mm
             z_hi = z_max + period_mm
             for theta in thetas:
-                # Only add a seam-wrap copy when this specific wave can actually
-                # cross the 0/2π boundary. Unconditionally emitting ±2π copies
-                # triples support density on canonical gap layers because most
-                # shifted waves still intersect the same support footprint.
-                shifts = [0.0]
-                if theta - amplitude_rad < 0.0:
-                    shifts.append(2 * np.pi)
-                if theta + amplitude_rad > 2 * np.pi:
-                    shifts.append(-2 * np.pi)
+                if multi_turn:
+                    shifts = [0.0]
+                else:
+                    # Only add a seam-wrap copy when this specific wave can actually
+                    # cross the 0/2π boundary. Unconditionally emitting ±2π copies
+                    # triples support density on canonical gap layers because most
+                    # shifted waves still intersect the same support footprint.
+                    shifts = [0.0]
+                    if theta - amplitude_rad < 0.0:
+                        shifts.append(2 * np.pi)
+                    if theta + amplitude_rad > 2 * np.pi:
+                        shifts.append(-2 * np.pi)
                 for shift in shifts:
                     ls = _make_sine_wave_ls(theta + shift, z_lo, z_hi, amplitude_rad, period_mm)
                     _collect_lines(shapely.intersection(ls, support_geom), result, min_length)
@@ -605,13 +618,16 @@ def do_support_infill(support_geom, slicing_params, current_r, direction="body")
             # Radial lines (constant z, varying θ) — stitch seam-split arcs
             z_lo = np.floor(z_min / spacing) * spacing
             for z in np.arange(z_lo, z_max + spacing, spacing):
-                ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+                ls = shapely.LineString([[theta_min, z], [theta_max, z]])
                 inter = shapely.intersection(ls, support_geom)
                 if hasattr(inter, 'geoms'):
-                    for seg in stitch_radial_seam(inter.geoms):
-                        _collect_lines(_snap_radial_to_full_circle(seg), result, min_length)
+                    stitched = list(inter.geoms) if multi_turn else stitch_radial_seam(inter.geoms)
+                    for seg in stitched:
+                        seg = seg if multi_turn else _snap_radial_to_full_circle(seg)
+                        _collect_lines(seg, result, min_length)
                 else:
-                    _collect_lines(_snap_radial_to_full_circle(inter), result, min_length)
+                    inter = inter if multi_turn else _snap_radial_to_full_circle(inter)
+                    _collect_lines(inter, result, min_length)
 
     return result
 
@@ -1501,7 +1517,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         )
         # Fold shifted fragments into the canonical [0, 2π] range and remove
         # areas already occupied by the model at this layer.
-        ns = fold_to_canonical(ns, theta_clip_box)
+        ns = keep_canonical_polygons(ns)
         if ns.area > 1e-6:
             layer_data[layer_i]["needs_support"] = ns
     times.append((time.perf_counter(),"support check"))
@@ -1611,17 +1627,17 @@ for i in reversed(sorted_layer_keys):
     # Store with ±2π shifted copies (like external_peris) so seam-crossing
     # regions remain as one continuous polygon rather than two split pieces.
     if not support_needed.is_empty:
-        clipped = support_needed.intersection(theta_clip_box)
+        support_canon = keep_canonical_polygons(support_needed)
         layer_data[i]["support"] = shapely.unary_union([
-            clipped,
-            shift_polygon(clipped, 2*np.pi),
-            shift_polygon(clipped, -2*np.pi),
+            support_canon,
+            shift_polygon(support_canon, 2*np.pi),
+            shift_polygon(support_canon, -2*np.pi),
         ])
 
     # Add this layer's overhangs so inner layers know to support them
     if "needs_support" in layer_data[i]:
         support_needed = support_needed.union(layer_data[i]["needs_support"])
-        support_needed = fold_to_canonical(support_needed, theta_clip_box)
+        support_needed = keep_canonical_polygons(support_needed)
 
     # Organic taper: erode the support footprint so columns narrow toward the bed
     if not support_needed.is_empty :
@@ -1631,7 +1647,7 @@ for i in reversed(sorted_layer_keys):
             support_needed = shapely.GeometryCollection()
         else:
             support_needed = shapely.affinity.scale(metric, xfact=1.0 / current_r, yfact=1.0, origin=(0, 0))
-            support_needed = fold_to_canonical(support_needed, theta_clip_box)
+            support_needed = keep_canonical_polygons(support_needed)
 
     # Merge nearby branches that have tapered into proximity
     if merge_gap > 0 and not support_needed.is_empty:
@@ -1652,9 +1668,11 @@ if first_r > printer_params["bed_radius"]:
     print(f"Gap support: model starts at r={first_r:.2f} mm (bed r={printer_params['bed_radius']:.2f} mm) — generating gap layers...")
     # Union the accumulated ungrounded support with the full first-layer footprint
     # (the entire first layer floats, so all of it needs a support base)
-    gap_footprint = support_needed.union(
-        layer_data[sorted_layer_keys[0]]["external_peris"]
-    ).intersection(theta_clip_box)
+    gap_footprint = keep_canonical_polygons(
+        support_needed.union(
+            keep_canonical_polygons(layer_data[sorted_layer_keys[0]]["external_peris"])
+        )
+    )
     if not gap_footprint.is_empty:
         gap_radii = list(np.arange(printer_params["bed_radius"],
                                    first_r,
@@ -1667,7 +1685,6 @@ if first_r > printer_params["bed_radius"]:
                 m = shapely.affinity.scale(gap_footprint, xfact=r, yfact=1.0, origin=(0, 0))
                 m = m.buffer(taper_mm * layers_from_top)
                 tapered = shapely.affinity.scale(m, xfact=1.0 / r, yfact=1.0, origin=(0, 0))
-                tapered = tapered.intersection(theta_clip_box)
             else:
                 tapered = gap_footprint
             gap_support_layers.append({"radius": r, "support": tapered})
@@ -1756,8 +1773,8 @@ with open("output.gcode","w") as f:
 # Use negative layer numbers (-N … -1) so the viewer layer slider includes them.
 if gap_support_layers:
     print(f"  Writing {len(gap_support_layers)} gap support layer(s)...")
-first_model_ext = fold_to_canonical(
-    layer_data[sorted_layer_keys[0]]["external_peris"], theta_clip_box
+first_model_ext = keep_canonical_polygons(
+    layer_data[sorted_layer_keys[0]]["external_peris"]
 ) if sorted_layer_keys else shapely.GeometryCollection()
 
 for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
@@ -1790,6 +1807,7 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
         # Use body-spacing radial sweeps here so negative layers honor the support
         # spacing setting instead of fragmenting into hundreds of short paths.
         support_infill = do_support_infill(gap_sup, slicing_params, r, direction="body_radial")
+    gap_layer["support_infill"] = support_infill
     with open("output.gcode", "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
@@ -1865,6 +1883,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     if not support_geom.is_empty:
         interface_n = slicing_params.get("support_interface_layers", 2)
         gap_n = slicing_params.get("support_gap_layers", 0)
+        support_print = keep_canonical_polygons(support_geom)
 
         # Check distance to upper model boundary (i+d) and lower model boundary (i-d) separately.
         # For bottom interface, depth 1 is the innermost layer (printed first) → radial.
@@ -1874,15 +1893,13 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             for d in range(1, interface_n + 1):
                 ext = layer_data.get(i + delta_sign * d, {}).get("external_peris", shapely.GeometryCollection())
                 if not ext.is_empty:
-                    candidate = support_geom.intersection(fold_to_canonical(ext, theta_clip_box))
+                    candidate = support_print.intersection(keep_canonical_polygons(ext))
                     if not candidate.is_empty:
                         return d
             return None
 
         top_depth = _iface_depth(+1)   # distance to model above (outward)
         bot_depth = _iface_depth(-1)   # distance to model below (inward)
-
-        support_clipped = support_geom.intersection(theta_clip_box)
 
         # Gap detection: this layer is in the air-gap zone if there is no further support
         # gap_n shells outward — i.e. we are at the top of the support column here.
@@ -1904,7 +1921,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             else:
                 direction = "body"
 
-            layer_data[i]["support_infill"] = do_support_infill(support_clipped, slicing_params, current_r, direction=direction)
+            layer_data[i]["support_infill"] = do_support_infill(support_print, slicing_params, current_r, direction=direction)
 
         if plot_per_layer:
             plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
