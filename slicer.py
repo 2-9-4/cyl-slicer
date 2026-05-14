@@ -178,6 +178,41 @@ def is_full_circle(polygon, tol=0.1):
     return np.isclose(total_theta_sweep(polygon), 2*np.pi, atol=tol)
 
 
+def canonicalize_full_circle_loop(polygon, period=2 * np.pi):
+    """Rotate a full-circle loop onto one monotone [0, 2π] theta walk.
+
+    Full-circle loops are periodic boundaries with no physical seam.  We pick the
+    wrapped closure jump as the synthetic seam, unwrap the remaining walk so theta
+    increases monotonically, then snap the endpoints onto exactly one full turn.
+    """
+    coords = np.asarray(polygon, dtype=float)
+    if len(coords) < 2:
+        return coords.copy()
+
+    coords = coords.copy()
+    for _ in range(2):
+        wrapped_diffs = np.diff(coords[:, 0], append=coords[0, 0])
+        wrapped_diffs = (wrapped_diffs + np.pi) % period - np.pi
+        if wrapped_diffs.sum() >= 0:
+            break
+        coords = coords[::-1].copy()
+
+    wrapped_diffs = np.diff(coords[:, 0], append=coords[0, 0])
+    wrapped_diffs = (wrapped_diffs + np.pi) % period - np.pi
+    seam_after = int(np.argmin(wrapped_diffs)) + 1
+    if seam_after < len(coords):
+        coords = np.roll(coords, -seam_after, axis=0)
+
+    theta = np.unwrap(coords[:, 0], discont=np.pi)
+    theta -= theta[0]
+    if theta[-1] < 0:
+        theta += period
+    theta[0] = 0.0
+    theta[-1] = period
+    coords[:, 0] = theta
+    return coords
+
+
 def cylindrical_cross_section(mesh, radius):
     """
     Compute the cross-section of mesh at cylindrical radius using directed marching triangles.
@@ -1034,16 +1069,43 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
     geometry and avoids creating synthetic seam/endcap edges that later need to be
     guessed away with geometry-specific heuristics.
     """
-    coords = np.asarray(ring.coords, dtype=float)
-    if len(coords) < 2:
+    raw_coords = np.asarray(ring.coords, dtype=float)
+    if len(raw_coords) < 2:
         return []
 
-    coords = _restore_theta_walk(coords)
+    period = upper - lower
+    raw_dtheta = np.diff(raw_coords[:, 0])
+    raw_dz = np.diff(raw_coords[:, 1])
+    raw_theta_span = raw_coords[:, 0].max() - raw_coords[:, 0].min()
+    orthogonal_ring = (
+        ring.is_ring
+        and np.all((np.abs(raw_dtheta) <= tol) | (np.abs(raw_dz) <= tol))
+    )
+
+    if orthogonal_ring and raw_theta_span >= period - tol:
+        z_levels = []
+        for z in raw_coords[:, 1]:
+            if not any(abs(z - existing) <= 1e-6 for existing in z_levels):
+                z_levels.append(float(z))
+        z_levels.sort()
+        if 1 <= len(z_levels) <= 2:
+            return [
+                LineString([[lower, z], [upper, z]])
+                for z in z_levels
+            ]
+
+    # Closed orthogonal rings (tube / band slices) can contain genuine full-width
+    # constant-z edges. `_restore_theta_walk` would reinterpret those ±2π/±4π edges
+    # as seam wraps and collapse them to near-zero span, dropping one side wall.
+    # Preserve their raw walk; helical/diagonal rings still need theta restoration.
+    if orthogonal_ring and raw_theta_span > period + tol:
+        coords = raw_coords
+    else:
+        coords = _restore_theta_walk(raw_coords)
     theta_span = coords[:, 0].max() - coords[:, 0].min()
     if theta_span < 1e-3:
         return []
 
-    period = upper - lower
     ring_ls = LineString(coords)
 
     # Simple case: ring already fits in one canonical turn, so preserve it as-is.
@@ -1089,6 +1151,32 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
             raw_runs.extend(_split_theta_monotone_runs(line, tol=tol))
     return _order_ring_segments(raw_runs, period=period, tol=tol)
 
+
+def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.05, fill_tol=0.995):
+    """Return the two physical side-wall lines for a near-rectangular full-wrap band."""
+    if not isinstance(poly, Polygon) or poly.is_empty or poly.interiors:
+        return None
+
+    minx, miny, maxx, maxy = poly.bounds
+    period = upper - lower
+    theta_span = maxx - minx
+    z_span = maxy - miny
+    if z_span <= 0:
+        return None
+    if minx > lower + seam_tol or maxx < upper - seam_tol:
+        return None
+    if theta_span < period - seam_tol:
+        return None
+
+    bbox_area = theta_span * z_span
+    if bbox_area <= 0 or poly.area / bbox_area < fill_tol:
+        return None
+
+    return [
+        LineString([[lower, miny], [upper, miny]]),
+        LineString([[lower, maxy], [upper, maxy]]),
+    ]
+
 def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     """
     Convert a polygon (or collection) to LineStrings for gcode/plotting.
@@ -1128,6 +1216,10 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     # Skip ±2π duplicate copies — only keep the canonical polygon
     if not (lower <= poly.centroid.x < upper):
         return []
+
+    strip_lines = _full_wrap_strip_lines(poly, lower=lower, upper=upper)
+    if strip_lines is not None:
+        return strip_lines
 
     result = []
     for ring in [poly.exterior] + list(poly.interiors):
@@ -1396,27 +1488,12 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     polys = [Polygon(p) for i,p in enumerate(poly_pts) if not full_circles[i]]
     mapping = []
     for pair in full_circle_pairs:
-        p1 = poly_pts[pair[0]]
-        p2 = poly_pts[pair[1]]
-        # split_idx1 = np.argmax(np.abs(np.diff(p1[:,0])))
-        # split_idx2 = np.argmax(np.abs(np.diff(p2[:,0])))
-        # p1 = np.roll(p1,-split_idx1)
-        # p2 = np.roll(p2,-split_idx2)
-        p1 -= [np.round(np.min(p1[:,0])/(2*np.pi))*2*np.pi,0]
-        p2 -= [np.round(np.min(p2[:,0])/(2*np.pi))*2*np.pi,0]
-        if(p1[0][0]-p1[-1][0] >0):
-            p1 = p1[::-1]
-        if(p2[0][0]-p2[-1][0] >0):
-            p2 = p2[::-1]
-        # p1 = p1[np.argsort(p1[:,0])]
-        # p2 = p2[np.argsort(p2[:,0])]
-        final_poly = np.concatenate([p1-[2*np.pi,0],p1,p1+[2*np.pi,0],(p2+[2*np.pi,0])[::-1,:],p2[::-1,:],(p2-[2*np.pi,0])[::-1,:]])
-        # plt.plot(final_poly[:,0],final_poly[:,1],"o-")
-        # plt.show()
+        p1 = canonicalize_full_circle_loop(poly_pts[pair[0]])
+        p2 = canonicalize_full_circle_loop(poly_pts[pair[1]])
+        final_poly = np.concatenate([p1, p2[::-1, :]])
         final_poly = shapely.make_valid(Polygon(final_poly))
-        final_poly = trim_polygon_left_right(final_poly,0.1)
-        # make_valid + trim can return a MultiPolygon when the concatenated
-        # 6π-wide ring has self-intersections.  Flatten into individual
+        # make_valid can return a MultiPolygon when the strip self-intersects.
+        # Flatten into individual
         # Polygons so the containment hierarchy loop (which only handles
         # Polygon instances) processes each component.
         fp_parts = list(final_poly.geoms) if hasattr(final_poly, "geoms") else [final_poly]
@@ -1480,7 +1557,26 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         if plot_perimeters:
             plot_polygon(do_transform(poly_with_holes),add_points=False,facecolor=(0, 0, 0, 0))
 
-        poly_with_holes = do_transform_inverse(do_transform(poly_with_holes).buffer(-slicing_params["nozzle_size"]/2,join_style="mitre"))
+        _theta_min, _, _theta_max, _ = poly_with_holes.bounds
+        _theta_span = _theta_max - _theta_min
+        _buffer_source = poly_with_holes
+        _needs_canonical_buffer_fold = False
+        if _theta_span <= 2 * np.pi + 1e-6 and _theta_min <= 1e-6 and _theta_max >= 2 * np.pi - 1e-6:
+            # Full-wrap one-turn bands are periodic across the 0/2π seam.  Buffer
+            # them with seam-neighbour copies so the inward wall offset does not
+            # erode along synthetic seam endcaps.
+            _buffer_source = shapely.unary_union([
+                shift_polygon(poly_with_holes, -2 * np.pi),
+                poly_with_holes,
+                shift_polygon(poly_with_holes, 2 * np.pi),
+            ])
+            _needs_canonical_buffer_fold = True
+
+        poly_with_holes = do_transform_inverse(
+            do_transform(_buffer_source).buffer(-slicing_params["nozzle_size"]/2, join_style="mitre")
+        )
+        if _needs_canonical_buffer_fold:
+            poly_with_holes = fold_to_canonical(poly_with_holes, theta_clip_box)
         poly_with_holes = poly_with_holes.intersection(axial_clip_box)
         if poly_with_holes.is_empty:
             continue
