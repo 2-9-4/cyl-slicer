@@ -1152,8 +1152,8 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
     return _order_ring_segments(raw_runs, period=period, tol=tol)
 
 
-def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.05, fill_tol=0.995):
-    """Return the two physical side-wall lines for a near-rectangular full-wrap band."""
+def _canonical_full_wrap_strip_polygon(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.1, fill_tol=0.995, ortho_tol=1e-6):
+    """Snap a near-rectangular full-wrap band onto the exact canonical turn."""
     if not isinstance(poly, Polygon) or poly.is_empty or poly.interiors:
         return None
 
@@ -1165,16 +1165,59 @@ def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.05, fi
         return None
     if minx > lower + seam_tol or maxx < upper - seam_tol:
         return None
-    if theta_span < period - seam_tol:
+
+    coords = np.asarray(poly.exterior.coords, dtype=float)
+    if len(coords) < 4 or not poly.exterior.is_ring:
+        return None
+    dtheta = np.diff(coords[:, 0])
+    dz = np.diff(coords[:, 1])
+    if not np.all((np.abs(dtheta) <= ortho_tol) | (np.abs(dz) <= ortho_tol)):
+        return None
+    z_levels = []
+    for z in coords[:, 1]:
+        if not any(abs(z - existing) <= 1e-6 for existing in z_levels):
+            z_levels.append(float(z))
+    if len(z_levels) != 2:
         return None
 
     bbox_area = theta_span * z_span
     if bbox_area <= 0 or poly.area / bbox_area < fill_tol:
         return None
 
+    return box(lower, miny, upper, maxy)
+
+
+def _canonicalize_full_wrap_strips(geom, lower=0.0, upper=2 * math.pi):
+    """Recursively snap full-wrap orthogonal strips to exact canonical bounds."""
+    if geom is None or geom.is_empty:
+        return geom
+    if isinstance(geom, Polygon):
+        snapped = _canonical_full_wrap_strip_polygon(geom, lower=lower, upper=upper)
+        return snapped if snapped is not None else geom
+    if isinstance(geom, shapely.MultiPolygon):
+        parts = [_canonicalize_full_wrap_strips(g, lower=lower, upper=upper) for g in geom.geoms]
+        parts = [g for g in parts if g is not None and not g.is_empty]
+        if not parts:
+            return shapely.GeometryCollection()
+        return shapely.unary_union(parts)
+    if isinstance(geom, shapely.GeometryCollection):
+        parts = [_canonicalize_full_wrap_strips(g, lower=lower, upper=upper) for g in geom.geoms]
+        parts = [g for g in parts if g is not None and not g.is_empty]
+        if not parts:
+            return shapely.GeometryCollection()
+        return shapely.unary_union(parts)
+    return geom
+
+
+def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.1, fill_tol=0.995):
+    """Return the two physical side-wall lines for a near-rectangular full-wrap band."""
+    poly = _canonical_full_wrap_strip_polygon(poly, lower=lower, upper=upper, seam_tol=seam_tol, fill_tol=fill_tol)
+    if poly is None:
+        return None
+
     return [
-        LineString([[lower, miny], [upper, miny]]),
-        LineString([[lower, maxy], [upper, maxy]]),
+        LineString([[lower, poly.bounds[1]], [upper, poly.bounds[1]]]),
+        LineString([[lower, poly.bounds[3]], [upper, poly.bounds[3]]]),
     ]
 
 def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
@@ -1358,7 +1401,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "tube.stl")
+mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "cubeandring.stl")
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
@@ -1962,10 +2005,11 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
         internal_perimeter = do_transform(current_ext_print).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
+        internal_perimeter_raw = _canonicalize_full_wrap_strips(do_transform_inverse(internal_perimeter))
         if plot_per_layer:
-            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),ax=ax_2d_layer,add_points=False,color="green")
-        layer_data[i]["internal_peris"].append(do_transform_inverse(internal_perimeter))
-        final_perimeter = internal_perimeter
+            plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(internal_perimeter_raw))),ax=ax_2d_layer,add_points=False,color="green")
+        layer_data[i]["internal_peris"].append(internal_perimeter_raw)
+        final_perimeter = do_transform(internal_perimeter_raw)
 
 
 
@@ -1973,12 +2017,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
     _solid_direction = "axial"
-    layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
+    final_top_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_top_surface))
+    layer_data[i]["solid_infill"] = do_solid_infill(final_top_surface_raw,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
 
     final_bottom_surface = do_transform(current_bottom_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
-    bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
+    final_bottom_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_bottom_surface))
+    bottom_solid_infill = do_solid_infill(final_bottom_surface_raw,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
     layer_data[i]["solid_infill"] += bottom_solid_infill
 
     # Support infill: interface layers (near model) alternate radial/axial direction across
@@ -2046,7 +2092,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         # narrower than half a nozzle width.
         _half_noz = slicing_params["nozzle_size"] * 0.5
         _diff = _diff.buffer(-_half_noz, join_style="mitre").buffer(_half_noz, join_style="mitre")
-    shape_to_infill = do_transform_inverse(_diff)
+    shape_to_infill = _canonicalize_full_wrap_strips(do_transform_inverse(_diff))
 
     fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
     layer_data[i]["fully_radial_infill"] = fully_radial_infill

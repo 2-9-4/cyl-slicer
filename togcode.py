@@ -653,6 +653,48 @@ def _reduce_collinear(pts: np.ndarray, radius: float, tol: float = 0.005) -> np.
     return pts
 
 
+def _split_theta_monotone_coords(coords: list[Coord], tol: float = 1e-9) -> list[list[Coord]]:
+    """Split an open polyline whenever its theta direction changes sign.
+
+    `to_gcode()` assumes open paths advance monotonically in theta. Curves such as
+    support sine waves can legitimately reverse theta within one LineString; if left
+    intact, open-path unwrapping turns each local negative step into a +2π wrap.
+    Splitting at direction changes preserves the geometry while keeping every emitted
+    open path locally monotone.
+    """
+    if len(coords) < 3:
+        return [coords]
+
+    runs: list[list[Coord]] = []
+    current: list[Coord] = [coords[0]]
+    direction = 0
+
+    for idx in range(1, len(coords)):
+        prev_theta = coords[idx - 1][0]
+        theta = coords[idx][0]
+        dtheta = theta - prev_theta
+        step_dir = 0
+        if dtheta > tol:
+            step_dir = 1
+        elif dtheta < -tol:
+            step_dir = -1
+
+        if direction == 0 and step_dir != 0:
+            direction = step_dir
+        elif step_dir != 0 and direction != 0 and step_dir != direction:
+            current.append(coords[idx - 1])
+            if len(current) >= 2:
+                runs.append(current)
+            current = [coords[idx - 1]]
+            direction = step_dir
+
+        current.append(coords[idx])
+
+    if len(current) >= 2:
+        runs.append(current)
+    return runs if runs else [coords]
+
+
 def shapely_to_paths(geom, radius, max_seg_len=None) -> List[PathObject]:
     """Convert a shapely geometry to a list of PathObjects.
 
@@ -704,7 +746,13 @@ def shapely_to_paths(geom, radius, max_seg_len=None) -> List[PathObject]:
     elif isinstance(geom, LineString):
         coords = list(geom.coords)
         closed = geom.is_ring or is_effectively_closed(coords)
-        paths.append(PathObject(densify(coords, closed), closed, "line", radius))
+        if closed:
+            paths.append(PathObject(densify(coords, True), True, "line", radius))
+        else:
+            for run in _split_theta_monotone_coords(coords):
+                dense = densify(run, False)
+                if len(dense) >= 2:
+                    paths.append(PathObject(dense, False, "line", radius))
     elif isinstance(geom, MultiLineString):
         for line in geom.geoms:
             paths.extend(shapely_to_paths(line, radius, max_seg_len))
