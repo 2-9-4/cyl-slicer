@@ -629,6 +629,8 @@ def do_solid_infill(peri, slicing_params, current_r, plot_infill=False, ax=None,
         return shapely.transform(x,lambda p: p * [1/current_r,1])
     infill = []
     bounds = shapely.bounds(peri)
+    theta_min, z_min, theta_max, z_max = bounds
+    multi_turn = (theta_max - theta_min) > (2 * np.pi + 1e-6)
 
     def _collect(inter):
         geoms = None
@@ -655,33 +657,38 @@ def do_solid_infill(peri, slicing_params, current_r, plot_infill=False, ax=None,
         _n_solid = int(np.floor(2 * np.pi / _solid_step))
         # Round step so lines divide evenly into 2π (keeps grid aligned across layers).
         _solid_step = 2 * np.pi / _n_solid
+        theta_origin = _solid_step / 2
 
-        # Fold peri into canonical [0, 2π] before sweeping.  external_peris includes
-        # ±2π shifted copies for seam handling; without folding, every canonical θ slot
-        # gets 3-6 stacked lines (one per copy) while the gaps between copies stay empty.
-        # Folding maps all copies onto the same [0, 2π] window and takes the union,
-        # preserving multiple z ranges for multi-turn helices.
-        _TWO_PI = 2 * np.pi
-        _n_lo = int(np.floor(bounds[0] / _TWO_PI))
-        _n_hi = int(np.ceil(bounds[2] / _TWO_PI))
-        _pieces = []
-        _clip_box = shapely.box(0, bounds[1], _TWO_PI, bounds[3])
-        for _n in range(_n_lo, _n_hi + 1):
-            _shifted = shapely.transform(peri, lambda p: p + [-_n * _TWO_PI, 0])
-            _clipped = _shifted.intersection(_clip_box)
-            if not _clipped.is_empty:
-                _pieces.append(_clipped)
-        _peri_canon = shapely.unary_union(_pieces) if _pieces else peri
+        # Single-turn seam-copy geometry should still be folded onto one canonical
+        # turn so we do not emit stacked duplicate lines at equivalent angles.
+        if multi_turn:
+            _peri_scan = peri
+            _k_start = int(np.ceil((theta_min - theta_origin) / _solid_step))
+            _k_end = int(np.floor((theta_max - theta_origin) / _solid_step))
+            _all_thetas = theta_origin + np.arange(_k_start, _k_end + 1) * _solid_step
+        else:
+            _TWO_PI = 2 * np.pi
+            _n_lo = int(np.floor(theta_min / _TWO_PI))
+            _n_hi = int(np.ceil(theta_max / _TWO_PI))
+            _pieces = []
+            _clip_box = shapely.box(0, z_min, _TWO_PI, z_max)
+            for _n in range(_n_lo, _n_hi + 1):
+                _shifted = shapely.transform(peri, lambda p: p + [-_n * _TWO_PI, 0])
+                _clipped = _shifted.intersection(_clip_box)
+                if not _clipped.is_empty:
+                    _pieces.append(_clipped)
+            _peri_scan = shapely.unary_union(_pieces) if _pieces else peri
+            _all_thetas = np.arange(_n_solid) * _solid_step + theta_origin
 
-        for theta in np.arange(_n_solid) * _solid_step + _solid_step / 2:
-            ls = shapely.LineString([[theta, bounds[1]], [theta, bounds[3]]])
-            _collect(shapely.intersection(ls, _peri_canon))
+        for theta in _all_thetas:
+            ls = shapely.LineString([[theta, z_min], [theta, z_max]])
+            _collect(shapely.intersection(ls, _peri_scan))
     else:
         # Constant-z lines — arcs around the cylinder (radial / circumferential)
         z_step = slicing_params["nozzle_size"]   # mm; z axis is already in mm
-        z_lo = np.floor(bounds[1] / z_step) * z_step
-        for z in np.arange(z_lo, bounds[3] + z_step, z_step):
-            ls = shapely.LineString([[0, z], [2 * np.pi, z]])
+        z_lo = np.floor(z_min / z_step) * z_step
+        for z in np.arange(z_lo, z_max + z_step, z_step):
+            ls = shapely.LineString([[theta_min, z], [theta_max, z]])
             _collect(shapely.intersection(ls, peri))
 
     return infill
@@ -734,11 +741,16 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
     highest /= slicing_params["infill_spacing"]
     highest = np.ceil(highest) * slicing_params["infill_spacing"]  # snap up
 
+    theta_min = shapely.bounds(innermost_peri)[0]
+    theta_max = shapely.bounds(innermost_peri)[2]
+    multi_turn = (theta_max - theta_min) > (2 * np.pi + 1e-6)
+
     # ── Pass 1: Radial infill (constant-z lines, θ = 0 → 2π) ───────────────
     # Sweep horizontal lines from lowest to highest z, spaced by infill_spacing.
     for current_line_v in np.arange(lowest, highest + 1, slicing_params["infill_spacing"]):
-        # Build a full-width horizontal line at this z value across the whole θ range.
-        lp_x, lp_y = [0, 2*np.pi], [current_line_v, current_line_v]
+        # Build a full-width horizontal line at this z value across the whole
+        # occupied theta span, not just one canonical turn.
+        lp_x, lp_y = [theta_min, theta_max], [current_line_v, current_line_v]
         ls = shapely.LineString(np.array([lp_x, lp_y]).swapaxes(0, 1))
 
         # Clip the line to the interior polygon.
@@ -754,16 +766,17 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
             geoms = inter.geoms
 
         if geoms is not None:
-            stitched = stitch_radial_seam(geoms)
+            stitched = list(geoms) if multi_turn else stitch_radial_seam(geoms)
             if len(stitched) == 1:
                 # Seam-crossing arc stitched into one segment → fully radial.
-                seg = _snap_radial_to_full_circle(stitched[0])
+                seg = stitched[0] if multi_turn else _snap_radial_to_full_circle(stitched[0])
                 if plot_infill:
                     plot_line(do_transform(seg), ax=ax, color="red", add_points=False)
                 fully_radial_infill.append(seg)
             else:
                 for line_segment in stitched:
-                    line_segment = _snap_radial_to_full_circle(line_segment)
+                    if not multi_turn:
+                        line_segment = _snap_radial_to_full_circle(line_segment)
                     if plot_infill:
                         plot_line(do_transform(line_segment), ax=ax, color="orange", add_points=False)
                     radial_infill.append(line_segment)
@@ -774,7 +787,8 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
                 shapely.plotting.plot_points(do_transform(inter), color="red")
             else:
                 # Single continuous segment spanning the full interior crossing.
-                inter = _snap_radial_to_full_circle(inter)
+                if not multi_turn:
+                    inter = _snap_radial_to_full_circle(inter)
                 if plot_infill:
                     plot_line(do_transform(inter), ax=ax, color="red", add_points=False)
                 fully_radial_infill.append(inter)
@@ -793,11 +807,13 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
     # i.e. half_gap ≤ layer_height·tan(30°) ≈ 0.115mm — far below typical arc-gaps.
     r_base = slicing_params["r_base"]
     fixed_step = slicing_params["infill_spacing"] / r_base     # never changes
-    n_base = int(np.floor(2 * np.pi / fixed_step))             # same on every layer
     # Offset by half a step so no line falls exactly on the θ=0/2π polygon boundary.
     # After the morphological open in arc-length space the polygon's left edge retracts
     # slightly inward from θ=0, so a line at exactly 0 would miss the polygon.
-    all_thetas = np.linspace(fixed_step / 2, 2 * np.pi + fixed_step / 2, n_base, endpoint=False)
+    theta_origin = fixed_step / 2
+    k_start = int(np.ceil((theta_min - theta_origin) / fixed_step))
+    k_end = int(np.floor((theta_max - theta_origin) / fixed_step))
+    all_thetas = theta_origin + np.arange(k_start, k_end + 1) * fixed_step
 
     for current_line_h in all_thetas:
         # Build a vertical line in (θ,z) space at this fixed θ value.
@@ -1093,6 +1109,39 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     for ring in [poly.exterior] + list(poly.interiors):
         result.extend(_ring_to_wrapped_lines(ring, lower=lower, upper=upper))
     return result
+
+
+def keep_canonical_polygons(geom, lower=0.0, upper=2 * math.pi):
+    """Keep only polygon components whose centroid lies in the canonical turn.
+
+    `external_peris` intentionally carries seam-neighbor copies at ±2π so support
+    and boundary extraction can see across the wrap. Print-phase model geometry
+    should use only the canonical physical copy, otherwise buffers/differences
+    triple the interior area and later canonical clipping chops real multi-turn
+    features back down to one turn.
+    """
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+
+    if isinstance(geom, Polygon):
+        return geom if lower <= geom.centroid.x < upper else shapely.GeometryCollection()
+
+    if isinstance(geom, shapely.MultiPolygon):
+        polys = [g for g in geom.geoms if isinstance(g, Polygon) and lower <= g.centroid.x < upper]
+        if not polys:
+            return shapely.GeometryCollection()
+        if len(polys) == 1:
+            return polys[0]
+        return shapely.MultiPolygon(polys)
+
+    if isinstance(geom, shapely.GeometryCollection):
+        kept = [keep_canonical_polygons(g, lower=lower, upper=upper) for g in geom.geoms]
+        kept = [g for g in kept if g is not None and not g.is_empty]
+        if not kept:
+            return shapely.GeometryCollection()
+        return shapely.unary_union(kept)
+
+    return geom
     
 def sum_poly(p):
     if isinstance(p, Polygon):
@@ -1780,14 +1829,17 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         return shapely.transform(x,lambda p: p * [current_r,1])
     def do_transform_inverse(x):
         return shapely.transform(x,lambda p: p * [1/current_r,1])
+    current_ext_print = keep_canonical_polygons(layer_data[i]["external_peris"])
+    current_top_print = keep_canonical_polygons(layer_data[i].get("top_surfaces", shapely.GeometryCollection()))
+    current_bottom_print = keep_canonical_polygons(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection()))
     if plot_per_layer:
-        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(layer_data[i]["external_peris"]))),ax=ax_2d_layer,add_points=False,color="blue")
-    final_perimeter = do_transform(layer_data[i]["external_peris"])
+        plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(current_ext_print))),ax=ax_2d_layer,add_points=False,color="blue")
+    final_perimeter = do_transform(current_ext_print)
 
 
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
-        internal_perimeter = do_transform(layer_data[i]["external_peris"]).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
+        internal_perimeter = do_transform(current_ext_print).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
         if plot_per_layer:
             plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(do_transform_inverse(internal_perimeter)))),ax=ax_2d_layer,add_points=False,color="green")
         layer_data[i]["internal_peris"].append(do_transform_inverse(internal_perimeter))
@@ -1795,18 +1847,13 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
 
 
-    final_top_surface = do_transform(layer_data[i]["top_surfaces"]).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
-    # Clip to canonical x=[0,2π·r] to remove thin-strip artifacts where the buffer
-    # bleeds into the ±2π copies of final_perimeter, which would create double infill lines near the seam.
-    _canonical_x_clip = shapely.geometry.box(0, z_clip_min - 10, 2 * np.pi * current_r, z_clip_max + 10)
-    final_top_surface = final_top_surface.intersection(_canonical_x_clip)
+    final_top_surface = do_transform(current_top_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
     _solid_direction = "axial"
     layer_data[i]["solid_infill"] = do_solid_infill(do_transform_inverse(final_top_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
 
-    final_bottom_surface = do_transform(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection())).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
-    final_bottom_surface = final_bottom_surface.intersection(_canonical_x_clip)
+    final_bottom_surface = do_transform(current_bottom_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
     bottom_solid_infill = do_solid_infill(do_transform_inverse(final_bottom_surface),slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
@@ -1873,13 +1920,6 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     # perimeter without overlapping it (its center line is at the boundary of final_perimeter).
     _infill_boundary = final_perimeter.buffer(-slicing_params["nozzle_size"] * 0.5, join_style="mitre")
     _diff = _infill_boundary - final_top_surface - final_bottom_surface
-    # Clip to the canonical [0, 2π·r] arc-length window.  external_peris carries
-    # ±2π shifted copies so final_perimeter spans [−2π·r, 4π·r], but
-    # final_top_surface is already clipped to [0, 2π·r].  Without this step the
-    # difference leaves two strips (one at x<0, one at x>2π·r) whose boundaries
-    # sit exactly at θ=0 and θ=2π — causing the first sparse-infill axial scan
-    # to graze them and emit a stray line at the seam.
-    _diff = _diff.intersection(_canonical_x_clip)
     if not _diff.is_empty:
         # Morphological opening: removes any remaining floating-point slivers
         # narrower than half a nozzle width.
