@@ -96,6 +96,24 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     # Check if this is a perimeter path (either closed or spanning ~2π)
     pts = np.asarray(path.points, dtype=float)
     TWO_PI = 2 * np.pi
+
+    def closed_loop_theta_span(theta_values, x_values, tol=1e-9):
+        """Return the physical theta walk of a closed canonical loop.
+
+        Effectively-closed seam-crossing paths end where they start in canonical
+        theta, so `last-first` is zero even though the physical loop spans ~2π.
+        Unwrap only seam jumps; preserve real negative/positive edges inside the
+        loop so a lobe that doubles back in theta does not accumulate fake turns.
+        """
+        if len(theta_values) < 2:
+            return 0.0
+        if (
+            abs(theta_values[-1] - theta_values[0]) <= tol
+            and abs(x_values[-1] - x_values[0]) <= tol
+        ):
+            restored = np.unwrap(np.asarray(theta_values, dtype=float))
+            return float(restored[-1] - restored[0])
+        return float(theta_values[-1] - theta_values[0])
     
     theta_span = np.max(pts[:, 0]) - np.min(pts[:, 0])
     is_perimeter = path.closed or theta_span >= TWO_PI * 0.9
@@ -114,6 +132,69 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
         return path
 
     current_theta, current_x = current_pos
+
+    if path.closed:
+        closed_pts = pts[:-1] if len(pts) >= 2 and np.allclose(pts[0], pts[-1], atol=1e-9) else pts
+        if len(closed_pts) < 2:
+            return path
+
+        loop_pts = np.vstack([closed_pts, closed_pts[0]])
+        loop_theta = np.unwrap(loop_pts[:, 0])
+
+        min_dist = float('inf')
+        best_t = 0.0
+        best_edge_start = 0
+        best_closest_x = 0.0
+
+        for i in range(len(closed_pts)):
+            t1_base, x1 = loop_theta[i], loop_pts[i, 1]
+            t2_base, x2 = loop_theta[i + 1], loop_pts[i + 1, 1]
+            edge_dt_orig = t2_base - t1_base
+
+            t1_accum = t1_base + round((current_theta - t1_base) / TWO_PI) * TWO_PI
+            t2_accum = t1_accum + edge_dt_orig
+
+            edge_dt = t2_accum - t1_accum
+            edge_dx = x2 - x1
+            edge_len_sq = edge_dt * edge_dt * path.radius * path.radius + edge_dx * edge_dx
+
+            to_curr_dt = current_theta - t1_accum
+            to_curr_dx = current_x - x1
+            if edge_len_sq > 1e-10:
+                t_param = (to_curr_dt * edge_dt * path.radius * path.radius + to_curr_dx * edge_dx) / edge_len_sq
+                t_param = max(0.0, min(1.0, t_param))
+            else:
+                t_param = 0.0
+
+            closest_t_accum = t1_accum + t_param * edge_dt
+            closest_x = x1 + t_param * edge_dx
+
+            dtheta = closest_t_accum - current_theta
+            dx = closest_x - current_x
+            dist_sq = dx * dx + (dtheta * path.radius) ** 2
+
+            if dist_sq < min_dist:
+                min_dist = dist_sq
+                best_t = t_param
+                best_edge_start = i
+                best_closest_x = closest_x
+
+        base_pts = closed_pts.tolist()
+        if 0.01 < best_t < 0.99:
+            theta_new = loop_theta[best_edge_start] + best_t * (loop_theta[best_edge_start + 1] - loop_theta[best_edge_start])
+            start_pt = [float(theta_new % TWO_PI), float(best_closest_x)]
+            rotated_pts = [start_pt]
+            for offset in range(1, len(base_pts) + 1):
+                rotated_pts.append(base_pts[(best_edge_start + offset) % len(base_pts)])
+            rotated_pts.append(start_pt)
+        else:
+            best_idx = best_edge_start
+            if best_t >= 0.5:
+                best_idx = (best_edge_start + 1) % len(base_pts)
+            rotated_pts = [base_pts[(best_idx + offset) % len(base_pts)] for offset in range(len(base_pts))]
+            rotated_pts.append(rotated_pts[0])
+
+        return PathObject(rotated_pts, path.closed, path.kind, path.radius)
 
     # Find the nearest point on the path to current position.
     # For each edge, compute the closest point on that edge segment.
@@ -209,7 +290,7 @@ def rotate_closed_path_to_nearest(path: 'PathObject', current_pos: tuple) -> 'Pa
     # Build rotated path: start at best_idx, continue to end, then wrap to beginning
     # Output in accumulated theta space (near current_theta)
     rotated_pts = []
-    orig_span = pts[-1, 0] - pts[0, 0]  # Original theta span (should be ~2π for perimeters)
+    orig_span = closed_loop_theta_span(pts[:, 0], pts[:, 1])
     
     # Start at best_idx
     start_theta_accum = pts[best_idx, 0]

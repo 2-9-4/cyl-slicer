@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, box
+from shapely.geometry import Polygon, LineString, MultiLineString, box
 import numpy as np
 import plotly.graph_objects as go
 import shapely
@@ -69,6 +69,23 @@ def find_polygons(edges, num_points):
 
 def shift_polygon(poly, dx):
     return shapely.transform(poly,lambda x: x + [dx,0])
+
+
+def periodic_copies(geom, period=2 * np.pi, turns=1):
+    """Return geom plus integer-turn theta copies covering neighboring seams."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+    geom = polygonal_only(shapely.make_valid(geom))
+    if geom.is_empty:
+        return shapely.GeometryCollection()
+    copies = [
+        shift_polygon(geom, k * period) if k else geom
+        for k in range(-turns, turns + 1)
+    ]
+    try:
+        return shapely.unary_union(copies)
+    except shapely.errors.GEOSException:
+        return shapely.GeometryCollection(copies)
 
 def build_hierarchy(polygons, period=2 * np.pi):
     from shapely import STRtree
@@ -178,12 +195,14 @@ def is_full_circle(polygon, tol=0.1):
     return np.isclose(total_theta_sweep(polygon), 2*np.pi, atol=tol)
 
 
-def canonicalize_full_circle_loop(polygon, period=2 * np.pi):
+def canonicalize_full_circle_loop(polygon, period=2 * np.pi, seam_angle=0.0):
     """Rotate a full-circle loop onto one monotone [0, 2π] theta walk.
 
     Full-circle loops are periodic boundaries with no physical seam.  We pick the
-    wrapped closure jump as the synthetic seam, unwrap the remaining walk so theta
-    increases monotonically, then snap the endpoints onto exactly one full turn.
+    closure jump around a shared reference seam, unwrap the remaining walk so
+    theta increases monotonically, then snap the endpoints onto exactly one full
+    turn. Using a stable seam reference keeps paired full-circle loops phase-
+    aligned when they later become the two boundaries of one wrap-spanning strip.
     """
     coords = np.asarray(polygon, dtype=float)
     if len(coords) < 2:
@@ -191,19 +210,21 @@ def canonicalize_full_circle_loop(polygon, period=2 * np.pi):
 
     coords = coords.copy()
     for _ in range(2):
-        wrapped_diffs = np.diff(coords[:, 0], append=coords[0, 0])
+        shifted_theta = coords[:, 0] - seam_angle
+        wrapped_diffs = np.diff(shifted_theta, append=shifted_theta[0])
         wrapped_diffs = (wrapped_diffs + np.pi) % period - np.pi
         if wrapped_diffs.sum() >= 0:
             break
         coords = coords[::-1].copy()
 
-    wrapped_diffs = np.diff(coords[:, 0], append=coords[0, 0])
+    shifted_theta = coords[:, 0] - seam_angle
+    wrapped_diffs = np.diff(shifted_theta, append=shifted_theta[0])
     wrapped_diffs = (wrapped_diffs + np.pi) % period - np.pi
     seam_after = int(np.argmin(wrapped_diffs)) + 1
     if seam_after < len(coords):
         coords = np.roll(coords, -seam_after, axis=0)
 
-    theta = np.unwrap(coords[:, 0], discont=np.pi)
+    theta = np.unwrap(coords[:, 0] - seam_angle, discont=np.pi)
     theta -= theta[0]
     if theta[-1] < 0:
         theta += period
@@ -211,6 +232,205 @@ def canonicalize_full_circle_loop(polygon, period=2 * np.pi):
     theta[-1] = period
     coords[:, 0] = theta
     return coords
+
+
+def is_simple_full_circle_loop(polygon, tol=1e-6, period=2 * np.pi):
+    """Return True for full-turn loops that stay monotone in theta.
+
+    Simple wrap bands (tube walls, annuli) can be paired by concatenating one
+    full-turn loop with the reversed opposite loop. Once features create local
+    theta reversals within a loop, that shortcut becomes topologically wrong and
+    can stitch unrelated z-bands together.
+    """
+    coords = np.asarray(polygon, dtype=float)
+    if len(coords) < 4 or not is_full_circle(coords):
+        return False
+    theta = np.unwrap(coords[:, 0], discont=np.pi)
+    diffs = np.diff(theta, append=theta[0] + period)
+    signs = np.sign(diffs[np.abs(diffs) > tol])
+    if len(signs) == 0:
+        return True
+    return np.all(signs > 0) or np.all(signs < 0)
+
+
+def reconstruct_complex_full_circle_regions(
+    loops,
+    mesh,
+    radius,
+    nozzle_size,
+    period=2 * np.pi,
+    z_connect_tol=0.05,
+):
+    """Reconstruct occupied regions from complex full-turn boundary loops.
+
+    When a full-wrap ring merges with local features, the raw boundary loops are
+    no longer simple monotone lower/upper bands. Cut those loops at one canonical
+    seam, polygonize their exact boundary fragments, then use `mesh.contains()`
+    to decide which candidate cells are solid. The scanline fallback is kept only
+    for degenerate linework; using it as the primary path stair-steps local
+    features such as cube faces.
+    """
+    if not loops:
+        return []
+
+    z_values = [np.asarray(poly, dtype=float)[:, 1] for poly in loops if len(poly) >= 2]
+    if not z_values:
+        return []
+    z_loop_min = min(float(np.min(zs)) for zs in z_values)
+    z_loop_max = max(float(np.max(zs)) for zs in z_values)
+    z_global_min = z_loop_min - max(0.25, nozzle_size)
+    z_global_max = z_loop_max + max(0.25, nozzle_size)
+
+    exact_fragments = []
+    clip_box = box(0.0, z_loop_min, period, z_loop_max)
+    for polygon in loops:
+        coords = np.asarray(polygon, dtype=float)
+        if len(coords) < 2:
+            continue
+        if not np.allclose(coords[0], coords[-1], atol=1e-9):
+            coords = np.vstack([coords, coords[0]])
+
+        theta_min = float(np.min(coords[:, 0]))
+        theta_max = float(np.max(coords[:, 0]))
+        k_min = int(math.floor((0.0 - theta_max) / period)) - 1
+        k_max = int(math.ceil((period - theta_min) / period)) + 1
+        for k in range(k_min, k_max + 1):
+            shifted = coords.copy()
+            shifted[:, 0] += k * period
+            clipped = LineString(shifted).intersection(clip_box)
+            _collect_lines(clipped, exact_fragments, min_length=1e-9)
+
+    if exact_fragments:
+        event_thetas = [0.0, period]
+        for line in exact_fragments:
+            coords = np.asarray(line.coords, dtype=float)
+            event_thetas.extend(coords[:, 0].tolist())
+        event_thetas = sorted(min(max(float(theta), 0.0), period) for theta in event_thetas)
+        deduped_thetas = []
+        for theta in event_thetas:
+            if not deduped_thetas or abs(theta - deduped_thetas[-1]) > 1e-7:
+                deduped_thetas.append(theta)
+
+        boundary_lines = []
+        _collect_lines(clip_box.boundary, boundary_lines, min_length=1e-9)
+        vertical_cuts = [
+            LineString([(theta, z_loop_min), (theta, z_loop_max)])
+            for theta in deduped_thetas
+        ]
+        try:
+            linework = shapely.unary_union(MultiLineString(exact_fragments + boundary_lines + vertical_cuts))
+            candidate_polys = [
+                poly for poly in polygonize(linework)
+                if isinstance(poly, Polygon) and not poly.is_empty and poly.area > 1e-8
+            ]
+        except shapely.errors.GEOSException:
+            candidate_polys = []
+
+        if candidate_polys:
+            samples = []
+            for poly in candidate_polys:
+                sample = poly.representative_point()
+                theta = min(max(sample.x, 0.0), period)
+                samples.append([
+                    radius * math.cos(theta),
+                    radius * math.sin(theta),
+                    sample.y,
+                ])
+            inside = mesh.contains(np.asarray(samples, dtype=float))
+            solid_polys = [poly for poly, keep in zip(candidate_polys, inside) if keep]
+            if solid_polys:
+                merged = keep_canonical_polygons(shapely.unary_union(solid_polys), lower=0.0, upper=period)
+                final_parts = []
+                stack = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
+                for item in stack:
+                    if isinstance(item, Polygon) and not item.is_empty and item.area > 1e-6:
+                        final_parts.append(item)
+                if final_parts:
+                    return final_parts
+
+    lines = []
+    for polygon in loops:
+        coords = np.asarray(polygon, dtype=float)
+        if len(coords) < 2:
+            continue
+        if not np.allclose(coords[0], coords[-1], atol=1e-9):
+            coords = np.vstack([coords, coords[0]])
+        for k in (-1, 0, 1):
+            shifted = coords.copy()
+            shifted[:, 0] += k * period
+            lines.append(LineString(shifted))
+    if not lines:
+        return []
+
+    ml = MultiLineString(lines)
+    theta_step = max(0.02, nozzle_size / radius)
+    theta_edges = np.arange(0.0, period + theta_step, theta_step)
+    if theta_edges[-1] < period:
+        theta_edges = np.append(theta_edges, period)
+    theta_edges[-1] = period
+    theta_centers = (theta_edges[:-1] + theta_edges[1:]) * 0.5
+    candidate_columns = []
+    sample_points = []
+
+    for theta_i, theta in enumerate(theta_centers):
+        inter = ml.intersection(LineString([(theta, -1e9), (theta, 1e9)]))
+        pts = []
+        if inter.is_empty:
+            zs = []
+        if inter.geom_type == "Point":
+            pts = [inter]
+        elif hasattr(inter, "geoms"):
+            pts = [g for g in inter.geoms if g.geom_type == "Point"]
+        if pts:
+            zs = sorted(p.y for p in pts)
+        else:
+            zs = []
+        deduped = []
+        for z in zs:
+            if not deduped or abs(z - deduped[-1]) > 1e-4:
+                deduped.append(z)
+
+        bounds = [z_global_min] + deduped + [z_global_max]
+        x = radius * math.cos(theta)
+        y = radius * math.sin(theta)
+        column = []
+        for z0, z1 in zip(bounds[:-1], bounds[1:]):
+            if z1 - z0 <= 1e-4:
+                continue
+            sample_idx = len(sample_points)
+            column.append((z0, z1, sample_idx))
+            sample_points.append([x, y, (z0 + z1) * 0.5])
+        candidate_columns.append(column)
+
+    inside_mask = (
+        mesh.contains(np.asarray(sample_points, dtype=float))
+        if sample_points
+        else np.zeros(0, dtype=bool)
+    )
+    scan_intervals = [
+        [(z0, z1) for z0, z1, sample_idx in column if inside_mask[sample_idx]]
+        for column in candidate_columns
+    ]
+
+    column_polys = []
+    for i, intervals in enumerate(scan_intervals):
+        left_theta = theta_edges[i]
+        right_theta = theta_edges[i + 1]
+        for z0, z1 in intervals:
+            if z1 - z0 <= 1e-4:
+                continue
+            column_polys.append(box(left_theta, z0, right_theta, z1))
+    if not column_polys:
+        return []
+
+    geom = shapely.unary_union(column_polys)
+    merged = keep_canonical_polygons(geom, lower=0.0, upper=period)
+    final_parts = []
+    stack = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
+    for item in stack:
+        if isinstance(item, Polygon) and not item.is_empty and item.area > 1e-6:
+            final_parts.append(item)
+    return final_parts
 
 
 def cylindrical_cross_section(mesh, radius):
@@ -895,7 +1115,7 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
 
     return fully_radial_infill, radial_infill, axial_infill
 from shapely.geometry import Polygon, LineString, box, MultiLineString
-from shapely.ops import linemerge
+from shapely.ops import linemerge, polygonize
 
 def _stitch_lines(lines, lower=0.0, period=2*math.pi, tol=1e-9):
     """
@@ -1074,6 +1294,7 @@ def _ring_to_wrapped_lines(ring, lower=0.0, upper=2*math.pi, tol=1e-9):
         return []
 
     period = upper - lower
+    seam_slack = math.radians(5.0)
     raw_dtheta = np.diff(raw_coords[:, 0])
     raw_dz = np.diff(raw_coords[:, 1])
     raw_theta_span = raw_coords[:, 0].max() - raw_coords[:, 0].min()
@@ -1209,6 +1430,49 @@ def _canonicalize_full_wrap_strips(geom, lower=0.0, upper=2 * math.pi):
     return geom
 
 
+def _is_effectively_full_wrap_polygon(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.15):
+    """Return True when a polygon is one physical wrap with only a small seam gap.
+
+    Full-wrap regions often come out of slice reconstruction or buffering with a
+    narrow gap at the canonical seam instead of exact bounds at 0 and 2π. Those
+    polygons still need periodic neighbour copies during inward offsets so we
+    do not erode against synthetic seam endcaps.
+    """
+    if not isinstance(poly, Polygon) or poly.is_empty:
+        return False
+
+    period = upper - lower
+    minx, _, maxx, _ = poly.bounds
+    if maxx - minx < period - seam_tol:
+        return False
+
+    window = max(seam_tol, 1e-6)
+    left = poly.intersection(box(lower, -1e15, lower + window, 1e15))
+    right = poly.intersection(box(upper - window, -1e15, upper, 1e15))
+    return (
+        not left.is_empty
+        and left.area > 1e-8
+        and not right.is_empty
+        and right.area > 1e-8
+    )
+
+
+def has_full_wrap_component(geom, lower=0.0, upper=2 * math.pi, seam_tol=0.15):
+    """Return True if any polygon component physically spans the periodic seam."""
+    geom = polygonal_only(geom)
+    if geom.is_empty:
+        return False
+    parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+    period = upper - lower
+    for part in parts:
+        if not isinstance(part, Polygon) or part.is_empty:
+            continue
+        minx, _, maxx, _ = part.bounds
+        if maxx - minx >= period - seam_tol and _is_effectively_full_wrap_polygon(part, lower=lower, upper=upper, seam_tol=seam_tol):
+            return True
+    return False
+
+
 def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.1, fill_tol=0.995):
     """Return the two physical side-wall lines for a near-rectangular full-wrap band."""
     poly = _canonical_full_wrap_strip_polygon(poly, lower=lower, upper=upper, seam_tol=seam_tol, fill_tol=fill_tol)
@@ -1220,16 +1484,86 @@ def _full_wrap_strip_lines(poly, lower=0.0, upper=2 * math.pi, seam_tol=0.1, fil
         LineString([[lower, poly.bounds[3]], [upper, poly.bounds[3]]]),
     ]
 
+
+def _periodic_boundary_lines(poly, lower=0.0, upper=2 * math.pi, tol=1e-9, seam_tol=0.15):
+    """Extract physical boundary lines for a polygon spanning the periodic seam.
+
+    A full-wrap polygon folded into [0, 2π] can have a planar exterior dominated
+    by synthetic seam cuts. Build the ±one-turn periodic union first so seam cuts
+    become interior edges, then clip the physical boundary back to one turn.
+    """
+    if not isinstance(poly, Polygon) or poly.is_empty:
+        return None
+
+    period = upper - lower
+    minx, _, maxx, _ = poly.bounds
+    if maxx - minx < period - seam_tol or minx > lower + seam_tol or maxx < upper - seam_tol:
+        return None
+    left_gap = max(0.0, minx - lower)
+    right_gap = max(0.0, upper - maxx)
+    snap_tol = max(left_gap, right_gap) + 1e-6
+    if snap_tol > 0.025:
+        return None
+
+    def _snap_theta_to_seam(coords):
+        coords = np.asarray(coords, dtype=float).copy()
+        coords[:, 0] = np.where(coords[:, 0] <= lower + snap_tol, lower, coords[:, 0])
+        coords[:, 0] = np.where(coords[:, 0] >= upper - snap_tol, upper, coords[:, 0])
+        return coords
+
+    poly = polygonal_only(shapely.make_valid(shapely.transform(poly, _snap_theta_to_seam)))
+    if not isinstance(poly, Polygon) or poly.is_empty:
+        return None
+
+    try:
+        periodic_geom = shapely.unary_union([
+            shift_polygon(poly, -period),
+            poly,
+            shift_polygon(poly, period),
+        ])
+        # Cut the printable boundary half a turn away from the canonical seam.
+        # The canonical seam often coincides with local features (cubeandring's
+        # cube sits at θ=0); cutting there splits the local feature into two
+        # unrelated-looking pieces even though the geometry is topologically
+        # continuous. The ±period union above lets us choose any one-turn window.
+        cut_lower = lower + period * 0.5
+        cut_upper = cut_lower + period
+        boundary = periodic_geom.boundary.intersection(box(cut_lower, -1e15, cut_upper, 1e15))
+        raw_lines = []
+        _collect_lines(boundary, raw_lines, min_length=1e-9)
+        if not raw_lines:
+            return None
+        unioned = shapely.unary_union(MultiLineString(raw_lines))
+    except shapely.errors.GEOSException:
+        return None
+
+    merged_lines = []
+    _collect_lines(unioned, merged_lines, min_length=1e-9)
+    runs = []
+    for line in merged_lines:
+        coords = np.asarray(line.coords, dtype=float)
+        if len(coords) < 2:
+            continue
+        theta_span = coords[:, 0].max() - coords[:, 0].min()
+        if line.is_ring and theta_span < period - tol:
+            runs.append(line)
+        else:
+            runs.extend(_split_theta_monotone_runs(line, tol=tol))
+    return [line for line in runs if not line.is_empty and line.length >= 1e-9]
+
+
 def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
     """
     Convert a polygon (or collection) to LineStrings for gcode/plotting.
 
-    external_peris stores each physical polygon THREE times (canonical + ±2π
-    copies).  We keep only the canonical copy by checking that the centroid
-    theta is within [lower, upper).  Rings that fit inside one canonical turn
-    are returned unchanged; rings that cross the seam or extend past one turn
-    are clipped as boundary lines, shifted back into unwrapped theta space, and
-    split only where their theta direction actually changes.
+    Polygonal sections may include ±2π seam-neighbour copies, or a single
+    canonical polygon whose centroid falls slightly outside [0, 2π) because it
+    straddles the seam.  Normalize polygonal input onto the canonical turn with
+    overlap-based shifting before extracting boundary lines. Rings that fit
+    inside one canonical turn are returned unchanged; rings that cross the seam
+    or extend past one turn are clipped as boundary lines, shifted back into
+    unwrapped theta space, and split only where their theta direction actually
+    changes.
     """
     if poly is None or (hasattr(poly, 'is_empty') and poly.is_empty):
         return []
@@ -1241,24 +1575,36 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
             ret += polygon_to_wrapped_lines(each, lower, upper)
         return ret
 
-    if isinstance(poly, (shapely.MultiPolygon, shapely.GeometryCollection)):
-        ret = []
-        for geom in poly.geoms:
-            ret += polygon_to_wrapped_lines(geom, lower, upper)
-        return ret
-
     if isinstance(poly, (LineString, shapely.MultiLineString)):
         # Already a line (e.g. infill passed through here) — flatten and return as-is
         ret = []
         _collect_lines(poly, ret, min_length=0.0)
         return ret
 
+    if isinstance(poly, shapely.GeometryCollection) and not any(
+        isinstance(geom, (Polygon, shapely.MultiPolygon)) for geom in poly.geoms
+    ):
+        ret = []
+        _collect_lines(poly, ret, min_length=0.0)
+        return ret
+
+    if isinstance(poly, (Polygon, shapely.MultiPolygon, shapely.GeometryCollection)):
+        poly = keep_canonical_polygons(poly, lower=lower, upper=upper)
+        if poly is None or poly.is_empty:
+            return []
+
+    if isinstance(poly, (shapely.MultiPolygon, shapely.GeometryCollection)):
+        ret = []
+        for geom in poly.geoms:
+            ret += polygon_to_wrapped_lines(geom, lower, upper)
+        return ret
+
     if not isinstance(poly, Polygon):
         return []
 
-    # Skip ±2π duplicate copies — only keep the canonical polygon
-    if not (lower <= poly.centroid.x < upper):
-        return []
+    periodic_lines = _periodic_boundary_lines(poly, lower=lower, upper=upper)
+    if periodic_lines:
+        return periodic_lines
 
     strip_lines = _full_wrap_strip_lines(poly, lower=lower, upper=upper)
     if strip_lines is not None:
@@ -1271,27 +1617,55 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi):
 
 
 def keep_canonical_polygons(geom, lower=0.0, upper=2 * math.pi):
-    """Keep only polygon components whose centroid lies in the canonical turn.
+    """Shift polygon components onto the canonical turn and deduplicate copies.
 
     `external_peris` intentionally carries seam-neighbor copies at ±2π so support
-    and boundary extraction can see across the wrap. Print-phase model geometry
-    should use only the canonical physical copy, otherwise buffers/differences
-    triple the interior area and later canonical clipping chops real multi-turn
-    features back down to one turn.
+    and boundary extraction can see across the wrap. Centroid-based filtering is
+    not robust once a valid polygon itself spans across the seam, because its
+    centroid may fall just outside `[0, 2π)` even though most of the geometry is
+    the canonical physical copy. Instead, shift each polygon by integer turns to
+    maximize its overlap with the canonical window, then union the results.
     """
     if geom is None or geom.is_empty:
         return shapely.GeometryCollection()
 
+    period = upper - lower
+
+    def _canonical_shift(poly):
+        minx, _, maxx, _ = poly.bounds
+        k_min = int(math.floor((lower - maxx) / period)) - 1
+        k_max = int(math.ceil((upper - minx) / period)) + 1
+        best_k = 0
+        best_overlap = -1.0
+        best_center_dist = float("inf")
+        for k in range(k_min, k_max + 1):
+            shifted_min = minx + k * period
+            shifted_max = maxx + k * period
+            overlap = max(0.0, min(shifted_max, upper) - max(shifted_min, lower))
+            center = poly.centroid.x + k * period
+            center_dist = abs(center - (lower + upper) * 0.5)
+            if overlap > best_overlap + 1e-9 or (
+                abs(overlap - best_overlap) <= 1e-9 and center_dist < best_center_dist
+            ):
+                best_k = k
+                best_overlap = overlap
+                best_center_dist = center_dist
+        return best_k, best_overlap
+
     if isinstance(geom, Polygon):
-        return geom if lower <= geom.centroid.x < upper else shapely.GeometryCollection()
+        k, overlap = _canonical_shift(geom)
+        if overlap <= 1e-9:
+            return shapely.GeometryCollection()
+        return shift_polygon(geom, k * period) if k else geom
 
     if isinstance(geom, shapely.MultiPolygon):
-        polys = [g for g in geom.geoms if isinstance(g, Polygon) and lower <= g.centroid.x < upper]
+        polys = [keep_canonical_polygons(g, lower=lower, upper=upper) for g in geom.geoms if isinstance(g, Polygon)]
+        polys = [g for g in polys if g is not None and not g.is_empty]
         if not polys:
             return shapely.GeometryCollection()
         if len(polys) == 1:
             return polys[0]
-        return shapely.MultiPolygon(polys)
+        return shapely.unary_union(polys)
 
     if isinstance(geom, shapely.GeometryCollection):
         kept = [keep_canonical_polygons(g, lower=lower, upper=upper) for g in geom.geoms]
@@ -1301,7 +1675,47 @@ def keep_canonical_polygons(geom, lower=0.0, upper=2 * math.pi):
         return shapely.unary_union(kept)
 
     return geom
-    
+
+
+def polygonal_only(geom):
+    """Drop non-area fragments from a geometry tree."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+    if isinstance(geom, (Polygon, shapely.MultiPolygon)):
+        return geom
+    if isinstance(geom, shapely.GeometryCollection):
+        polys = [polygonal_only(g) for g in geom.geoms]
+        polys = [g for g in polys if g is not None and not g.is_empty]
+        if not polys:
+            return shapely.GeometryCollection()
+        return shapely.unary_union(polys)
+    if hasattr(geom, "geoms"):
+        polys = [polygonal_only(g) for g in geom.geoms]
+        polys = [g for g in polys if g is not None and not g.is_empty]
+        if not polys:
+            return shapely.GeometryCollection()
+        return shapely.unary_union(polys)
+    return shapely.GeometryCollection()
+
+
+def remove_tiny_regions(geom_theta_z, radius, min_area_mm2):
+    """Drop polygon fragments too small to print after converting theta to mm."""
+    geom_theta_z = polygonal_only(geom_theta_z)
+    if geom_theta_z.is_empty or min_area_mm2 <= 0:
+        return geom_theta_z
+
+    parts = list(geom_theta_z.geoms) if hasattr(geom_theta_z, "geoms") else [geom_theta_z]
+    kept = []
+    for part in parts:
+        if part.is_empty:
+            continue
+        metric = shapely.affinity.scale(part, xfact=radius, yfact=1.0, origin=(0, 0))
+        if metric.area >= min_area_mm2:
+            kept.append(part)
+    if not kept:
+        return shapely.GeometryCollection()
+    return shapely.unary_union(kept)
+
 def sum_poly(p):
     if isinstance(p, Polygon):
         return p
@@ -1384,6 +1798,8 @@ slicing_params = {
     "fan_start_layer": 2,            # model layer index at which part cooling fan turns on
     "top_layers": 3,                 # number of solid shells on the outer (top) surface
     "bottom_layers": 3,              # number of solid shells on the inner (bottom) surface
+    "surface_min_area": 0.05,        # mm² — discard numerical top/bottom slivers below this printable area
+    "slice_sample_offset": 0.25,     # fraction of layer height used to sample slice geometry within the layer interior
 }
 
 printer_params = {
@@ -1476,11 +1892,11 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
     times = [(time.perf_counter(), "")]
     print(f"  [{sliced_layer_count+1}/{_total_layers}] r={current_r:.3f} mm", end="\r", flush=True)
-    # Offset by a tiny fraction of layer_height so we never slice exactly through
-    # mesh boundary vertices (e.g. the outer cone bottom edge at r=42.5mm).
-    # The 2e-5 mm shift is negligible for geometry but prevents tangled zero-length
-    # segments that arise when mesh vertices straddle the exact slice radius.
-    _slice_r = current_r + slicing_params["layer_height"] * 1e-4
+    # Sample within the radial interior of the deposited layer, not exactly on its
+    # boundary. Boundary sampling is prone to degenerate cross-sections when the
+    # slice coincides with mesh vertices or tangent transitions, which can fragment
+    # one physical wrap band into many tiny loops on a single layer.
+    _slice_r = current_r + slicing_params["layer_height"] * slicing_params["slice_sample_offset"]
     cross_pts_cart, outer_edges = cylindrical_cross_section(mesh, _slice_r)
     if len(cross_pts_cart) < 3:
         print(f"empty layer for {layer_i}")
@@ -1515,21 +1931,46 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     #     plt.plot(poly[:,0],poly[:,1],"-")
     # plt.show()
     full_circles = [is_full_circle(poly) for poly in poly_pts]
-    # triangles is always [] with the cylindrical_cross_section approach, so
-    # find_connected_shapes can't pair full-circle loops via shared faces.
-    # Instead, sort by average z and pair consecutive loops (bottom/top of each
-    # solid region).
     fc_original_indices = [i for i, fc in enumerate(full_circles) if fc]
-    if len(fc_original_indices) >= 2:
-        fc_z_mean = [np.mean(np.array(poly_pts[i])[:, 1]) for i in fc_original_indices]
-        sorted_order = np.argsort(fc_z_mean)
-        sorted_fc = [fc_original_indices[j] for j in sorted_order]
-        full_circle_pairs = [np.array([sorted_fc[k], sorted_fc[k+1]]) for k in range(0, len(sorted_fc) - 1, 2)]
+    complex_fc_loops = []
+    simple_fc_indices = []
+    for i in fc_original_indices:
+        if is_simple_full_circle_loop(poly_pts[i]):
+            simple_fc_indices.append(i)
+        else:
+            complex_fc_loops.append(poly_pts[i])
+
+    # Once any full-turn boundary is complex, simple full-turn loops on the
+    # same layer may still be part of the same periodic occupied region.  Pairing
+    # or dropping them independently changes phase at the seam, so reconstruct
+    # the whole full-circle set together from mesh occupancy.
+    if complex_fc_loops:
+        full_circle_pairs = []
+        fc_loops_for_reconstruction = [poly_pts[i] for i in fc_original_indices]
     else:
+        fc_loops_for_reconstruction = []
+    if not complex_fc_loops and len(simple_fc_indices) >= 2:
+        fc_z_mean = [np.mean(np.array(poly_pts[i])[:, 1]) for i in simple_fc_indices]
+        sorted_order = np.argsort(fc_z_mean)
+        sorted_fc = [simple_fc_indices[j] for j in sorted_order]
+        full_circle_pairs = [np.array([sorted_fc[k], sorted_fc[k+1]]) for k in range(0, len(sorted_fc) - 1, 2)]
+    elif not complex_fc_loops:
         full_circle_pairs = []
     full_circle_pairs = np.array(full_circle_pairs) if full_circle_pairs else np.empty((0, 2), dtype=int)
-    polys = [Polygon(p) for i,p in enumerate(poly_pts) if not full_circles[i]]
-    mapping = []
+
+    complex_full_circle_parts = reconstruct_complex_full_circle_regions(
+        fc_loops_for_reconstruction,
+        mesh,
+        _slice_r,
+        slicing_params["nozzle_size"],
+    )
+
+    polys = [Polygon(p) for i,p in enumerate(poly_pts) if i not in fc_original_indices]
+    periodic_poly_indices = set()
+    _complex_start = len(polys)
+    polys.extend(complex_full_circle_parts)
+    periodic_poly_indices.update(range(_complex_start, len(polys)))
+    mapping = set()
     for pair in full_circle_pairs:
         p1 = canonicalize_full_circle_loop(poly_pts[pair[0]])
         p2 = canonicalize_full_circle_loop(poly_pts[pair[1]])
@@ -1543,7 +1984,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         for part in fp_parts:
             if not isinstance(part, Polygon) or part.is_empty:
                 continue
-            mapping += [len(polys)]
+            mapping.add(len(polys))
+            periodic_poly_indices.add(len(polys))
             polys.append(part)
     # for poly in poly_pts:
     #     if is_full_circle(poly):
@@ -1604,7 +2046,14 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         _theta_span = _theta_max - _theta_min
         _buffer_source = poly_with_holes
         _needs_canonical_buffer_fold = False
-        if _theta_span <= 2 * np.pi + 1e-6 and _theta_min <= 1e-6 and _theta_max >= 2 * np.pi - 1e-6:
+        _is_periodic_poly = poly_i in periodic_poly_indices
+        if _is_periodic_poly or (
+            _theta_span <= 2 * np.pi + 1e-6
+            and (
+                (_theta_min <= 1e-6 and _theta_max >= 2 * np.pi - 1e-6)
+                or _is_effectively_full_wrap_polygon(poly_with_holes)
+            )
+        ):
             # Full-wrap one-turn bands are periodic across the 0/2π seam.  Buffer
             # them with seam-neighbour copies so the inward wall offset does not
             # erode along synthetic seam endcaps.
@@ -1633,7 +2082,14 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             poly_with_holes = shift_polygon(poly_with_holes, _k_canon * 2 * np.pi)
 
         external_perimeters.append(poly_with_holes)
-        if poly_i not in mapping:
+        _stored_theta_min, _, _stored_theta_max, _ = poly_with_holes.bounds
+        _stored_theta_span = _stored_theta_max - _stored_theta_min
+        # Once a physical perimeter already spans a full canonical turn, adding
+        # ±2π seam-neighbour copies makes those copies overlap. `unary_union`
+        # can then stitch the exterior out of mixed turns, which rotates local
+        # features when separate islands merge into one wrap-touching polygon.
+        # Only add seam-neighbour copies for genuinely sub-turn islands.
+        if poly_i not in periodic_poly_indices and _stored_theta_span < 2 * np.pi - 1e-6:
             external_perimeters.append(shift_polygon(poly_with_holes,2*np.pi))
             external_perimeters.append(shift_polygon(poly_with_holes,-2*np.pi))
         if plot_perimeters:
@@ -1642,7 +2098,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         plt.show()
     times.append((time.perf_counter(),"form poly with holes"))
     
-    final = shapely.unary_union(external_perimeters)
+    final = polygonal_only(shapely.unary_union(external_perimeters))
     layer_data[layer_i]["external_peris"] = final
     times.append((time.perf_counter(),"full union"))
 
@@ -1652,8 +2108,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
     e = do_transform(final)
 
-    e -= do_transform(layer_data[layer_i-1]["external_peris"]).buffer(slicing_params["nozzle_size"]/2)
-    e -= do_transform(shift_polygon(layer_data[layer_i-1]["external_peris"],-np.pi*2)).buffer(slicing_params["nozzle_size"]/2)
+    prev_periodic = periodic_copies(layer_data[layer_i-1]["external_peris"], turns=2)
+    e -= do_transform(prev_periodic).buffer(slicing_params["nozzle_size"]/2)
 
     if not e.is_empty:
         ns = do_transform_inverse(e)
@@ -1674,8 +2130,12 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     e = e.buffer(-slicing_params["nozzle_size"],join_style="mitre")# shrink the area of the top layer so we don't flag slicing_params["wall_count"] as needing top layers, TODO tweak this metric slicing_params["nozzle_size"]*slicing_params["wall_count"] is probably too little overlap between slicing_params["wall_count"]
     e = do_transform_inverse(e)
 
-    e -= final
-    e -= shift_polygon(final,-np.pi*2)
+    e -= periodic_copies(final, turns=2)
+    e = remove_tiny_regions(
+        e,
+        layer_data[layer_i-1]["radius"],
+        slicing_params.get("surface_min_area", 0.0),
+    )
     times.append((time.perf_counter(),"top surface check"))
 
     layer_data[layer_i-1]["top_surfaces"] = e
@@ -1684,8 +2144,12 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     e = do_transform(final)
     e = e.buffer(-slicing_params["nozzle_size"], join_style="mitre")
     e = do_transform_inverse(e)
-    e -= layer_data[layer_i-1]["external_peris"]
-    e -= shift_polygon(layer_data[layer_i-1]["external_peris"], np.pi*2)
+    e -= prev_periodic
+    e = remove_tiny_regions(
+        e,
+        current_r,
+        slicing_params.get("surface_min_area", 0.0),
+    )
     layer_data[layer_i]["bottom_surfaces"] = e
     times.append((time.perf_counter(), "bottom surface check"))
     # for i in range(1,len(times)):
@@ -1718,6 +2182,11 @@ for _pos, _key, _ts in _top_sources:
             break
         _ik = _sorted_keys[_inner_pos]
         _prop = _ts.intersection(layer_data[_ik]["external_peris"])
+        _prop = remove_tiny_regions(
+            _prop,
+            layer_data[_ik]["radius"],
+            slicing_params.get("surface_min_area", 0.0),
+        )
         if _prop.is_empty:
             break
         _existing = layer_data[_ik].get("top_surfaces", _empty_geom)
@@ -1730,6 +2199,11 @@ for _pos, _key, _bs in _bot_sources:
             break
         _ok = _sorted_keys[_outer_pos]
         _prop = _bs.intersection(layer_data[_ok]["external_peris"])
+        _prop = remove_tiny_regions(
+            _prop,
+            layer_data[_ok]["radius"],
+            slicing_params.get("surface_min_area", 0.0),
+        )
         if _prop.is_empty:
             break
         _existing = layer_data[_ok].get("bottom_surfaces", _empty_geom)
@@ -2004,8 +2478,15 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     layer_data[i]["internal_peris"] = []
     for wall_number in range(1,slicing_params["wall_count"]):
-        internal_perimeter = do_transform(current_ext_print).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
-        internal_perimeter_raw = _canonicalize_full_wrap_strips(do_transform_inverse(internal_perimeter))
+        if has_full_wrap_component(current_ext_print):
+            internal_source = periodic_copies(current_ext_print, turns=1)
+            internal_perimeter = do_transform(internal_source).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
+            internal_perimeter_raw = do_transform_inverse(internal_perimeter)
+            internal_perimeter_raw = fold_to_canonical(internal_perimeter_raw, theta_clip_box)
+            internal_perimeter_raw = _canonicalize_full_wrap_strips(polygonal_only(internal_perimeter_raw))
+        else:
+            internal_perimeter = do_transform(current_ext_print).buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
+            internal_perimeter_raw = _canonicalize_full_wrap_strips(do_transform_inverse(internal_perimeter))
         if plot_per_layer:
             plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(internal_perimeter_raw))),ax=ax_2d_layer,add_points=False,color="green")
         layer_data[i]["internal_peris"].append(internal_perimeter_raw)
@@ -2242,8 +2723,15 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         # actual last_pos is then updated sequentially below during to_gcode.
         _snap_pos = last_pos
         def _prep_section(subsection):
-            if subsection in ("external_peris", "internal_peris"):
-                raw = shapely_to_paths(polygon_to_wrapped_lines(layer_data[i][subsection]), current_r)
+            if subsection == "external_peris":
+                raw = shapely_to_paths(polygon_to_wrapped_lines(current_ext_print), current_r)
+                return [p for p in raw if p is not None]
+            elif subsection == "internal_peris":
+                internal_print = [
+                    keep_canonical_polygons(each)
+                    for each in layer_data[i].get(subsection, [])
+                ]
+                raw = shapely_to_paths(polygon_to_wrapped_lines(internal_print), current_r)
                 return [p for p in raw if p is not None]
             else:
                 raw = shapely_to_paths(layer_data[i].get(subsection, []), current_r)
