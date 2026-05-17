@@ -680,14 +680,15 @@ def clean_support_region(geom_theta_z, r_base, min_area_mm2, merge_gap_mm):
             if part.area < min_area_mm2:
                 r_target = (min_area_mm2 / np.pi) ** 0.5
                 r_current = (part.area / np.pi) ** 0.5
-                part = part.buffer(r_target - r_current)
+                part = robust_polygonal_buffer(part, r_target - r_current)
             inflated.append(part)
         if not inflated:
             return shapely.GeometryCollection()
         metric = shapely.unary_union(inflated)
 
     if merge_gap_mm > 0:
-        metric = metric.buffer(merge_gap_mm / 2).buffer(-(merge_gap_mm / 2))
+        metric = robust_polygonal_buffer(metric, merge_gap_mm / 2)
+        metric = robust_polygonal_buffer(metric, -(merge_gap_mm / 2))
 
     return shapely.affinity.scale(metric, xfact=1.0 / r_base, yfact=1.0, origin=(0, 0))
 
@@ -775,7 +776,7 @@ def fold_to_canonical(geom, clip_box, period=2 * np.pi):
         shift_polygon(geom, period),
         shift_polygon(geom, -period),
     ])
-    return shapely.set_precision(folded, 1e-8).intersection(clip_box)
+    return robust_polygonal_intersection(shapely.set_precision(folded, 1e-8), clip_box)
 
 
 def fold_to_theta_window(geom, lower, upper, z_min, z_max, period=2 * np.pi):
@@ -789,7 +790,10 @@ def fold_to_theta_window(geom, lower, upper, z_min, z_max, period=2 * np.pi):
     k_max = int(math.ceil((upper - minx) / period)) + 1
     copies = [shift_polygon(geom, k * period) if k else geom for k in range(k_min, k_max + 1)]
     folded = shapely.unary_union(copies)
-    return shapely.set_precision(folded, 1e-8).intersection(box(lower, z_min, upper, z_max))
+    return robust_polygonal_intersection(
+        shapely.set_precision(folded, 1e-8),
+        box(lower, z_min, upper, z_max),
+    )
 
 
 def _make_sine_wave_ls(theta_center, z_min, z_max, amplitude_rad, period_mm, pts_per_period=24):
@@ -2018,6 +2022,138 @@ def polygonal_only(geom):
     return shapely.GeometryCollection()
 
 
+def repair_polygonal_geometry(geom, grid_size=1e-8):
+    """Normalize invalid overlay/buffer results into polygonal geometry."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+
+    repaired = geom
+    for repair in (
+        lambda g: shapely.make_valid(g),
+        lambda g: shapely.set_precision(g, grid_size),
+        lambda g: g.buffer(0),
+    ):
+        try:
+            repaired = repair(repaired)
+        except (ValueError, shapely.errors.GEOSException):
+            continue
+
+    return polygonal_only(repaired)
+
+
+def robust_polygonal_buffer(geom, distance, grid_size=1e-8, **kwargs):
+    """Buffer polygon geometry, repairing precision/topology failures."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+
+    attempts = [geom, repair_polygonal_geometry(geom, grid_size)]
+    last_error = None
+    for candidate in attempts:
+        if candidate is None or candidate.is_empty:
+            continue
+        try:
+            return repair_polygonal_geometry(candidate.buffer(distance, **kwargs), grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return shapely.GeometryCollection()
+
+
+def robust_polygonal_intersection(a, b, grid_size=1e-8):
+    """Intersect polygon geometry with repair/retry for GEOS topology errors."""
+    if a is None or b is None or a.is_empty or b.is_empty:
+        return shapely.GeometryCollection()
+
+    candidate_pairs = [
+        (a, b, None),
+        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), None),
+        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), grid_size),
+        (repair_polygonal_geometry(a, grid_size * 10), repair_polygonal_geometry(b, grid_size * 10), grid_size * 10),
+    ]
+    last_error = None
+    for left, right, precision in candidate_pairs:
+        if left is None or right is None or left.is_empty or right.is_empty:
+            continue
+        try:
+            if precision is None:
+                result = shapely.intersection(left, right)
+            else:
+                result = shapely.intersection(left, right, grid_size=precision)
+            return repair_polygonal_geometry(result, grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return shapely.GeometryCollection()
+
+
+def robust_polygonal_difference(a, b, grid_size=1e-8):
+    """Subtract polygon geometry with repair/retry for GEOS topology errors."""
+    if a is None or a.is_empty:
+        return shapely.GeometryCollection()
+    if b is None or b.is_empty:
+        return repair_polygonal_geometry(a, grid_size)
+
+    candidate_pairs = [
+        (a, b, None),
+        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), None),
+        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), grid_size),
+        (repair_polygonal_geometry(a, grid_size * 10), repair_polygonal_geometry(b, grid_size * 10), grid_size * 10),
+    ]
+    last_error = None
+    for left, right, precision in candidate_pairs:
+        if left is None or left.is_empty:
+            return shapely.GeometryCollection()
+        if right is None or right.is_empty:
+            return repair_polygonal_geometry(left, grid_size)
+        try:
+            if precision is None:
+                result = shapely.difference(left, right)
+            else:
+                result = shapely.difference(left, right, grid_size=precision)
+            return repair_polygonal_geometry(result, grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return shapely.GeometryCollection()
+
+
+def robust_polygonal_union(geoms, grid_size=1e-8):
+    """Union polygon geometry with repair/retry for GEOS topology errors."""
+    parts = [
+        repair_polygonal_geometry(g, grid_size)
+        for g in geoms
+        if g is not None and not g.is_empty
+    ]
+    parts = [g for g in parts if g is not None and not g.is_empty]
+    if not parts:
+        return shapely.GeometryCollection()
+    if len(parts) == 1:
+        return parts[0]
+
+    last_error = None
+    for precision in (None, grid_size, grid_size * 10):
+        try:
+            if precision is None:
+                result = shapely.unary_union(parts)
+            else:
+                result = shapely.union_all(parts, grid_size=precision)
+            return repair_polygonal_geometry(result, grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+            parts = [repair_polygonal_geometry(g, (precision or grid_size) * 10) for g in parts]
+            parts = [g for g in parts if g is not None and not g.is_empty]
+
+    if last_error is not None:
+        raise last_error
+    return shapely.GeometryCollection()
+
+
 def remove_tiny_regions(geom_theta_z, radius, min_area_mm2):
     """Drop polygon fragments too small to print after converting theta to mm."""
     geom_theta_z = polygonal_only(geom_theta_z)
@@ -2387,8 +2523,13 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             _needs_canonical_buffer_fold = True
 
         _buffer_source_metric = do_transform(_buffer_source)
-        _buffered_metric = _buffer_source_metric.buffer(-slicing_params["nozzle_size"]/2, join_style="mitre")
-        _buffered_metric = _buffered_metric.intersection(_buffer_source_metric)
+        _buffer_source_metric = repair_polygonal_geometry(_buffer_source_metric)
+        _buffered_metric = robust_polygonal_buffer(
+            _buffer_source_metric,
+            -slicing_params["nozzle_size"] / 2,
+            join_style="mitre",
+        )
+        _buffered_metric = robust_polygonal_intersection(_buffered_metric, _buffer_source_metric)
         _poly_buffered_raw = do_transform_inverse(_buffered_metric)
         if _needs_canonical_buffer_fold:
             poly_with_holes = fold_to_canonical(_poly_buffered_raw, theta_clip_box)
@@ -2402,8 +2543,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         else:
             poly_with_holes = _poly_buffered_raw
             poly_with_holes_print = _poly_buffered_raw
-        poly_with_holes = poly_with_holes.intersection(axial_clip_box)
-        poly_with_holes_print = poly_with_holes_print.intersection(axial_clip_box)
+        poly_with_holes = robust_polygonal_intersection(poly_with_holes, axial_clip_box)
+        poly_with_holes_print = robust_polygonal_intersection(poly_with_holes_print, axial_clip_box)
         if poly_with_holes.is_empty:
             continue
 
@@ -2436,10 +2577,10 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         plt.show()
     times.append((time.perf_counter(),"form poly with holes"))
     
-    final = polygonal_only(shapely.unary_union(external_perimeters))
+    final = robust_polygonal_union(external_perimeters)
     layer_data[layer_i]["external_peris"] = final
     layer_data[layer_i]["external_peris_print"] = (
-        polygonal_only(shapely.unary_union(external_perimeters_print))
+        robust_polygonal_union(external_perimeters_print)
         if external_perimeters_print
         else final
     )
@@ -2452,7 +2593,10 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     e = do_transform(final)
 
     prev_periodic = periodic_copies(layer_data[layer_i-1]["external_peris"], turns=2)
-    e -= do_transform(prev_periodic).buffer(slicing_params["nozzle_size"]/2)
+    e = robust_polygonal_difference(
+        e,
+        robust_polygonal_buffer(do_transform(prev_periodic), slicing_params["nozzle_size"] / 2),
+    )
 
     if not e.is_empty:
         ns = do_transform_inverse(e)
@@ -2475,12 +2619,13 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     # offsets are not classified as exposed top skin. Compare coverage in metric
     # space, with a nozzle-scale tolerance, so tiny phase differences across the
     # periodic seam do not create solid infill inside enclosed cube/ring volume.
-    e = e.buffer(-slicing_params["nozzle_size"], join_style="mitre")
-    current_cover = do_transform(periodic_copies(final, turns=2)).buffer(
+    e = robust_polygonal_buffer(e, -slicing_params["nozzle_size"], join_style="mitre")
+    current_cover = robust_polygonal_buffer(
+        do_transform(periodic_copies(final, turns=2)),
         _surface_cover_tol,
         join_style="mitre",
     )
-    e = do_transform_inverse(e - current_cover)
+    e = do_transform_inverse(robust_polygonal_difference(e, current_cover))
     e = remove_tiny_regions(
         e,
         layer_data[layer_i-1]["radius"],
@@ -2493,12 +2638,13 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     # Bottom surfaces of current layer: areas not covered by the layer below.
     # Use the same metric-space tolerant comparison as the top-surface test.
     e = do_transform(final)
-    e = e.buffer(-slicing_params["nozzle_size"], join_style="mitre")
-    prev_cover = do_transform(prev_periodic).buffer(
+    e = robust_polygonal_buffer(e, -slicing_params["nozzle_size"], join_style="mitre")
+    prev_cover = robust_polygonal_buffer(
+        do_transform(prev_periodic),
         _surface_cover_tol,
         join_style="mitre",
     )
-    e = do_transform_inverse(e - prev_cover)
+    e = do_transform_inverse(robust_polygonal_difference(e, prev_cover))
     e = remove_tiny_regions(
         e,
         current_r,
@@ -2535,7 +2681,7 @@ for _pos, _key, _ts in _top_sources:
         if _inner_pos < 0:
             break
         _ik = _sorted_keys[_inner_pos]
-        _prop = _ts.intersection(layer_data[_ik]["external_peris"])
+        _prop = robust_polygonal_intersection(_ts, layer_data[_ik]["external_peris"])
         _prop = remove_tiny_regions(
             _prop,
             layer_data[_ik]["radius"],
@@ -2544,7 +2690,7 @@ for _pos, _key, _ts in _top_sources:
         if _prop.is_empty:
             break
         _existing = layer_data[_ik].get("top_surfaces", _empty_geom)
-        layer_data[_ik]["top_surfaces"] = _existing.union(_prop)
+        layer_data[_ik]["top_surfaces"] = robust_polygonal_union([_existing, _prop])
 
 for _pos, _key, _bs in _bot_sources:
     for _depth in range(1, slicing_params["bottom_layers"]):
@@ -2552,7 +2698,7 @@ for _pos, _key, _bs in _bot_sources:
         if _outer_pos >= len(_sorted_keys):
             break
         _ok = _sorted_keys[_outer_pos]
-        _prop = _bs.intersection(layer_data[_ok]["external_peris"])
+        _prop = robust_polygonal_intersection(_bs, layer_data[_ok]["external_peris"])
         _prop = remove_tiny_regions(
             _prop,
             layer_data[_ok]["radius"],
@@ -2561,7 +2707,7 @@ for _pos, _key, _bs in _bot_sources:
         if _prop.is_empty:
             break
         _existing = layer_data[_ok].get("bottom_surfaces", _empty_geom)
-        layer_data[_ok]["bottom_surfaces"] = _existing.union(_prop)
+        layer_data[_ok]["bottom_surfaces"] = robust_polygonal_union([_existing, _prop])
 
 print(f"\nPass 1 complete — {sliced_layer_count} layers sliced.")
 
@@ -2590,20 +2736,20 @@ for i in reversed(sorted_layer_keys):
     # Z, which would create a spurious vertical gap at the narrow end of tapered geometry.
     if xy_dist_mm > 0 and not current_ext.is_empty:
         metric_ext     = shapely.affinity.scale(current_ext, xfact=current_r, yfact=1.0, origin=(0, 0))
-        metric_exp     = metric_ext.buffer(xy_dist_mm)
+        metric_exp     = robust_polygonal_buffer(metric_ext, xy_dist_mm)
         _zb            = metric_ext.bounds          # (xmin, z_min, xmax, z_max)
-        metric_exp     = metric_exp.intersection(shapely.geometry.box(-1e9, _zb[1], 1e9, _zb[3]))
+        metric_exp     = robust_polygonal_intersection(metric_exp, shapely.geometry.box(-1e9, _zb[1], 1e9, _zb[3]))
         model_expanded = shapely.affinity.scale(metric_exp, xfact=1.0 / current_r, yfact=1.0, origin=(0, 0))
-        support_needed = support_needed.difference(model_expanded)
+        support_needed = robust_polygonal_difference(support_needed, model_expanded)
     else:
-        support_needed = support_needed.difference(current_ext)
+        support_needed = robust_polygonal_difference(support_needed, current_ext)
 
     # Record what this layer must print as support.
     # Store with ±2π shifted copies (like external_peris) so seam-crossing
     # regions remain as one continuous polygon rather than two split pieces.
     if not support_needed.is_empty:
         support_canon = keep_canonical_polygons(support_needed)
-        layer_data[i]["support"] = shapely.unary_union([
+        layer_data[i]["support"] = robust_polygonal_union([
             support_canon,
             shift_polygon(support_canon, 2*np.pi),
             shift_polygon(support_canon, -2*np.pi),
@@ -2611,13 +2757,13 @@ for i in reversed(sorted_layer_keys):
 
     # Add this layer's overhangs so inner layers know to support them
     if "needs_support" in layer_data[i]:
-        support_needed = support_needed.union(layer_data[i]["needs_support"])
+        support_needed = robust_polygonal_union([support_needed, layer_data[i]["needs_support"]])
         support_needed = keep_canonical_polygons(support_needed)
 
     # Organic taper: erode the support footprint so columns narrow toward the bed
     if not support_needed.is_empty :
         metric = shapely.affinity.scale(support_needed, xfact=current_r, yfact=1.0, origin=(0, 0))
-        metric = metric.buffer(-taper_mm)
+        metric = robust_polygonal_buffer(metric, -taper_mm)
         if metric.is_empty:
             support_needed = shapely.GeometryCollection()
         else:
@@ -2835,16 +2981,24 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     for wall_number in range(1,slicing_params["wall_count"]):
         if has_full_wrap_component(current_ext_print):
             internal_source = periodic_copies(current_ext_print, turns=1)
-            _internal_source_metric = do_transform(internal_source)
-            internal_perimeter = _internal_source_metric.buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
-            internal_perimeter = internal_perimeter.intersection(_internal_source_metric)
+            _internal_source_metric = repair_polygonal_geometry(do_transform(internal_source))
+            internal_perimeter = robust_polygonal_buffer(
+                _internal_source_metric,
+                -slicing_params["nozzle_size"] * wall_number,
+                join_style="mitre",
+            )
+            internal_perimeter = robust_polygonal_intersection(internal_perimeter, _internal_source_metric)
             internal_perimeter_raw = do_transform_inverse(internal_perimeter)
             internal_perimeter_raw = fold_to_canonical(internal_perimeter_raw, theta_clip_box)
             internal_perimeter_raw = _canonicalize_full_wrap_strips(polygonal_only(internal_perimeter_raw))
         else:
-            _internal_source_metric = do_transform(current_ext_print)
-            internal_perimeter = _internal_source_metric.buffer(-slicing_params["nozzle_size"]*(wall_number),join_style="mitre")
-            internal_perimeter = internal_perimeter.intersection(_internal_source_metric)
+            _internal_source_metric = repair_polygonal_geometry(do_transform(current_ext_print))
+            internal_perimeter = robust_polygonal_buffer(
+                _internal_source_metric,
+                -slicing_params["nozzle_size"] * wall_number,
+                join_style="mitre",
+            )
+            internal_perimeter = robust_polygonal_intersection(internal_perimeter, _internal_source_metric)
             internal_perimeter_raw = _canonicalize_full_wrap_strips(do_transform_inverse(internal_perimeter))
         if plot_per_layer:
             plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(internal_perimeter_raw))),ax=ax_2d_layer,add_points=False,color="green")
@@ -2854,7 +3008,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
 
 
-    final_top_surface = do_transform(current_top_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    final_top_surface = robust_polygonal_intersection(
+        robust_polygonal_buffer(
+            do_transform(current_top_print),
+            slicing_params["nozzle_size"] * slicing_params["wall_count"],
+            join_style="mitre",
+        ),
+        final_perimeter,
+    )
     if plot_per_layer:
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
     _solid_direction = "axial"
@@ -2876,7 +3037,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     final_top_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_top_surface))
     top_solid_infill = _surface_solid_infill(final_top_surface_raw)
 
-    final_bottom_surface = do_transform(current_bottom_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
+    final_bottom_surface = robust_polygonal_intersection(
+        robust_polygonal_buffer(
+            do_transform(current_bottom_print),
+            slicing_params["nozzle_size"] * slicing_params["wall_count"],
+            join_style="mitre",
+        ),
+        final_perimeter,
+    )
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
     final_bottom_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_bottom_surface))
@@ -2899,7 +3067,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             for d in range(1, interface_n + 1):
                 ext = layer_data.get(i + delta_sign * d, {}).get("external_peris", shapely.GeometryCollection())
                 if not ext.is_empty:
-                    candidate = support_print.intersection(keep_canonical_polygons(ext))
+                    candidate = robust_polygonal_intersection(support_print, keep_canonical_polygons(ext))
                     if not candidate.is_empty:
                         return d
             return None
@@ -2947,14 +3115,21 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         # The cube in cubeandring sits on theta=0, so canonical buffering/opening
         # creates a visible seam gap through the cube interior.
         _periodic_final = periodic_copies(final_perimeter_raw, turns=1)
-        _infill_boundary = do_transform(_periodic_final).buffer(-_half_noz, join_style="mitre")
-        _diff = (
-            _infill_boundary
-            - do_transform(periodic_copies(final_top_surface_raw, turns=1))
-            - do_transform(periodic_copies(final_bottom_surface_raw, turns=1))
+        _infill_boundary = robust_polygonal_buffer(
+            do_transform(_periodic_final),
+            -_half_noz,
+            join_style="mitre",
+        )
+        _diff = robust_polygonal_difference(
+            robust_polygonal_difference(
+                _infill_boundary,
+                do_transform(periodic_copies(final_top_surface_raw, turns=1)),
+            ),
+            do_transform(periodic_copies(final_bottom_surface_raw, turns=1)),
         )
         if not _diff.is_empty:
-            _diff = _diff.buffer(-_half_noz, join_style="mitre").buffer(_half_noz, join_style="mitre")
+            _diff = robust_polygonal_buffer(_diff, -_half_noz, join_style="mitre")
+            _diff = robust_polygonal_buffer(_diff, _half_noz, join_style="mitre")
         _diff_raw = do_transform_inverse(_diff)
         shape_to_infill = _canonicalize_full_wrap_strips(
             polygonal_only(
@@ -2968,12 +3143,16 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             )
         )
     else:
-        _infill_boundary = final_perimeter.buffer(-_half_noz, join_style="mitre")
-        _diff = _infill_boundary - final_top_surface - final_bottom_surface
+        _infill_boundary = robust_polygonal_buffer(final_perimeter, -_half_noz, join_style="mitre")
+        _diff = robust_polygonal_difference(
+            robust_polygonal_difference(_infill_boundary, final_top_surface),
+            final_bottom_surface,
+        )
         if not _diff.is_empty:
             # Morphological opening: removes any remaining floating-point slivers
             # narrower than half a nozzle width.
-            _diff = _diff.buffer(-_half_noz, join_style="mitre").buffer(_half_noz, join_style="mitre")
+            _diff = robust_polygonal_buffer(_diff, -_half_noz, join_style="mitre")
+            _diff = robust_polygonal_buffer(_diff, _half_noz, join_style="mitre")
         shape_to_infill = _canonicalize_full_wrap_strips(do_transform_inverse(_diff))
 
     fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
@@ -3158,13 +3337,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                     lower = math.pi
                     upper = lower + 2 * math.pi
                     source = layer_data[i].get("external_peris_print", current_ext_print)
-                    source_metric = do_transform(source)
+                    source_metric = repair_polygonal_geometry(do_transform(source))
                     for wall_number in range(1, slicing_params["wall_count"]):
-                        internal_metric = source_metric.buffer(
+                        internal_metric = robust_polygonal_buffer(
+                            source_metric,
                             -slicing_params["nozzle_size"] * wall_number,
                             join_style="mitre",
                         )
-                        internal_metric = internal_metric.intersection(source_metric)
+                        internal_metric = robust_polygonal_intersection(internal_metric, source_metric)
                         internal_raw = do_transform_inverse(internal_metric)
                         lines = polygon_to_wrapped_lines(
                             internal_raw,
