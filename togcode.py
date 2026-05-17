@@ -514,7 +514,8 @@ class PathObject:
         fake_dist = np.sqrt(dx*dx + dt_accum*dt_accum)
 
         safe_real_dist = np.where(real_dist > 1e-10, real_dist, 1e-10)
-        e_incr  = real_dist * slicing_params["extrusion_per_mm"] * slicing_params.get("flow_rate", 1.0)
+        flow = slicing_params.get("flow_rate", 1.0)
+        e_incr  = real_dist * slicing_params["extrusion_per_mm"] * flow
         e_vals  = np.cumsum(e_incr) + current_e
         fvals   = slicing_params["feed_mm_per_min"] * fake_dist / safe_real_dist
 
@@ -536,13 +537,42 @@ class PathObject:
 
         angles_deg = accum_thetas[1:] * 180 / np.pi   # accumulated degrees for G1
 
-        g.extend(
-            f"G1 X{x:.3f} Y{a:.3f} E{e:.5f} F{f:.1f}"
-            for (_, x), a, e, f in zip(p2, angles_deg, e_vals, fvals)
-        )
+        e_running = current_e
+        local_closure_last = None
+        for seg_i, ((_, x), a, rd, f) in enumerate(zip(p2, angles_deg, real_dist, fvals)):
+            dt_rad = accum_thetas[seg_i + 1] - accum_thetas[seg_i]
+            dx_seg = p2[seg_i, 1] - p1[seg_i, 1]
+            short_dt = (2 * np.pi) - (dt_rad % (2 * np.pi))
+            is_local_seam_closure = (
+                seg_i == len(p2) - 1
+                and dt_rad > np.pi
+                and 1e-4 < short_dt < 0.45
+                and abs(dx_seg) <= 5e-2
+            )
+            if is_local_seam_closure:
+                # This is a local lobe closing through the periodic seam. Emitting
+                # it in path order would extrude almost a full revolution; instead
+                # travel to the equivalent seam-side endpoint and extrude the short
+                # chord in the forward rotary direction.
+                travel_theta = accum_thetas[seg_i + 1]
+                chord_theta = accum_thetas[seg_i] + (2 * np.pi)
+                chord_x = p1[seg_i, 1]
+                chord_dist = self.dist(chord_x, x, chord_theta, travel_theta)
+                e_running += chord_dist * slicing_params["extrusion_per_mm"] * flow
+                chord_fake = np.sqrt((chord_x - x) ** 2 + ((chord_theta - travel_theta) * 180 / np.pi) ** 2)
+                chord_f = slicing_params["feed_mm_per_min"] * chord_fake / max(chord_dist, 1e-10)
+                g.append(f"G0 X{x:.3f} Y{travel_theta * 180/np.pi:.3f} F{slicing_params['travel_mm_per_min']:.1f}")
+                g.append(f"G1 X{chord_x:.3f} Y{chord_theta * 180/np.pi:.3f} E{e_running:.5f} F{chord_f:.1f}")
+                local_closure_last = (chord_theta, chord_x)
+            else:
+                e_running += rd * slicing_params["extrusion_per_mm"] * flow
+                g.append(f"G1 X{x:.3f} Y{a:.3f} E{e_running:.5f} F{f:.1f}")
 
         # Handle closed path closing segment
-        if self.closed and len(pts) > 1:
+        if local_closure_last is not None:
+            last = local_closure_last
+            current_e = e_running
+        elif self.closed and len(pts) > 1:
             t1_canon, x1 = pts[-1]
             t2_canon, x2 = pts[0]
             if not np.allclose([t1_canon, x1], [t2_canon, x2], atol=1e-10):
