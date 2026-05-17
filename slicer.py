@@ -2852,18 +2852,28 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
     _solid_direction = "axial"
     _min_solid_lines = slicing_params.get("surface_min_solid_lines", 0)
+
+    def _surface_solid_infill(surface_raw):
+        surface_raw = polygonal_only(surface_raw)
+        if surface_raw.is_empty:
+            return []
+        parts = list(surface_raw.geoms) if hasattr(surface_raw, "geoms") else [surface_raw]
+        result = []
+        for part in parts:
+            part_solid = do_solid_infill(part,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
+            if 0 < len(part_solid) < _min_solid_lines:
+                continue
+            result.extend(part_solid)
+        return result
+
     final_top_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_top_surface))
-    top_solid_infill = do_solid_infill(final_top_surface_raw,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
-    if 0 < len(top_solid_infill) < _min_solid_lines:
-        top_solid_infill = []
+    top_solid_infill = _surface_solid_infill(final_top_surface_raw)
 
     final_bottom_surface = do_transform(current_bottom_print).buffer(slicing_params["nozzle_size"]*slicing_params["wall_count"],join_style="mitre").intersection(final_perimeter)
     if plot_per_layer:
         plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
     final_bottom_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_bottom_surface))
-    bottom_solid_infill = do_solid_infill(final_bottom_surface_raw,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
-    if 0 < len(bottom_solid_infill) < _min_solid_lines:
-        bottom_solid_infill = []
+    bottom_solid_infill = _surface_solid_infill(final_bottom_surface_raw)
     layer_data[i]["solid_infill"] = top_solid_infill + bottom_solid_infill
 
     # Support infill: interface layers (near model) alternate radial/axial direction across
