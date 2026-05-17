@@ -1,4 +1,6 @@
 import sys
+import os
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
@@ -245,8 +247,9 @@ def is_simple_full_circle_loop(polygon, tol=1e-6, period=2 * np.pi):
     coords = np.asarray(polygon, dtype=float)
     if len(coords) < 4 or not is_full_circle(coords):
         return False
-    theta = np.unwrap(coords[:, 0], discont=np.pi)
-    diffs = np.diff(theta, append=theta[0] + period)
+    theta = coords[:, 0]
+    diffs = np.diff(theta, append=theta[0])
+    diffs = (diffs + np.pi) % period - np.pi
     signs = np.sign(diffs[np.abs(diffs) > tol])
     if len(signs) == 0:
         return True
@@ -771,12 +774,12 @@ def fold_to_canonical(geom, clip_box, period=2 * np.pi):
         return geom
     geom = shapely.make_valid(geom)
     geom = shapely.set_precision(geom, 1e-8)
-    folded = shapely.unary_union([
+    folded = robust_polygonal_union([
         geom,
         shift_polygon(geom, period),
         shift_polygon(geom, -period),
     ])
-    return robust_polygonal_intersection(shapely.set_precision(folded, 1e-8), clip_box)
+    return robust_polygonal_intersection(folded, clip_box)
 
 
 def fold_to_theta_window(geom, lower, upper, z_min, z_max, period=2 * np.pi):
@@ -789,7 +792,7 @@ def fold_to_theta_window(geom, lower, upper, z_min, z_max, period=2 * np.pi):
     k_min = int(math.floor((lower - maxx) / period)) - 1
     k_max = int(math.ceil((upper - minx) / period)) + 1
     copies = [shift_polygon(geom, k * period) if k else geom for k in range(k_min, k_max + 1)]
-    folded = shapely.unary_union(copies)
+    folded = robust_polygonal_union(copies)
     return robust_polygonal_intersection(
         shapely.set_precision(folded, 1e-8),
         box(lower, z_min, upper, z_max),
@@ -1557,7 +1560,7 @@ def _periodic_boundary_lines(poly, lower=0.0, upper=2 * math.pi, tol=1e-9, seam_
         return None
 
     try:
-        periodic_geom = shapely.unary_union([
+        periodic_geom = robust_polygonal_union([
             shift_polygon(poly, -period),
             poly,
             shift_polygon(poly, period),
@@ -1700,6 +1703,9 @@ def _remove_periodic_seam_caps(
     def _same_point(a, b):
         return abs(a[0] - b[0]) <= coord_tol and abs(a[1] - b[1]) <= coord_tol
 
+    def _point_key(p):
+        return (round(float(p[0]) / coord_tol), round(float(p[1]) / coord_tol))
+
     def _seam_distance(theta):
         return abs((theta - seam_origin + period / 2) % period - period / 2)
 
@@ -1724,6 +1730,11 @@ def _remove_periodic_seam_caps(
     remove = set()
     replacements = []
     z_spans = [entry for entry in entries if entry.get("kind") == "z_span"]
+    z_span_endpoints = defaultdict(list)
+    for leg in z_spans:
+        l0, l1 = leg["coords"]
+        z_span_endpoints[_point_key(l0)].append((leg, l1, l0))
+        z_span_endpoints[_point_key(l1)].append((leg, l0, l1))
 
     for cap in [entry for entry in entries if entry.get("kind") == "theta_span"]:
         cap_idx = cap["idx"]
@@ -1740,15 +1751,12 @@ def _remove_periodic_seam_caps(
         legs = []
         for cap_endpoint in (c0, c1):
             matches = []
-            for leg in z_spans:
+            for leg, free_endpoint, matched_endpoint in z_span_endpoints.get(_point_key(cap_endpoint), []):
                 leg_idx = leg["idx"]
                 if leg_idx == cap_idx or leg_idx in remove:
                     continue
-                l0, l1 = leg["coords"]
-                if _same_point(l0, cap_endpoint):
-                    matches.append((leg, l1))
-                elif _same_point(l1, cap_endpoint):
-                    matches.append((leg, l0))
+                if _same_point(matched_endpoint, cap_endpoint):
+                    matches.append((leg, free_endpoint))
             if len(matches) != 1:
                 legs = []
                 break
@@ -2041,18 +2049,33 @@ def repair_polygonal_geometry(geom, grid_size=1e-8):
     return polygonal_only(repaired)
 
 
+def clean_polygonal_result(geom, grid_size=1e-8):
+    """Keep valid polygonal output cheap; repair only invalid results."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+    try:
+        if geom.is_valid:
+            return polygonal_only(geom)
+    except (ValueError, shapely.errors.GEOSException):
+        pass
+    return repair_polygonal_geometry(geom, grid_size)
+
+
 def robust_polygonal_buffer(geom, distance, grid_size=1e-8, **kwargs):
     """Buffer polygon geometry, repairing precision/topology failures."""
     if geom is None or geom.is_empty:
         return shapely.GeometryCollection()
 
-    attempts = [geom, repair_polygonal_geometry(geom, grid_size)]
     last_error = None
-    for candidate in attempts:
-        if candidate is None or candidate.is_empty:
-            continue
+    try:
+        return clean_polygonal_result(geom.buffer(distance, **kwargs), grid_size)
+    except (ValueError, shapely.errors.GEOSException) as exc:
+        last_error = exc
+
+    candidate = repair_polygonal_geometry(geom, grid_size)
+    if candidate is not None and not candidate.is_empty:
         try:
-            return repair_polygonal_geometry(candidate.buffer(distance, **kwargs), grid_size)
+            return clean_polygonal_result(candidate.buffer(distance, **kwargs), grid_size)
         except (ValueError, shapely.errors.GEOSException) as exc:
             last_error = exc
 
@@ -2066,13 +2089,8 @@ def robust_polygonal_intersection(a, b, grid_size=1e-8):
     if a is None or b is None or a.is_empty or b.is_empty:
         return shapely.GeometryCollection()
 
-    candidate_pairs = [
-        (a, b, None),
-        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), None),
-        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), grid_size),
-        (repair_polygonal_geometry(a, grid_size * 10), repair_polygonal_geometry(b, grid_size * 10), grid_size * 10),
-    ]
     last_error = None
+    candidate_pairs = [(a, b, None)]
     for left, right, precision in candidate_pairs:
         if left is None or right is None or left.is_empty or right.is_empty:
             continue
@@ -2081,7 +2099,22 @@ def robust_polygonal_intersection(a, b, grid_size=1e-8):
                 result = shapely.intersection(left, right)
             else:
                 result = shapely.intersection(left, right, grid_size=precision)
-            return repair_polygonal_geometry(result, grid_size)
+            return clean_polygonal_result(result, grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+
+    for precision in (None, grid_size, grid_size * 10):
+        repair_grid = precision or grid_size
+        left = repair_polygonal_geometry(a, repair_grid)
+        right = repair_polygonal_geometry(b, repair_grid)
+        if left is None or right is None or left.is_empty or right.is_empty:
+            continue
+        try:
+            if precision is None:
+                result = shapely.intersection(left, right)
+            else:
+                result = shapely.intersection(left, right, grid_size=precision)
+            return clean_polygonal_result(result, grid_size)
         except (ValueError, shapely.errors.GEOSException) as exc:
             last_error = exc
 
@@ -2097,24 +2130,36 @@ def robust_polygonal_difference(a, b, grid_size=1e-8):
     if b is None or b.is_empty:
         return repair_polygonal_geometry(a, grid_size)
 
-    candidate_pairs = [
-        (a, b, None),
-        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), None),
-        (repair_polygonal_geometry(a, grid_size), repair_polygonal_geometry(b, grid_size), grid_size),
-        (repair_polygonal_geometry(a, grid_size * 10), repair_polygonal_geometry(b, grid_size * 10), grid_size * 10),
-    ]
     last_error = None
+    candidate_pairs = [(a, b, None)]
     for left, right, precision in candidate_pairs:
         if left is None or left.is_empty:
             return shapely.GeometryCollection()
         if right is None or right.is_empty:
-            return repair_polygonal_geometry(left, grid_size)
+            return clean_polygonal_result(left, grid_size)
         try:
             if precision is None:
                 result = shapely.difference(left, right)
             else:
                 result = shapely.difference(left, right, grid_size=precision)
-            return repair_polygonal_geometry(result, grid_size)
+            return clean_polygonal_result(result, grid_size)
+        except (ValueError, shapely.errors.GEOSException) as exc:
+            last_error = exc
+
+    for precision in (None, grid_size, grid_size * 10):
+        repair_grid = precision or grid_size
+        left = repair_polygonal_geometry(a, repair_grid)
+        right = repair_polygonal_geometry(b, repair_grid)
+        if left is None or left.is_empty:
+            return shapely.GeometryCollection()
+        if right is None or right.is_empty:
+            return clean_polygonal_result(left, grid_size)
+        try:
+            if precision is None:
+                result = shapely.difference(left, right)
+            else:
+                result = shapely.difference(left, right, grid_size=precision)
+            return clean_polygonal_result(result, grid_size)
         except (ValueError, shapely.errors.GEOSException) as exc:
             last_error = exc
 
@@ -2125,11 +2170,7 @@ def robust_polygonal_difference(a, b, grid_size=1e-8):
 
 def robust_polygonal_union(geoms, grid_size=1e-8):
     """Union polygon geometry with repair/retry for GEOS topology errors."""
-    parts = [
-        repair_polygonal_geometry(g, grid_size)
-        for g in geoms
-        if g is not None and not g.is_empty
-    ]
+    parts = [g for g in geoms if g is not None and not g.is_empty]
     parts = [g for g in parts if g is not None and not g.is_empty]
     if not parts:
         return shapely.GeometryCollection()
@@ -2143,7 +2184,7 @@ def robust_polygonal_union(geoms, grid_size=1e-8):
                 result = shapely.unary_union(parts)
             else:
                 result = shapely.union_all(parts, grid_size=precision)
-            return repair_polygonal_geometry(result, grid_size)
+            return clean_polygonal_result(result, grid_size)
         except (ValueError, shapely.errors.GEOSException) as exc:
             last_error = exc
             parts = [repair_polygonal_geometry(g, (precision or grid_size) * 10) for g in parts]
@@ -2515,7 +2556,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             # Full-wrap one-turn bands are periodic across the 0/2π seam.  Buffer
             # them with seam-neighbour copies so the inward wall offset does not
             # erode along synthetic seam endcaps.
-            _buffer_source = shapely.unary_union([
+            _buffer_source = robust_polygonal_union([
                 shift_polygon(poly_with_holes, -2 * np.pi),
                 poly_with_holes,
                 shift_polygon(poly_with_holes, 2 * np.pi),
@@ -2790,9 +2831,10 @@ if first_r > printer_params["bed_radius"]:
     # Union the accumulated ungrounded support with the full first-layer footprint
     # (the entire first layer floats, so all of it needs a support base)
     gap_footprint = keep_canonical_polygons(
-        support_needed.union(
-            keep_canonical_polygons(layer_data[sorted_layer_keys[0]]["external_peris"])
-        )
+        robust_polygonal_union([
+            support_needed,
+            keep_canonical_polygons(layer_data[sorted_layer_keys[0]]["external_peris"]),
+        ])
     )
     if not gap_footprint.is_empty:
         gap_radii = list(np.arange(printer_params["bed_radius"],
@@ -2804,7 +2846,7 @@ if first_r > printer_params["bed_radius"]:
             layers_from_top = n_gap - 1 - k
             if taper_mm > 0 and layers_from_top > 0:
                 m = shapely.affinity.scale(gap_footprint, xfact=r, yfact=1.0, origin=(0, 0))
-                m = m.buffer(taper_mm * layers_from_top)
+                m = robust_polygonal_buffer(m, taper_mm * layers_from_top)
                 tapered = shapely.affinity.scale(m, xfact=1.0 / r, yfact=1.0, origin=(0, 0))
             else:
                 tapered = gap_footprint
