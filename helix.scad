@@ -25,6 +25,6 @@ for(i=[0:len(path)-1]){
 
 function spiral(twist,height,spiral_radius) = [ for(i=[0:5:twist]) [spiral_radius*sin(i),spiral_radius*cos(i),i/twist*height]];
 
-path = spiral(600,50,35);
+path = spiral(1200*2,50,35);
 
 tracePath(path, 5);

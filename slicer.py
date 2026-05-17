@@ -1473,7 +1473,8 @@ def _is_effectively_full_wrap_polygon(poly, lower=0.0, upper=2 * math.pi, seam_t
 
     period = upper - lower
     minx, _, maxx, _ = poly.bounds
-    if maxx - minx < period - seam_tol:
+    theta_span = maxx - minx
+    if theta_span < period - seam_tol or theta_span > period + seam_tol:
         return False
 
     window = max(seam_tol, 1e-6)
@@ -1527,7 +1528,13 @@ def _periodic_boundary_lines(poly, lower=0.0, upper=2 * math.pi, tol=1e-9, seam_
 
     period = upper - lower
     minx, _, maxx, _ = poly.bounds
-    if maxx - minx < period - seam_tol or minx > lower + seam_tol or maxx < upper - seam_tol:
+    theta_span = maxx - minx
+    if (
+        theta_span < period - seam_tol
+        or theta_span > period + seam_tol
+        or minx > lower + seam_tol
+        or maxx < upper - seam_tol
+    ):
         return None
     left_gap = max(0.0, minx - lower)
     right_gap = max(0.0, upper - maxx)
