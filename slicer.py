@@ -1648,6 +1648,7 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi, cut_lower=None):
 def _remove_periodic_seam_caps(
     lines,
     period=2 * math.pi,
+    seam_origin=0.0,
     seam_tol=0.15,
     max_cap_theta=0.12,
     max_leg_z=6.0,
@@ -1663,10 +1664,9 @@ def _remove_periodic_seam_caps(
     if not lines:
         return lines
 
+    original_lines = [line for line in lines if line is not None and not line.is_empty]
     edge_lines = []
-    for line in lines:
-        if line is None or line.is_empty:
-            continue
+    for line in original_lines:
         coords = np.asarray(line.coords, dtype=float)
         if len(coords) < 2:
             continue
@@ -1690,7 +1690,7 @@ def _remove_periodic_seam_caps(
         return abs(a[0] - b[0]) <= coord_tol and abs(a[1] - b[1]) <= coord_tol
 
     def _seam_distance(theta):
-        return abs((theta + period / 2) % period - period / 2)
+        return abs((theta - seam_origin + period / 2) % period - period / 2)
 
     entries = []
     for idx, line in enumerate(lines):
@@ -1721,7 +1721,9 @@ def _remove_periodic_seam_caps(
         c0, c1 = cap["coords"]
         theta_width = abs(c1[0] - c0[0])
         theta_mid = (c0[0] + c1[0]) * 0.5
-        if theta_width > max_cap_theta or _seam_distance(theta_mid) > seam_tol:
+        if theta_width > max_cap_theta:
+            continue
+        if seam_tol is not None and _seam_distance(theta_mid) > seam_tol:
             continue
 
         legs = []
@@ -1755,7 +1757,7 @@ def _remove_periodic_seam_caps(
         replacements.append(LineString([free0, free1]))
 
     if not remove:
-        return lines
+        return original_lines
 
     cleaned = [line for idx, line in enumerate(lines) if idx not in remove]
     cleaned.extend(replacements)
@@ -1766,6 +1768,23 @@ def _remove_periodic_seam_caps(
     merged_lines = []
     _collect_lines(merged, merged_lines, min_length=0.0)
     return merged_lines or cleaned
+
+
+def _remove_local_orthogonal_caps(lines, period=2 * math.pi):
+    """Remove small U-shaped perimeter shelves away from the periodic cut.
+
+    At the first layers where a full-wrap ring appears, the full-wrap cell
+    reconstruction can leave a tiny orthogonal shelf where the ring's axial edge
+    meets a sloped cube face. It has the same three-edge topology as a seam cap,
+    but it is local to the part geometry rather than the artificial theta cut.
+    """
+    return _remove_periodic_seam_caps(
+        lines,
+        period=period,
+        seam_tol=None,
+        max_cap_theta=0.08,
+        max_leg_z=8.0,
+    )
 
 
 def _split_local_seam_closure_edges(
@@ -3110,7 +3129,9 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 else:
                     geom, lower, upper, cut = _print_window_for_paths(current_ext_print)
                 lines = polygon_to_wrapped_lines(geom, lower=lower, upper=upper, cut_lower=cut)
-                lines = _remove_periodic_seam_caps(lines)
+                lines = _remove_periodic_seam_caps(lines, seam_origin=cut if cut is not None else lower)
+                if has_full_wrap_component(current_ext_print):
+                    lines = _remove_local_orthogonal_caps(lines)
                 lines = _split_local_seam_closure_edges(lines)
                 raw = shapely_to_paths(lines, current_r)
                 return [p for p in raw if p is not None]
@@ -3134,7 +3155,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                             upper=upper,
                             cut_lower=lower,
                         )
-                        lines = _remove_periodic_seam_caps(lines)
+                        lines = _remove_periodic_seam_caps(lines, seam_origin=lower)
+                        lines = _remove_local_orthogonal_caps(lines)
                         lines = _split_local_seam_closure_edges(lines)
                         raw.extend(
                             shapely_to_paths(lines, current_r)
@@ -3143,7 +3165,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                     for each in layer_data[i].get(subsection, []):
                         geom, lower, upper, cut = _print_window_for_paths(each)
                         lines = polygon_to_wrapped_lines(geom, lower=lower, upper=upper, cut_lower=cut)
-                        lines = _remove_periodic_seam_caps(lines)
+                        lines = _remove_periodic_seam_caps(lines, seam_origin=cut if cut is not None else lower)
                         lines = _split_local_seam_closure_edges(lines)
                         raw.extend(
                             shapely_to_paths(lines, current_r)
