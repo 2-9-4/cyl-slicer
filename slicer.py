@@ -638,6 +638,20 @@ def _collect_lines(geom, result, min_length=0.0):
             _collect_lines(g, result, min_length)
 
 
+def _dedupe_lines(lines, min_length=0.0):
+    """Remove duplicate linework without polygon-unioning seam-sensitive regions."""
+    lines = [line for line in lines if isinstance(line, LineString) and not line.is_empty]
+    if len(lines) <= 1:
+        return lines
+    try:
+        unioned = shapely.unary_union(MultiLineString(lines))
+    except (ValueError, shapely.errors.GEOSException):
+        return lines
+    result = []
+    _collect_lines(unioned, result, min_length=min_length)
+    return result or lines
+
+
 def _snap_radial_to_full_circle(seg, period=2 * np.pi, tol=0.02):
     """Snap a constant-z radial segment to [0, period] if it nearly spans a full circle.
 
@@ -1616,7 +1630,7 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi, cut_lower=None):
         ret = []
         for each in poly:
             ret += polygon_to_wrapped_lines(each, lower, upper, cut_lower=cut_lower)
-        return ret
+        return _dedupe_lines(ret)
 
     if isinstance(poly, (LineString, shapely.MultiLineString)):
         # Already a line (e.g. infill passed through here) — flatten and return as-is
@@ -1624,23 +1638,21 @@ def polygon_to_wrapped_lines(poly, lower=0.0, upper=2*math.pi, cut_lower=None):
         _collect_lines(poly, ret, min_length=0.0)
         return ret
 
-    if isinstance(poly, shapely.GeometryCollection) and not any(
-        isinstance(geom, (Polygon, shapely.MultiPolygon)) for geom in poly.geoms
-    ):
-        ret = []
-        _collect_lines(poly, ret, min_length=0.0)
-        return ret
-
-    if isinstance(poly, (Polygon, shapely.MultiPolygon, shapely.GeometryCollection)):
-        poly = keep_canonical_polygons(poly, lower=lower, upper=upper)
-        if poly is None or poly.is_empty:
-            return []
-
     if isinstance(poly, (shapely.MultiPolygon, shapely.GeometryCollection)):
         ret = []
         for geom in poly.geoms:
             ret += polygon_to_wrapped_lines(geom, lower, upper, cut_lower=cut_lower)
-        return ret
+        return _dedupe_lines(ret)
+
+    if isinstance(poly, Polygon):
+        poly = keep_canonical_polygons(poly, lower=lower, upper=upper)
+        if poly is None or poly.is_empty:
+            return []
+        if isinstance(poly, (shapely.MultiPolygon, shapely.GeometryCollection)):
+            ret = []
+            for geom in poly.geoms:
+                ret += polygon_to_wrapped_lines(geom, lower, upper, cut_lower=cut_lower)
+            return _dedupe_lines(ret)
 
     if not isinstance(poly, Polygon):
         return []
