@@ -89,6 +89,23 @@ def periodic_copies(geom, period=2 * np.pi, turns=1):
     except shapely.errors.GEOSException:
         return shapely.GeometryCollection(copies)
 
+
+def periodic_copies_for_bounds(geom, target_geom, period=2 * np.pi):
+    """Return enough periodic copies of geom to cover target_geom's theta span."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+    if target_geom is None or target_geom.is_empty:
+        return polygonal_only(shapely.make_valid(geom))
+    geom = polygonal_only(shapely.make_valid(geom))
+    if geom.is_empty:
+        return shapely.GeometryCollection()
+    geom_min, _, geom_max, _ = geom.bounds
+    target_min, _, target_max, _ = target_geom.bounds
+    k_min = int(math.floor((target_min - geom_max) / period)) - 1
+    k_max = int(math.ceil((target_max - geom_min) / period)) + 1
+    copies = [shift_polygon(geom, k * period) if k else geom for k in range(k_min, k_max + 1)]
+    return robust_polygonal_union(copies)
+
 def build_hierarchy(polygons, period=2 * np.pi):
     from shapely import STRtree
     hierarchy = [[] for _ in polygons]
@@ -1165,6 +1182,8 @@ def do_sparse_infill(innermost_peri, slicing_params, current_r, plot_infill=Fals
             axial_infill.append(inter)
 
     return fully_radial_infill, radial_infill, axial_infill
+
+
 from shapely.geometry import Polygon, LineString, box, MultiLineString
 from shapely.ops import linemerge, polygonize
 
@@ -2519,6 +2538,10 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         return shapely.transform(x, lambda p: p * [current_r, 1])
     def do_transform_inverse(x):
         return shapely.transform(x, lambda p: p * [1/current_r, 1])
+    def do_transform_at_radius(x, radius):
+        return shapely.transform(x, lambda p: p * [radius, 1])
+    def do_transform_inverse_at_radius(x, radius):
+        return shapely.transform(x, lambda p: p * [1/radius, 1])
 
     def _shift_periods_to_canonical_centroid(geom, lower=0.0, upper=2 * np.pi):
         """Return an integer turn shift that places the centroid in [lower, upper)."""
@@ -2667,18 +2690,19 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
     _surface_cover_tol = slicing_params["nozzle_size"] * 3.0
 
-    e = do_transform(layer_data[layer_i-1]["external_peris"])
+    prev_r = layer_data[layer_i-1]["radius"]
+    e = do_transform_at_radius(layer_data[layer_i-1]["external_peris"], prev_r)
     # Shrink the previous layer before testing for top surfaces so wall centerline
     # offsets are not classified as exposed top skin. Compare coverage in metric
     # space, with a nozzle-scale tolerance, so tiny phase differences across the
     # periodic seam do not create solid infill inside enclosed cube/ring volume.
     e = robust_polygonal_buffer(e, -slicing_params["nozzle_size"], join_style="mitre")
     current_cover = robust_polygonal_buffer(
-        do_transform(periodic_copies(final, turns=2)),
+        do_transform_at_radius(periodic_copies(final, turns=2), prev_r),
         _surface_cover_tol,
         join_style="mitre",
     )
-    e = do_transform_inverse(robust_polygonal_difference(e, current_cover))
+    e = do_transform_inverse_at_radius(robust_polygonal_difference(e, current_cover), prev_r)
     e = remove_tiny_regions(
         e,
         layer_data[layer_i-1]["radius"],
@@ -3064,7 +3088,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     final_top_surface = robust_polygonal_intersection(
         robust_polygonal_buffer(
-            do_transform(current_top_print),
+            do_transform(periodic_copies_for_bounds(current_top_print, final_perimeter_raw)),
             slicing_params["nozzle_size"] * slicing_params["wall_count"],
             join_style="mitre",
         ),
@@ -3093,7 +3117,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     final_bottom_surface = robust_polygonal_intersection(
         robust_polygonal_buffer(
-            do_transform(current_bottom_print),
+            do_transform(periodic_copies_for_bounds(current_bottom_print, final_perimeter_raw)),
             slicing_params["nozzle_size"] * slicing_params["wall_count"],
             join_style="mitre",
         ),
