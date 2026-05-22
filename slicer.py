@@ -1,6 +1,61 @@
 import sys
 import os
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
+import argparse
+
+def parse_layer_spec(spec):
+    """Parse comma-separated layer ids/ranges like '0,5,10-12'."""
+    layers = set()
+    if not spec:
+        return layers
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part[1:]:
+            start_s, end_s = part.split("-", 1)
+            start = int(start_s)
+            end = int(end_s)
+            step = 1 if end >= start else -1
+            layers.update(range(start, end + step, step))
+        else:
+            layers.add(int(part))
+    return layers
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mesh", nargs="?", default="cubeandring.stl")
+    parser.add_argument(
+        "--debug-layers",
+        default="",
+        help="Comma-separated model layer keys/ranges to export as PNGs, e.g. '0,12,20-25'.",
+    )
+    parser.add_argument(
+        "--debug-dir",
+        default="frames",
+        help="Directory for --debug-layers PNG output.",
+    )
+    parser.add_argument(
+        "--debug-plot-3d",
+        action="store_true",
+        help="Include a 3D subplot in exported per-layer debug images.",
+    )
+    parser.add_argument(
+        "--show-debug-layers",
+        action="store_true",
+        help="Show selected debug layer windows interactively after saving.",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+debug_layers = parse_layer_spec(args.debug_layers)
+if debug_layers:
+    os.makedirs(args.debug_dir, exist_ok=True)
+
+import gc
+from dataclasses import dataclass
 import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,6 +79,206 @@ from vispy import scene
 from vispy.scene import Line
 from vispy import app, gloo
 import solid2
+
+def save_raw_stl_layer_plot(layer_i, current_r, slice_r, poly_pts_raw):
+    """Save STL cross-section loops before slicer polygon repair/buffering."""
+    if layer_i not in debug_layers:
+        return
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for poly in poly_pts_raw:
+        coords = np.asarray(poly, dtype=float)
+        if len(coords) < 2:
+            continue
+        metric = coords * np.array([current_r, 1])
+        ax.plot(metric[:, 0], metric[:, 1], "-o", markersize=2, linewidth=1)
+    ax.set_title(f"Raw STL cross-section layer {layer_i} (r={current_r:.3f}, sample={slice_r:.3f})")
+    ax.set_xlabel("arc length theta*r (mm)")
+    ax.set_ylabel("z (mm)")
+    ax.set_aspect("equal", adjustable="box")
+    fig.tight_layout()
+    debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_raw_stl.png")
+    fig.savefig(debug_path, dpi=200)
+    print(f"\nSaved raw STL debug plot: {debug_path}")
+
+
+def _plot_theta_z_loop(ax, coords, current_r, style="-o", color=None, label=None, alpha=1.0):
+    coords = np.asarray(coords, dtype=float)
+    if len(coords) < 2:
+        return
+    metric = coords * np.array([current_r, 1])
+    ax.plot(metric[:, 0], metric[:, 1], style, color=color, label=label,
+            markersize=2, linewidth=1, alpha=alpha)
+
+
+def _plot_theta_z_polygon(ax, poly, current_r, facecolor, edgecolor, label=None, alpha=0.35):
+    if poly is None or poly.is_empty or not isinstance(poly, Polygon):
+        return
+    exterior = np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1])
+    ax.fill(exterior[:, 0], exterior[:, 1], facecolor=facecolor, edgecolor=edgecolor,
+            alpha=alpha, linewidth=1.2, label=label)
+    for interior in poly.interiors:
+        hole = np.asarray(interior.coords, dtype=float) * np.array([current_r, 1])
+        ax.fill(hole[:, 0], hole[:, 1], facecolor="white", edgecolor="#e63946",
+                alpha=1.0, linewidth=1.0)
+
+
+def _finish_debug_stage_plot(fig, ax, layer_i, current_r, filename_suffix, title):
+    ax.set_title(f"{title} layer {layer_i} (r={current_r:.3f})")
+    ax.set_xlabel("arc length theta*r (mm)")
+    ax.set_ylabel("z (mm)")
+    ax.set_aspect("equal", adjustable="box")
+    handles, labels = ax.get_legend_handles_labels()
+    if labels:
+        by_label = dict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), loc="best")
+    fig.tight_layout()
+    debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_{filename_suffix}.png")
+    fig.savefig(debug_path, dpi=200)
+    print(f"\nSaved {title.lower()} debug plot: {debug_path}")
+
+
+def save_classified_loops_layer_plot(layer_i, current_r, poly_pts, fc_original_indices, simple_fc_indices, complex_fc_loops):
+    """Save loops after filtering and full-circle classification."""
+    if layer_i not in debug_layers:
+        return
+    simple_set = set(simple_fc_indices)
+    complex_ids = {id(loop) for loop in complex_fc_loops}
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for idx, poly in enumerate(poly_pts):
+        if idx in simple_set:
+            _plot_theta_z_loop(ax, poly, current_r, color="#ffb703", label="simple full-circle")
+        elif id(poly) in complex_ids:
+            _plot_theta_z_loop(ax, poly, current_r, color="#d00000", label="complex full-circle")
+        elif idx in fc_original_indices:
+            _plot_theta_z_loop(ax, poly, current_r, color="#9d4edd", label="other full-circle")
+        else:
+            _plot_theta_z_loop(ax, poly, current_r, color="#1d3557", label="ordinary loop")
+    _finish_debug_stage_plot(fig, ax, layer_i, current_r, "classified_loops", "Classified STL loops")
+
+
+def save_reconstructed_candidates_layer_plot(layer_i, current_r, base_polys, complex_parts, paired_parts):
+    """Save polygon candidates after full-circle reconstruction/pairing, before hierarchy."""
+    if layer_i not in debug_layers:
+        return
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for poly in base_polys:
+        _plot_theta_z_polygon(ax, poly, current_r, "#a8dadc", "#1d3557", label="ordinary polygon", alpha=0.30)
+    for poly in complex_parts:
+        _plot_theta_z_polygon(ax, poly, current_r, "#ffadad", "#d00000", label="complex reconstruction", alpha=0.35)
+    for poly in paired_parts:
+        _plot_theta_z_polygon(ax, poly, current_r, "#ffd166", "#bc6c25", label="simple full-circle pair", alpha=0.35)
+    _finish_debug_stage_plot(fig, ax, layer_i, current_r, "reconstructed_candidates", "Reconstructed polygon candidates")
+
+
+def save_hierarchy_layer_plot(layer_i, current_r, polys, hierarchy, levels):
+    """Save polygon hierarchy levels before holes are punched."""
+    if layer_i not in debug_layers:
+        return
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = ["#8ecae6", "#ffb703", "#90be6d", "#f28482", "#b8c0ff"]
+    for idx, poly in enumerate(polys):
+        if not isinstance(poly, Polygon) or poly.is_empty:
+            continue
+        level = levels[idx] if idx < len(levels) else 0
+        _plot_theta_z_polygon(
+            ax,
+            poly,
+            current_r,
+            colors[level % len(colors)],
+            "#1d3557" if level % 2 == 0 else "#e63946",
+            label=f"level {level}",
+            alpha=0.25 if level % 2 == 0 else 0.18,
+        )
+        centroid = poly.centroid
+        ax.text(centroid.x * current_r, centroid.y, str(idx), fontsize=8, ha="center", va="center")
+        for child_idx in hierarchy[idx]:
+            if child_idx >= len(polys) or not isinstance(polys[child_idx], Polygon) or polys[child_idx].is_empty:
+                continue
+            child_centroid = polys[child_idx].centroid
+            ax.plot(
+                [centroid.x * current_r, child_centroid.x * current_r],
+                [centroid.y, child_centroid.y],
+                color="#6c757d",
+                linewidth=0.7,
+                alpha=0.6,
+            )
+    _finish_debug_stage_plot(fig, ax, layer_i, current_r, "hierarchy_levels", "Hierarchy levels before holes")
+
+
+def save_paired_full_circle_traces_layer_plot(layer_i, current_r, pairs, leftovers=None):
+    """Save normalized full-span boundary traces before polygon construction."""
+    if layer_i not in debug_layers:
+        return
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = ["#d00000", "#1d3557", "#2a9d8f", "#bc6c25", "#6a4c93"]
+    for pair_i, (lower, upper) in enumerate(pairs or []):
+        color = colors[pair_i % len(colors)]
+        for role, trace, style in (
+            ("lower", lower, "-"),
+            ("upper", upper, "--"),
+        ):
+            coords = np.asarray(trace.coords, dtype=float)
+            if len(coords) < 2:
+                continue
+            metric = coords * np.array([current_r, 1])
+            ax.plot(
+                metric[:, 0],
+                metric[:, 1],
+                style,
+                color=color,
+                linewidth=1.2,
+                alpha=0.9,
+                label=f"pair {pair_i} {role}",
+            )
+            mid = metric[len(metric) // 2]
+            ax.text(mid[0], mid[1], f"{pair_i}:{role[0]}", fontsize=7, ha="center", va="center")
+    for trace in leftovers or []:
+        coords = np.asarray(trace.coords, dtype=float)
+        if len(coords) < 2:
+            continue
+        metric = coords * np.array([current_r, 1])
+        ax.plot(
+            metric[:, 0],
+            metric[:, 1],
+            ":",
+            color="#6c757d",
+            linewidth=1.0,
+            alpha=0.8,
+            label="unpaired trace",
+        )
+    _finish_debug_stage_plot(
+        fig,
+        ax,
+        layer_i,
+        current_r,
+        "complex_paired_traces",
+        "Complex full-circle paired traces",
+    )
+
+
+def save_stitched_holes_layer_plot(layer_i, current_r, polygons):
+    """Save polygons after exterior stitching and hole assignment."""
+    if layer_i not in debug_layers or not polygons:
+        return
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for poly in polygons:
+        if poly is None or poly.is_empty:
+            continue
+        exterior = np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1])
+        ax.fill(exterior[:, 0], exterior[:, 1], facecolor="#8ecae6", edgecolor="#1d3557", alpha=0.45, linewidth=1.2)
+        for interior in poly.interiors:
+            hole = np.asarray(interior.coords, dtype=float) * np.array([current_r, 1])
+            ax.fill(hole[:, 0], hole[:, 1], facecolor="white", edgecolor="#e63946", alpha=1.0, linewidth=1.0)
+    ax.set_title(f"Stitched polygons with holes layer {layer_i} (r={current_r:.3f})")
+    ax.set_xlabel("arc length theta*r (mm)")
+    ax.set_ylabel("z (mm)")
+    ax.set_aspect("equal", adjustable="box")
+    fig.tight_layout()
+    debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_stitched_holes.png")
+    fig.savefig(debug_path, dpi=200)
+    plt.show()
+    print(f"\nSaved stitched/holes debug plot: {debug_path}")
+
 def find_polygons(edges, num_points):
     # Build undirected edge map
     adjacency = defaultdict(list)
@@ -278,199 +533,297 @@ def reconstruct_complex_full_circle_regions(
     mesh,
     radius,
     nozzle_size,
+    debug_layer=None,
+    debug_plot_radius=None,
     period=2 * np.pi,
     z_connect_tol=0.05,
 ):
-    """Reconstruct occupied regions from complex full-turn boundary loops.
+    """Pair full-span STL boundary traces into wrap-spanning polygons.
 
-    When a full-wrap ring merges with local features, the raw boundary loops are
-    no longer simple monotone lower/upper bands. Cut those loops at one canonical
-    seam, polygonize their exact boundary fragments, then use `mesh.contains()`
-    to decide which candidate cells are solid. The scanline fallback is kept only
-    for degenerate linework; using it as the primary path stair-steps local
-    features such as cube faces.
+    Complex full-circle slices are still made from boundary lines that each span
+    one complete turn.  Normalize those lines into a shared [0, 2π] theta window,
+    pair adjacent traces by Z, and build one polygon per pair.  Mesh occupancy
+    sampling is intentionally not used here; the STL slice linework is the source
+    of truth.
     """
     if not loops:
         return []
+    _ = mesh
+
+    @dataclass
+    class FullCircleTrace:
+        coords: np.ndarray
+        z_samples: np.ndarray
+        z_median: float
+        source_index: int
+        run_index: int
+
+    trace_span_tol = 0.05
+    trace_endpoint_tol = 0.25
+    trace_internal_slack = 0.35
+    coord_tol = 1e-8
+    sample_thetas = np.linspace(0.0, period, 49)[1:-1]
 
     z_values = [np.asarray(poly, dtype=float)[:, 1] for poly in loops if len(poly) >= 2]
     if not z_values:
         return []
     z_loop_min = min(float(np.min(zs)) for zs in z_values)
     z_loop_max = max(float(np.max(zs)) for zs in z_values)
-    z_global_min = z_loop_min - max(0.25, nozzle_size)
-    z_global_max = z_loop_max + max(0.25, nozzle_size)
-    window_lower = period * 0.5
-    window_upper = window_lower + period
 
-    exact_fragments = []
-    clip_box = box(window_lower, z_loop_min, window_upper, z_loop_max)
-    for polygon in loops:
-        coords = np.asarray(polygon, dtype=float)
+    def _dedupe_trace_coords(coords):
+        coords = np.asarray(coords, dtype=float)
         if len(coords) < 2:
-            continue
-        if not np.allclose(coords[0], coords[-1], atol=1e-9):
+            return coords
+        step = np.abs(np.diff(coords, axis=0))
+        keep = np.concatenate([[True], np.any(step > coord_tol, axis=1)])
+        coords = coords[keep]
+        if len(coords) >= 2 and np.linalg.norm(coords[0] - coords[-1]) <= coord_tol:
+            coords = coords[:-1]
+        return coords
+
+    def _z_values_from_intersection(geom):
+        zs = []
+        if geom is None or geom.is_empty:
+            return zs
+        if geom.geom_type == "Point":
+            zs.append(float(geom.y))
+        elif geom.geom_type == "LineString":
+            zs.extend(float(p[1]) for p in geom.coords)
+        elif hasattr(geom, "geoms"):
+            for part in geom.geoms:
+                zs.extend(_z_values_from_intersection(part))
+        return zs
+
+    def _sample_trace_z(coords):
+        line = LineString(coords)
+        z_pad = max(1.0, abs(z_loop_max - z_loop_min) + max(0.25, nozzle_size))
+        sample_line_min = z_loop_min - z_pad
+        sample_line_max = z_loop_max + z_pad
+        samples = []
+        for theta in sample_thetas:
+            try:
+                inter = line.intersection(LineString([(theta, sample_line_min), (theta, sample_line_max)]))
+                zs = _z_values_from_intersection(inter)
+            except shapely.errors.GEOSException:
+                zs = []
+            samples.append(float(np.median(zs)) if zs else np.nan)
+        return np.asarray(samples, dtype=float)
+
+    def _make_trace(coords, source_index, run_index):
+        coords = _dedupe_trace_coords(coords)
+        if len(coords) < 2:
+            return None
+        if coords[-1, 0] < coords[0, 0]:
+            coords = coords[::-1].copy()
+
+        theta_min = float(np.min(coords[:, 0]))
+        theta_max = float(np.max(coords[:, 0]))
+        theta_span = theta_max - theta_min
+        endpoint_span = float(coords[-1, 0] - coords[0, 0])
+        endpoint_is_full = abs(endpoint_span - period) <= trace_endpoint_tol
+        range_is_full = abs(theta_span - period) <= trace_span_tol
+        if not endpoint_is_full and not range_is_full:
+            return None
+
+        coords = coords.copy()
+        if endpoint_is_full:
+            coords[:, 0] -= coords[0, 0]
+            coords[0, 0] = 0.0
+            coords[-1, 0] = period
+        else:
+            # Monotone full-span fragments may start at any equivalent theta.
+            # Move them into the shared one-turn window.
+            coords[:, 0] -= theta_min
+            coords[:, 0] = np.where(np.abs(coords[:, 0]) <= trace_span_tol, 0.0, coords[:, 0])
+            coords[:, 0] = np.where(np.abs(coords[:, 0] - period) <= trace_span_tol, period, coords[:, 0])
+
+        # Coarse, unsubdivided STL triangles can create small local theta
+        # overshoots around the seam even when the boundary walk itself spans
+        # exactly one turn. Keep those traces; reject only implausibly large
+        # excursions that would make the pair polygon ambiguous.
+        if (
+            float(np.min(coords[:, 0])) < -trace_internal_slack
+            or float(np.max(coords[:, 0])) > period + trace_internal_slack
+        ):
+            return None
+
+        z_samples = _sample_trace_z(coords)
+        finite = z_samples[np.isfinite(z_samples)]
+        z_median = float(np.median(finite)) if len(finite) else float(np.median(coords[:, 1]))
+        return FullCircleTrace(coords, z_samples, z_median, source_index, run_index)
+
+    def _trace_signature(trace):
+        coords = np.asarray(trace.coords, dtype=float)
+        if len(coords) < 2:
+            return ()
+        rounded = tuple(map(tuple, np.round(coords, 7)))
+        reversed_rounded = tuple(map(tuple, np.round(coords[::-1], 7)))
+        return min(rounded, reversed_rounded)
+
+    def _dedupe_traces(traces):
+        unique = []
+        seen = set()
+        for trace in traces:
+            sig = _trace_signature(trace)
+            if not sig or sig in seen:
+                continue
+            seen.add(sig)
+            unique.append(trace)
+        return unique
+
+    def _windowed_full_span_traces(coords, source_index):
+        coords = np.asarray(coords, dtype=float)
+        if len(coords) < 2:
+            return []
+        if not np.allclose(coords[0], coords[-1], atol=coord_tol):
             coords = np.vstack([coords, coords[0]])
 
         theta_min = float(np.min(coords[:, 0]))
         theta_max = float(np.max(coords[:, 0]))
-        k_min = int(math.floor((window_lower - theta_max) / period)) - 1
-        k_max = int(math.ceil((window_upper - theta_min) / period)) + 1
+        z_pad = max(0.25, nozzle_size)
+        clip = box(0.0, z_loop_min - z_pad, period, z_loop_max + z_pad)
+        k_min = int(math.floor((0.0 - theta_max) / period)) - 1
+        k_max = int(math.ceil((period - theta_min) / period)) + 1
+        fragments = []
         for k in range(k_min, k_max + 1):
             shifted = coords.copy()
             shifted[:, 0] += k * period
-            clipped = LineString(shifted).intersection(clip_box)
-            _collect_lines(clipped, exact_fragments, min_length=1e-9)
+            try:
+                clipped = LineString(shifted).intersection(clip)
+            except (ValueError, shapely.errors.GEOSException):
+                continue
+            _collect_lines(clipped, fragments, min_length=1e-9)
 
-    if exact_fragments:
-        event_thetas = [window_lower, window_upper]
-        for line in exact_fragments:
-            coords = np.asarray(line.coords, dtype=float)
-            event_thetas.extend(coords[:, 0].tolist())
-        event_thetas = sorted(min(max(float(theta), window_lower), window_upper) for theta in event_thetas)
-        deduped_thetas = []
-        for theta in event_thetas:
-            if not deduped_thetas or abs(theta - deduped_thetas[-1]) > 1e-7:
-                deduped_thetas.append(theta)
+        traces = []
+        for frag_i, fragment in enumerate(fragments):
+            frag_coords = np.asarray(fragment.coords, dtype=float)
+            if len(frag_coords) < 2:
+                continue
+            # Clipped full-wrap boundaries may come back as one long fragment, or
+            # as monotone pieces when the raw loop locally reverses in theta.
+            trace = _make_trace(frag_coords, source_index, frag_i)
+            if trace is not None:
+                traces.append(trace)
+                continue
+            traces.extend(_full_span_monotone_runs(frag_coords, source_index))
+        return _dedupe_traces(traces)
 
-        boundary_lines = []
-        _collect_lines(clip_box.boundary, boundary_lines, min_length=1e-9)
-        vertical_cuts = [
-            LineString([(theta, z_loop_min), (theta, z_loop_max)])
-            for theta in deduped_thetas
-        ]
+    def _full_span_monotone_runs(coords, source_index):
+        runs = []
         try:
-            linework = shapely.unary_union(MultiLineString(exact_fragments + boundary_lines + vertical_cuts))
-            candidate_polys = [
-                poly for poly in polygonize(linework)
-                if isinstance(poly, Polygon) and not poly.is_empty and poly.area > 1e-8
-            ]
-        except shapely.errors.GEOSException:
-            candidate_polys = []
-
-        if candidate_polys:
-            samples = []
-            for poly in candidate_polys:
-                sample = poly.representative_point()
-                theta = sample.x % period
-                samples.append([
-                    radius * math.cos(theta),
-                    radius * math.sin(theta),
-                    sample.y,
-                ])
-            inside = mesh.contains(np.asarray(samples, dtype=float))
-            solid_polys = [poly for poly, keep in zip(candidate_polys, inside) if keep]
-            if solid_polys:
-                merged = polygonal_only(
-                    fold_to_theta_window(
-                        shapely.unary_union(solid_polys),
-                        0.0,
-                        period,
-                        z_loop_min,
-                        z_loop_max,
-                        period=period,
-                    )
-                )
-                final_parts = []
-                stack = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-                for item in stack:
-                    if isinstance(item, Polygon) and not item.is_empty and item.area > 1e-6:
-                        final_parts.append(item)
-                if final_parts:
-                    return final_parts
-
-    lines = []
-    for polygon in loops:
-        coords = np.asarray(polygon, dtype=float)
-        if len(coords) < 2:
-            continue
-        if not np.allclose(coords[0], coords[-1], atol=1e-9):
-            coords = np.vstack([coords, coords[0]])
-        for k in (-1, 0, 1):
-            shifted = coords.copy()
-            shifted[:, 0] += k * period
-            lines.append(LineString(shifted))
-    if not lines:
-        return []
-
-    ml = MultiLineString(lines)
-    theta_step = max(0.02, nozzle_size / radius)
-    theta_edges = np.arange(window_lower, window_upper + theta_step, theta_step)
-    if theta_edges[-1] < window_upper:
-        theta_edges = np.append(theta_edges, window_upper)
-    theta_edges[-1] = window_upper
-    theta_centers = (theta_edges[:-1] + theta_edges[1:]) * 0.5
-    candidate_columns = []
-    sample_points = []
-
-    for theta_i, theta in enumerate(theta_centers):
-        inter = ml.intersection(LineString([(theta, -1e9), (theta, 1e9)]))
-        pts = []
-        if inter.is_empty:
-            zs = []
-        if inter.geom_type == "Point":
-            pts = [inter]
-        elif hasattr(inter, "geoms"):
-            pts = [g for g in inter.geoms if g.geom_type == "Point"]
-        if pts:
-            zs = sorted(p.y for p in pts)
-        else:
-            zs = []
-        deduped = []
-        for z in zs:
-            if not deduped or abs(z - deduped[-1]) > 1e-4:
-                deduped.append(z)
-
-        bounds = [z_global_min] + deduped + [z_global_max]
-        x = radius * math.cos(theta)
-        y = radius * math.sin(theta)
-        column = []
-        for z0, z1 in zip(bounds[:-1], bounds[1:]):
-            if z1 - z0 <= 1e-4:
+            split_runs = _split_theta_monotone_runs(LineString(coords), tol=coord_tol)
+        except (ValueError, shapely.errors.GEOSException):
+            split_runs = []
+        for run_i, run in enumerate(split_runs):
+            run_coords = np.asarray(run.coords, dtype=float)
+            if len(run_coords) < 2:
                 continue
-            sample_idx = len(sample_points)
-            column.append((z0, z1, sample_idx))
-            sample_points.append([x, y, (z0 + z1) * 0.5])
-        candidate_columns.append(column)
+            trace = _make_trace(run_coords, source_index, run_i)
+            if trace is not None:
+                runs.append(trace)
+        return runs
 
-    inside_mask = (
-        mesh.contains(np.asarray(sample_points, dtype=float))
-        if sample_points
-        else np.zeros(0, dtype=bool)
-    )
-    scan_intervals = [
-        [(z0, z1) for z0, z1, sample_idx in column if inside_mask[sample_idx]]
-        for column in candidate_columns
-    ]
+    def _extract_traces_from_loop(loop, source_index):
+        coords = np.asarray(loop, dtype=float)
+        if len(coords) < 4 or not is_full_circle(coords):
+            return []
 
-    column_polys = []
-    for i, intervals in enumerate(scan_intervals):
-        left_theta = theta_edges[i]
-        right_theta = theta_edges[i + 1]
-        for z0, z1 in intervals:
-            if z1 - z0 <= 1e-4:
-                continue
-            column_polys.append(box(left_theta, z0, right_theta, z1))
-    if not column_polys:
-        return []
+        windowed_traces = _windowed_full_span_traces(coords, source_index)
+        if windowed_traces:
+            return windowed_traces
 
-    geom = shapely.unary_union(column_polys)
-    merged = polygonal_only(
-        fold_to_theta_window(
-            geom,
-            0.0,
-            period,
-            z_global_min,
-            z_global_max,
-            period=period,
+        try:
+            canonical = canonicalize_full_circle_loop(coords, period=period, seam_angle=0.0)
+        except (ValueError, FloatingPointError):
+            return []
+        canonical = _dedupe_trace_coords(canonical)
+        if len(canonical) < 2:
+            return []
+
+        split_traces = _full_span_monotone_runs(canonical, source_index)
+        if split_traces:
+            return split_traces
+
+        whole_trace = _make_trace(canonical, source_index, 0)
+        return [whole_trace] if whole_trace is not None else []
+
+    traces = []
+    for source_index, loop in enumerate(loops):
+        traces.extend(_extract_traces_from_loop(loop, source_index))
+    traces = _dedupe_traces(traces)
+    if len(traces) < 2:
+        save_paired_full_circle_traces_layer_plot(
+            debug_layer,
+            debug_plot_radius if debug_plot_radius is not None else radius,
+            [],
+            traces,
         )
+        if debug_layer in debug_layers:
+            print(f"\nOnly found {len(traces)} full-circle trace(s) on layer {debug_layer}; skipping reconstruction.")
+        return []
+
+    def _trace_pair_crosses(lower, upper):
+        finite = np.isfinite(lower.z_samples) & np.isfinite(upper.z_samples)
+        if np.count_nonzero(finite) < 3:
+            return False
+        dz = upper.z_samples[finite] - lower.z_samples[finite]
+        if float(np.nanmedian(dz)) < 0.0:
+            dz = -dz
+        return float(np.nanpercentile(dz, 10)) < -max(z_connect_tol, 1e-4)
+
+    sorted_traces = sorted(traces, key=lambda trace: trace.z_median)
+    trace_pairs = []
+    leftovers = []
+    for pair_i in range(0, len(sorted_traces) - 1, 2):
+        lower = sorted_traces[pair_i]
+        upper = sorted_traces[pair_i + 1]
+        if upper.z_median < lower.z_median:
+            lower, upper = upper, lower
+        if _trace_pair_crosses(lower, upper):
+            leftovers.extend([lower, upper])
+            continue
+        trace_pairs.append((lower, upper))
+    if len(sorted_traces) % 2:
+        leftovers.append(sorted_traces[-1])
+
+    save_paired_full_circle_traces_layer_plot(
+        debug_layer,
+        debug_plot_radius if debug_plot_radius is not None else radius,
+        trace_pairs,
+        leftovers,
     )
-    final_parts = []
-    stack = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-    for item in stack:
-        if isinstance(item, Polygon) and not item.is_empty and item.area > 1e-6:
-            final_parts.append(item)
-    return final_parts
+    if leftovers and debug_layer in debug_layers:
+        print(f"\nSkipped {len(leftovers)} unpaired/crossing full-circle trace(s) on layer {debug_layer}.")
+    if not trace_pairs:
+        return []
+
+    reconstructed = []
+    for lower, upper in trace_pairs:
+        ring = np.vstack([lower.coords, upper.coords[::-1]])
+        try:
+            geom = polygonal_only(shapely.make_valid(Polygon(ring)))
+            geom = polygonal_only(
+                fold_to_theta_window(
+                    geom,
+                    0.0,
+                    period,
+                    z_loop_min,
+                    z_loop_max,
+                    period=period,
+                )
+            )
+        except (ValueError, shapely.errors.GEOSException):
+            continue
+
+        parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+        for part in parts:
+            if isinstance(part, Polygon) and not part.is_empty and part.area > 1e-6:
+                theta_width = float(part.bounds[2] - part.bounds[0])
+                if theta_width < period * 0.75:
+                    continue
+                reconstructed.append(part)
+
+    return reconstructed
 
 
 def cylindrical_cross_section(mesh, radius):
@@ -2346,7 +2699,7 @@ slicing_params["extrusion_per_mm"] = (
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
 max_real_layers = None  # Set to an int to cap layers for testing, None for full print
-mesh = trimesh.load_mesh(sys.argv[1] if len(sys.argv) > 1 else "cubeandring.stl")
+mesh = trimesh.load_mesh(args.mesh)
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
 # which makes every edge appear 4× instead of 2×, causing the directed cross-section
@@ -2366,25 +2719,52 @@ pts = cartesian_to_cylindrical(mesh.vertices)
 _z_shift = printer_params["min_x_pos"] + printer_params["min_x_margin"] - np.min(pts[:, 2])
 mesh.apply_translation([0, 0, _z_shift])
 
-# Subdivide large faces so that cylindrical cross-sections have enough sample points
+# Subdivide large faces so cylindrical cross-sections have enough sample points
 # along long edges (avoids jitter from straight-line approximation of curved arcs).
-# IMPORTANT: trimesh.remesh.subdivide_to_size is NOT manifold-preserving — it splits
-# each face's edges independently, creating T-junctions where one face is split but its
-# neighbour still has the original unsplit edge.  T-junctions cause the directed
-# cross-section algorithm to produce two outgoing crossing points (both tails) instead
-# of a tail+head pair, so stitching can't close them, and entire polygon loops are
-# silently discarded.  Loop subdivision (trimesh.remesh.subdivide) splits all edges of
-# each face and maintains manifold topology, at the cost of a few extra passes.
-_max_edge = slicing_params["layer_height"] * 20  # subdivide any edge longer than 5 layers
+#
+# This used to run up to 8 unconditional loop-subdivision passes. Since every pass
+# splits every face into 4, one very long edge could force the whole mesh to explode
+# to tens of millions of faces before slicing started. Keep the same manifold-safe
+# subdivision, but cap it with a face budget and make the knobs explicit.
+_max_edge = float(os.environ.get(
+    "SLICER_MAX_EDGE_MM",
+    slicing_params["layer_height"] * 20,
+))
+_max_subdivide_faces = int(os.environ.get("SLICER_MAX_SUBDIVIDE_FACES", "2000000"))
+_max_subdivide_passes = int(os.environ.get("SLICER_MAX_SUBDIVIDE_PASSES", "8"))
+_disable_subdivide = os.environ.get("SLICER_DISABLE_SUBDIVIDE", "").lower() in {"1", "true", "yes"}
 _orig_faces = len(mesh.faces)
 _sub_verts, _sub_faces = mesh.vertices, mesh.faces
-for _ in range(8):
+_subdivide_passes = 0
+_cur_max = trimesh.Trimesh(_sub_verts, _sub_faces, process=False).edges_unique_length.max()
+for _ in range(_max_subdivide_passes):
+    if _disable_subdivide:
+        break
     _cur_max = trimesh.Trimesh(_sub_verts, _sub_faces, process=False).edges_unique_length.max()
     if _cur_max <= _max_edge:
         break
+    _next_face_count = len(_sub_faces) * 4
+    if _next_face_count > _max_subdivide_faces:
+        print(
+            f"Subdivision capped at {len(_sub_faces)} faces "
+            f"(next pass would be {_next_face_count}, cap {_max_subdivide_faces})."
+        )
+        break
     _sub_verts, _sub_faces = trimesh.remesh.subdivide(_sub_verts, _sub_faces)
+    _subdivide_passes += 1
+    gc.collect()
 mesh = trimesh.Trimesh(_sub_verts, _sub_faces, process=False)
-print(f"Subdivided mesh: {_orig_faces} → {len(mesh.faces)} faces (max edge {_max_edge:.2f} mm)")
+_final_max_edge = mesh.edges_unique_length.max()
+print(
+    f"Subdivided mesh: {_orig_faces} -> {len(mesh.faces)} faces "
+    f"({_subdivide_passes} pass(es), target max edge {_max_edge:.2f} mm, "
+    f"actual {_final_max_edge:.2f} mm)"
+)
+if _final_max_edge > _max_edge:
+    print(
+        "  warning: subdivision target not fully reached; raise "
+        "SLICER_MAX_SUBDIVIDE_FACES/PASSES for smoother cylindrical slices."
+    )
 pts = cartesian_to_cylindrical(mesh.vertices)
 max_z = np.max(pts[:,2])
 min_z = np.min(pts[:,2])
@@ -2455,6 +2835,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     #     plt.show()
     #     raise e
     poly_pts_raw = [unwrap_polygon(layer_pts[each,1:]).reshape(-1, 2) for each in poly_idxs]
+    save_raw_stl_layer_plot(layer_i, current_r, _slice_r, poly_pts_raw)
     poly_pts = [p for p in poly_pts_raw if len(p) >= 3]
     # for poly in poly_pts:
     #     plt.plot(poly[:,0],poly[:,1],"-")
@@ -2468,6 +2849,14 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             simple_fc_indices.append(i)
         else:
             complex_fc_loops.append(poly_pts[i])
+    save_classified_loops_layer_plot(
+        layer_i,
+        current_r,
+        poly_pts,
+        fc_original_indices,
+        simple_fc_indices,
+        complex_fc_loops,
+    )
 
     # Once any full-turn boundary is complex, simple full-turn loops on the
     # same layer may still be part of the same periodic occupied region.  Pairing
@@ -2492,14 +2881,18 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
         mesh,
         _slice_r,
         slicing_params["nozzle_size"],
+        debug_layer=layer_i,
+        debug_plot_radius=current_r,
     )
 
-    polys = [Polygon(p) for i,p in enumerate(poly_pts) if i not in fc_original_indices]
+    base_polys = [Polygon(p) for i,p in enumerate(poly_pts) if i not in fc_original_indices]
+    polys = list(base_polys)
     periodic_poly_indices = set()
     _complex_start = len(polys)
     polys.extend(complex_full_circle_parts)
     periodic_poly_indices.update(range(_complex_start, len(polys)))
     mapping = set()
+    simple_pair_parts = []
     for pair in full_circle_pairs:
         p1 = canonicalize_full_circle_loop(poly_pts[pair[0]])
         p2 = canonicalize_full_circle_loop(poly_pts[pair[1]])
@@ -2516,6 +2909,14 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             mapping.add(len(polys))
             periodic_poly_indices.add(len(polys))
             polys.append(part)
+            simple_pair_parts.append(part)
+    save_reconstructed_candidates_layer_plot(
+        layer_i,
+        current_r,
+        base_polys,
+        complex_full_circle_parts,
+        simple_pair_parts,
+    )
     # for poly in poly_pts:
     #     if is_full_circle(poly):
     #         plt.plot(poly[:,0],poly[:,1])
@@ -2528,8 +2929,10 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     _levels_i,_levels_count = np.unique(flat_hier,return_counts=True)
     for i,count in zip(_levels_i,_levels_count):
         levels[i] = count
+    save_hierarchy_layer_plot(layer_i, current_r, polys, hier, levels)
     external_perimeters = []
     external_perimeters_print = []
+    stitched_hole_debug_polys = []
     times.append((time.perf_counter(),"count levels"))
 
 
@@ -2572,6 +2975,8 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             poly_with_holes = Polygon(poly_exterior)
         else:
             poly_with_holes = Polygon(poly_exterior,holes = sub_poly_list)
+        if layer_i in debug_layers:
+            stitched_hole_debug_polys.append(poly_with_holes)
 
         if plot_perimeters:
             plot_polygon(do_transform(poly_with_holes),add_points=False,facecolor=(0, 0, 0, 0))
@@ -2651,6 +3056,7 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
             plot_polygon(do_transform(external_perimeters[-1]),add_points=False,color="green",facecolor=(0, 0, 0, 0))
     if plot_perimeters:
         plt.show()
+    save_stitched_holes_layer_plot(layer_i, current_r, stitched_hole_debug_polys)
     times.append((time.perf_counter(),"form poly with holes"))
     
     final = robust_polygonal_union(external_perimeters)
@@ -2923,12 +3329,42 @@ with open("stats.txt", "w") as _sf:
 plot_3d = False       # live combined 3D figure (non-blocking)
 plot_per_layer = False  # show blocking per-layer 2D+3D window; set False for full gcode runs
 ax_3d = None
+keep_layer_temp = os.environ.get("SLICER_KEEP_LAYER_TEMP", "").lower() in {"1", "true", "yes"}
 
 def on_key(event):
     """Ctrl-C or Q in any plot window exits the program cleanly."""
     if event.key in ('ctrl+c', 'q', 'escape'):
         plt.close('all')
         sys.exit(0)
+
+
+def plot_line_endpoints_2d(line_list, ax, current_r, marker_size=8):
+    """Plot start/end markers for generated line segments in metric space."""
+    if not line_list:
+        return
+    for line in line_list:
+        if line is None or line.is_empty:
+            continue
+        coords = np.array(line.coords)
+        if len(coords) < 2:
+            continue
+        coords_metric = coords * np.array([current_r, 1])
+        ax.plot(coords_metric[0, 0], coords_metric[0, 1], 'go',
+                markersize=marker_size, alpha=0.7)
+        ax.plot(coords_metric[-1, 0], coords_metric[-1, 1], 'ro',
+                markersize=marker_size, alpha=0.7)
+
+
+def plot_polygonal_2d(geom, ax, **kwargs):
+    """Plot polygonal debug geometry, ignoring empty collection fragments."""
+    geom = polygonal_only(geom)
+    if geom is None or geom.is_empty:
+        return
+    parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+    for part in parts:
+        if isinstance(part, Polygon) and not part.is_empty:
+            plot_polygon(part, ax=ax, add_points=False, **kwargs)
+
 
 if plot_3d:
     fig_combined = plt.figure(figsize=(8, 8))
@@ -3021,6 +3457,8 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
             f.write(";TYPE:SUPPORT\n")
             g, last_pos, last_e = path.to_gcode(slicing_params, last_pos, last_e)
             f.write(g)
+    if not keep_layer_temp:
+        gap_layer.pop("support_infill", None)
 
 _sorted_model_keys = sorted(layer_data.keys())
 for _model_idx, i in enumerate(_sorted_model_keys):
@@ -3031,14 +3469,18 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     total = len(layer_data)
     print(f">>> Layer {real_layer_count}/{total} (layer_data key: {i})", end="\r",flush=True)
+    export_debug_layer = i in debug_layers
+    draw_layer_plot = plot_per_layer or export_debug_layer
+    include_layer_3d = plot_per_layer or args.debug_plot_3d
 
-    # Per-layer figure: 2D on left, 3D on right (only when plot_per_layer)
+    # Per-layer figure: 2D plus optional 3D for interactive/debug output.
     ax_2d_layer = None
     ax_3d_layer = None
-    if plot_per_layer:
-        fig_layer = plt.figure(figsize=(14, 6))
-        ax_2d_layer = fig_layer.add_subplot(1, 2, 1)
-        ax_3d_layer = fig_layer.add_subplot(1, 2, 2, projection='3d')
+    if draw_layer_plot:
+        fig_layer = plt.figure(figsize=(14, 6) if include_layer_3d else (8, 6))
+        ax_2d_layer = fig_layer.add_subplot(1, 2, 1) if include_layer_3d else fig_layer.add_subplot(1, 1, 1)
+        if include_layer_3d:
+            ax_3d_layer = fig_layer.add_subplot(1, 2, 2, projection='3d')
         fig_layer.canvas.mpl_connect('key_press_event', on_key)
 
     current_r = layer_data[i]["radius"]
@@ -3049,7 +3491,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     current_ext_print = keep_canonical_polygons(layer_data[i]["external_peris"])
     current_top_print = keep_canonical_polygons(layer_data[i].get("top_surfaces", shapely.GeometryCollection()))
     current_bottom_print = keep_canonical_polygons(layer_data[i].get("bottom_surfaces", shapely.GeometryCollection()))
-    if plot_per_layer:
+    if draw_layer_plot:
         plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(current_ext_print))),ax=ax_2d_layer,add_points=False,color="blue")
     final_perimeter_raw = current_ext_print
     final_perimeter = do_transform(final_perimeter_raw)
@@ -3078,7 +3520,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             )
             internal_perimeter = robust_polygonal_intersection(internal_perimeter, _internal_source_metric)
             internal_perimeter_raw = _canonicalize_full_wrap_strips(do_transform_inverse(internal_perimeter))
-        if plot_per_layer:
+        if draw_layer_plot:
             plot_line(do_transform(sum_poly(polygon_to_wrapped_lines(internal_perimeter_raw))),ax=ax_2d_layer,add_points=False,color="green")
         layer_data[i]["internal_peris"].append(internal_perimeter_raw)
         final_perimeter_raw = internal_perimeter_raw
@@ -3094,8 +3536,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         ),
         final_perimeter,
     )
-    if plot_per_layer:
-        plot_polygon(final_top_surface,ax=ax_2d_layer,add_points=False,color="indigo")
+    if draw_layer_plot:
+        plot_polygonal_2d(final_top_surface, ax=ax_2d_layer, color="indigo")
     _solid_direction = "axial"
     _min_solid_lines = slicing_params.get("surface_min_solid_lines", 0)
 
@@ -3106,7 +3548,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         parts = list(surface_raw.geoms) if hasattr(surface_raw, "geoms") else [surface_raw]
         result = []
         for part in parts:
-            part_solid = do_solid_infill(part,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer,direction=_solid_direction) or []
+            part_solid = do_solid_infill(part,slicing_params,current_r,draw_layer_plot,ax=ax_2d_layer,direction=_solid_direction) or []
             if 0 < len(part_solid) < _min_solid_lines:
                 continue
             result.extend(part_solid)
@@ -3123,8 +3565,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         ),
         final_perimeter,
     )
-    if plot_per_layer:
-        plot_polygon(final_bottom_surface,ax=ax_2d_layer,add_points=False,color="cyan")
+    if draw_layer_plot:
+        plot_polygonal_2d(final_bottom_surface, ax=ax_2d_layer, color="cyan")
     final_bottom_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_bottom_surface))
     bottom_solid_infill = _surface_solid_infill(final_bottom_surface_raw)
     layer_data[i]["solid_infill"] = top_solid_infill + bottom_solid_infill
@@ -3175,13 +3617,13 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
             layer_data[i]["support_infill"] = do_support_infill(support_print, slicing_params, current_r, direction=direction)
 
-        if plot_per_layer:
-            plot_polygon(do_transform(support_geom), ax=ax_2d_layer, add_points=False, color="magenta")
+        if draw_layer_plot:
+            plot_polygonal_2d(do_transform(support_geom), ax=ax_2d_layer, color="magenta")
     else:
         layer_data[i]["support_infill"] = []
 
-    if "needs_support" in layer_data[i] and plot_per_layer:
-        plot_polygon(do_transform(layer_data[i]["needs_support"]),ax=ax_2d_layer,add_points=False,color="red")
+    if "needs_support" in layer_data[i] and draw_layer_plot:
+        plot_polygonal_2d(do_transform(layer_data[i]["needs_support"]), ax=ax_2d_layer, color="red")
 
     # plt.savefig(f"frames/{i}.png",dpi=600)
 
@@ -3233,7 +3675,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             _diff = robust_polygonal_buffer(_diff, _half_noz, join_style="mitre")
         shape_to_infill = _canonicalize_full_wrap_strips(do_transform_inverse(_diff))
 
-    fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,plot_per_layer,ax=ax_2d_layer)
+    fully_radial_infill, radial_infill, axial_infill = do_sparse_infill(shape_to_infill,slicing_params,current_r,draw_layer_plot,ax=ax_2d_layer)
     layer_data[i]["fully_radial_infill"] = fully_radial_infill
     layer_data[i]["radial_infill"] = radial_infill
     layer_data[i]["axial_infill"] = axial_infill
@@ -3289,8 +3731,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
     top_surf = layer_data[i].get("top_surfaces")
 
-    # --- Per-layer 3D (only when plot_per_layer) ---
-    if plot_3d and plot_per_layer:
+    # --- Per-layer 3D (interactive or selected debug exports) ---
+    if draw_layer_plot and include_layer_3d:
         plot_lines_3d(layer_data[i]["external_peris"], ax_3d_layer, 'blue', 2, label='Ext Peri')
         for j, int_peri in enumerate(layer_data[i].get("internal_peris", [])):
             plot_lines_3d(int_peri, ax_3d_layer, 'green', 1.5, label='Int Peri' if j == 0 else None)
@@ -3333,15 +3775,27 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         fig_combined.canvas.draw()
         plt.pause(0.001)
 
-    # --- Finalize and show per-layer figure (blocks until closed) ---
-    if plot_per_layer:
+    # --- Finalize and optionally save/show per-layer figure ---
+    if draw_layer_plot:
+        plot_line_endpoints_2d(layer_data[i].get("solid_infill", []), ax_2d_layer, current_r, marker_size=6)
+        plot_line_endpoints_2d(layer_data[i].get("radial_infill", []), ax_2d_layer, current_r, marker_size=6)
+        plot_line_endpoints_2d(layer_data[i].get("axial_infill", []), ax_2d_layer, current_r, marker_size=6)
+        plot_line_endpoints_2d(layer_data[i].get("fully_radial_infill", []), ax_2d_layer, current_r, marker_size=6)
+        plot_line_endpoints_2d(layer_data[i].get("support_infill", []), ax_2d_layer, current_r, marker_size=5)
         ax_2d_layer.set_title(f'Layer {i}')
         ax_2d_layer.set_aspect('equal')
         fig_layer.tight_layout()
         fig_layer.canvas.draw()
-        print(f"Close layer {i} window to continue...")
-        while plt.fignum_exists(fig_layer.number):
-            plt.pause(0.1)
+        if export_debug_layer:
+            debug_path = os.path.join(args.debug_dir, f"layer_{i:04d}.png")
+            fig_layer.savefig(debug_path, dpi=200)
+            print(f"\nSaved debug plot: {debug_path}")
+        if plot_per_layer or args.show_debug_layers:
+            print(f"Close layer {i} window to continue...")
+            while plt.fignum_exists(fig_layer.number):
+                plt.pause(0.1)
+        else:
+            plt.close(fig_layer)
 
     # G-code generation
     traces = []
@@ -3510,6 +3964,19 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                   f"  {_solid_n:>8}"
                   f"  {_sparse_n:>9}\n")
 
+    if not keep_layer_temp:
+        # These geometries are only needed while emitting this layer. Keeping them
+        # for the full run can dominate memory on dense models.
+        for _temp_key in (
+            "internal_peris",
+            "solid_infill",
+            "support_infill",
+            "fully_radial_infill",
+            "radial_infill",
+            "axial_infill",
+        ):
+            layer_data[i].pop(_temp_key, None)
+
     # traces = [trace for trace in traces if trace is not None]
     # traces = np.vstack(traces)
     # for each in traces:
@@ -3527,34 +3994,6 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     # fig = go.Figure(data=traces)
     # fig.show()
 # set_axes_equal(ax)
-    # Helper functions for endpoint markers
-    def plot_line_endpoints_2d(line_list, ax, marker_size=8, color='red'):
-        """Plot circles at start (green) and end (red) of each LineString."""
-        if not line_list:
-            return
-        for line in line_list:
-            if line is None or line.is_empty:
-                continue
-            coords = np.array(line.coords)
-            if len(coords) < 2:
-                continue
-            # Transform to metric space for plotting
-            coords_metric = coords * np.array([current_r, 1])
-            # Start point (green circle)
-            ax.plot(coords_metric[0, 0], coords_metric[0, 1], 'go', 
-                    markersize=marker_size, alpha=0.7)
-            # End point (red circle)
-            ax.plot(coords_metric[-1, 0], coords_metric[-1, 1], 'ro', 
-                    markersize=marker_size, alpha=0.7)
-
-    # Plot endpoints for all infill types in 2D
-    if plot_per_layer:
-        plot_line_endpoints_2d(layer_data[i].get("solid_infill", []), ax_2d_layer, marker_size=6, color='greenyellow')
-        plot_line_endpoints_2d(layer_data[i].get("radial_infill", []), ax_2d_layer, marker_size=6, color='orange')
-        plot_line_endpoints_2d(layer_data[i].get("axial_infill", []), ax_2d_layer, marker_size=6, color='darkviolet')
-        plot_line_endpoints_2d(layer_data[i].get("fully_radial_infill", []), ax_2d_layer, marker_size=6, color='orangered')
-        plot_line_endpoints_2d(layer_data[i].get("support_infill", []), ax_2d_layer, marker_size=5, color='magenta')
-
     # plt.clf()
 
 with open("output.gcode", "a") as f:
