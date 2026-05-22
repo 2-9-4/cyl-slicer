@@ -148,10 +148,13 @@ def save_classified_loops_layer_plot(layer_i, current_r, poly_pts, fc_original_i
         if idx in simple_set:
             _plot_theta_z_loop(ax, poly, current_r, color="#ffb703", label="simple full-circle")
         elif id(poly) in complex_ids:
+            poly[:,0] -= np.min(poly[:,0])
             _plot_theta_z_loop(ax, poly, current_r, color="#d00000", label="complex full-circle")
         elif idx in fc_original_indices:
             _plot_theta_z_loop(ax, poly, current_r, color="#9d4edd", label="other full-circle")
         else:
+            if(np.min(poly[:,0]) < 0):
+                poly[:,0] += 2*np.pi
             _plot_theta_z_loop(ax, poly, current_r, color="#1d3557", label="ordinary loop")
     _finish_debug_stage_plot(fig, ax, layer_i, current_r, "classified_loops", "Classified STL loops")
 
