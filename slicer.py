@@ -59,6 +59,7 @@ from dataclasses import dataclass
 import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 from collections import Counter
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
@@ -148,13 +149,10 @@ def save_classified_loops_layer_plot(layer_i, current_r, poly_pts, fc_original_i
         if idx in simple_set:
             _plot_theta_z_loop(ax, poly, current_r, color="#ffb703", label="simple full-circle")
         elif id(poly) in complex_ids:
-            poly[:,0] -= np.min(poly[:,0])
             _plot_theta_z_loop(ax, poly, current_r, color="#d00000", label="complex full-circle")
         elif idx in fc_original_indices:
             _plot_theta_z_loop(ax, poly, current_r, color="#9d4edd", label="other full-circle")
         else:
-            if(np.min(poly[:,0]) < 0):
-                poly[:,0] += 2*np.pi
             _plot_theta_z_loop(ax, poly, current_r, color="#1d3557", label="ordinary loop")
     _finish_debug_stage_plot(fig, ax, layer_i, current_r, "classified_loops", "Classified STL loops")
 
@@ -208,46 +206,61 @@ def save_hierarchy_layer_plot(layer_i, current_r, polys, hierarchy, levels):
     _finish_debug_stage_plot(fig, ax, layer_i, current_r, "hierarchy_levels", "Hierarchy levels before holes")
 
 
-def save_paired_full_circle_traces_layer_plot(layer_i, current_r, pairs, leftovers=None):
+def save_paired_full_circle_traces_layer_plot(layer_i, current_r, pairs, leftovers=None, period=2 * np.pi):
     """Save normalized full-span boundary traces before polygon construction."""
     if layer_i not in debug_layers:
         return
     fig, ax = plt.subplots(figsize=(8, 6))
     colors = ["#d00000", "#1d3557", "#2a9d8f", "#bc6c25", "#6a4c93"]
+    copy_styles = [
+        (-1, "#8ecae6", 0.35, "-2pi copy"),
+        (0, None, 0.9, "base"),
+        (1, "#ffb703", 0.35, "+2pi copy"),
+    ]
+
+    def _plot_trace(trace, style, base_color, label_prefix, annotate=None, linewidth=1.2):
+        coords = np.asarray(trace.coords, dtype=float)
+        if len(coords) < 2:
+            return
+        for turn, copy_color, alpha, suffix in copy_styles:
+            shifted = coords.copy()
+            shifted[:, 0] += turn * period
+            metric = shifted * np.array([current_r, 1])
+            color = base_color if copy_color is None else copy_color
+            ax.plot(
+                metric[:, 0],
+                metric[:, 1],
+                style,
+                color=color,
+                linewidth=linewidth if turn == 0 else max(0.8, linewidth * 0.75),
+                alpha=alpha,
+                label=f"{label_prefix} base" if turn == 0 else suffix,
+            )
+            if turn == 0 and annotate:
+                mid = metric[len(metric) // 2]
+                ax.text(mid[0], mid[1], annotate, fontsize=7, ha="center", va="center")
+
     for pair_i, (lower, upper) in enumerate(pairs or []):
         color = colors[pair_i % len(colors)]
         for role, trace, style in (
             ("lower", lower, "-"),
             ("upper", upper, "--"),
         ):
-            coords = np.asarray(trace.coords, dtype=float)
-            if len(coords) < 2:
-                continue
-            metric = coords * np.array([current_r, 1])
-            ax.plot(
-                metric[:, 0],
-                metric[:, 1],
+            _plot_trace(
+                trace,
                 style,
-                color=color,
-                linewidth=1.2,
-                alpha=0.9,
-                label=f"pair {pair_i} {role}",
+                color,
+                f"pair {pair_i} {role}",
+                annotate=f"{pair_i}:{role[0]}",
             )
-            mid = metric[len(metric) // 2]
-            ax.text(mid[0], mid[1], f"{pair_i}:{role[0]}", fontsize=7, ha="center", va="center")
-    for trace in leftovers or []:
-        coords = np.asarray(trace.coords, dtype=float)
-        if len(coords) < 2:
-            continue
-        metric = coords * np.array([current_r, 1])
-        ax.plot(
-            metric[:, 0],
-            metric[:, 1],
+    for leftover_i, trace in enumerate(leftovers or []):
+        _plot_trace(
+            trace,
             ":",
-            color="#6c757d",
+            "#6c757d",
+            "unpaired trace",
+            annotate=f"u{leftover_i}",
             linewidth=1.0,
-            alpha=0.8,
-            label="unpaired trace",
         )
     _finish_debug_stage_plot(
         fig,
@@ -281,6 +294,97 @@ def save_stitched_holes_layer_plot(layer_i, current_r, polygons):
     fig.savefig(debug_path, dpi=200)
     plt.show()
     print(f"\nSaved stitched/holes debug plot: {debug_path}")
+
+
+def extract_extrusion_segments_from_gcode(gcode, start_e, section_name):
+    """Extract actual emitted extrusion moves from a generated G-code chunk."""
+    segments = []
+    last_xy = None
+    current_e = float(start_e)
+    for raw_line in gcode.splitlines():
+        line = raw_line.split(";", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if not parts or parts[0] not in {"G0", "G1"}:
+            continue
+
+        values = {}
+        for token in parts[1:]:
+            key = token[:1]
+            if key not in {"X", "Y", "E"} or len(token) < 2:
+                continue
+            try:
+                values[key] = float(token[1:])
+            except ValueError:
+                continue
+
+        if "X" in values and "Y" in values:
+            new_xy = (math.radians(values["Y"]), values["X"])
+            if (
+                parts[0] == "G1"
+                and "E" in values
+                and last_xy is not None
+                and values["E"] > current_e + 1e-9
+            ):
+                segments.append((section_name, np.asarray([last_xy, new_xy], dtype=float)))
+            last_xy = new_xy
+        if "E" in values:
+            current_e = values["E"]
+    return segments
+
+
+def save_generated_lines_layer_plot(layer_i, current_r, emitted_segments, period=2 * np.pi):
+    """Save the actual emitted G-code extrusion moves for a selected model layer."""
+    if layer_i not in debug_layers:
+        return
+    fig, ax = plt.subplots(figsize=(10, 6))
+    colors = {
+        "EXTERNAL_PERIMETER": "#1d4ed8",
+        "INTERNAL_PERIMETER": "#16a34a",
+        "SOLID_INFILL": "#84cc16",
+        "SUPPORT": "#d946ef",
+        "INFILL_RADIAL_FULL": "#dc2626",
+        "INFILL_RADIAL": "#f97316",
+        "INFILL_AXIAL": "#7c3aed",
+    }
+    for section_name in colors:
+        section_segments = []
+        for seg_section, coords in emitted_segments:
+            if seg_section != section_name:
+                continue
+            coords = np.asarray(coords, dtype=float).copy()
+            if coords.shape != (2, 2):
+                continue
+            # G-code Y is accumulated. Fold only by whole turns for a layer-local
+            # physical view while preserving each segment's actual emitted delta.
+            turn_offset = math.floor(float(np.min(coords[:, 0])) / period) * period
+            coords[:, 0] -= turn_offset
+            section_segments.append(coords * np.array([current_r, 1.0]))
+        if not section_segments:
+            continue
+        collection = LineCollection(
+            section_segments,
+            colors=colors[section_name],
+            linewidths=0.75 if "INFILL" in section_name or section_name == "SUPPORT" else 1.2,
+            alpha=0.85,
+            label=section_name,
+        )
+        ax.add_collection(collection)
+
+    if emitted_segments:
+        ax.autoscale()
+    else:
+        ax.text(0.5, 0.5, "no extrusion moves", ha="center", va="center", transform=ax.transAxes)
+    _finish_debug_stage_plot(
+        fig,
+        ax,
+        layer_i,
+        current_r,
+        "generated_lines",
+        "Generated G-code extrusion lines",
+    )
+    plt.show()
 
 def find_polygons(edges, num_points):
     # Build undirected edge map
@@ -473,19 +577,23 @@ def is_full_circle(polygon, tol=0.1):
 
 
 def canonicalize_full_circle_loop(polygon, period=2 * np.pi, seam_angle=0.0):
-    """Rotate a full-circle loop onto one monotone [0, 2π] theta walk.
+    """Cut a full-circle loop at a real period seam without changing phase.
 
-    Full-circle loops are periodic boundaries with no physical seam.  We pick the
-    closure jump around a shared reference seam, unwrap the remaining walk so
-    theta increases monotonically, then snap the endpoints onto exactly one full
-    turn. Using a stable seam reference keeps paired full-circle loops phase-
-    aligned when they later become the two boundaries of one wrap-spanning strip.
+    The only allowed theta translation here is an integer-period wrap.  Rotating
+    the vertex order at a seam crossing is fine; subtracting the first theta or
+    theta_min is not, because that physically shifts the perimeter relative to
+    the STL slice linework.
     """
     coords = np.asarray(polygon, dtype=float)
     if len(coords) < 2:
         return coords.copy()
 
     coords = coords.copy()
+    if len(coords) >= 2 and np.linalg.norm(coords[0] - coords[-1]) <= 1e-9:
+        coords = coords[:-1]
+    if len(coords) < 2:
+        return coords.copy()
+
     for _ in range(2):
         shifted_theta = coords[:, 0] - seam_angle
         wrapped_diffs = np.diff(shifted_theta, append=shifted_theta[0])
@@ -497,18 +605,59 @@ def canonicalize_full_circle_loop(polygon, period=2 * np.pi, seam_angle=0.0):
     shifted_theta = coords[:, 0] - seam_angle
     wrapped_diffs = np.diff(shifted_theta, append=shifted_theta[0])
     wrapped_diffs = (wrapped_diffs + np.pi) % period - np.pi
-    seam_after = int(np.argmin(wrapped_diffs)) + 1
-    if seam_after < len(coords):
-        coords = np.roll(coords, -seam_after, axis=0)
 
-    theta = np.unwrap(coords[:, 0] - seam_angle, discont=np.pi)
-    theta -= theta[0]
-    if theta[-1] < 0:
-        theta += period
-    theta[0] = 0.0
-    theta[-1] = period
-    coords[:, 0] = theta
-    return coords
+    theta = [float(coords[0, 0])]
+    for step in wrapped_diffs[:-1]:
+        theta.append(theta[-1] + float(step))
+    theta = np.asarray(theta, dtype=float)
+    total = float(np.sum(wrapped_diffs))
+    if abs(total) < period * 0.5:
+        return coords.copy()
+
+    closed_theta = np.concatenate([theta, [theta[0] + total]])
+    closed_z = np.concatenate([coords[:, 1], [coords[0, 1]]])
+    if closed_theta[-1] < closed_theta[0]:
+        closed_theta = closed_theta[::-1]
+        closed_z = closed_z[::-1]
+
+    seam = seam_angle + math.ceil((closed_theta[0] - seam_angle - 1e-9) / period) * period
+    if seam > closed_theta[-1] + 1e-9:
+        seam -= period
+
+    seam_i = None
+    seam_z = None
+    for i in range(len(closed_theta) - 1):
+        a = closed_theta[i]
+        b = closed_theta[i + 1]
+        if min(a, b) - 1e-9 <= seam <= max(a, b) + 1e-9:
+            if abs(b - a) <= 1e-12:
+                seam_z = float(closed_z[i])
+            else:
+                t = (seam - a) / (b - a)
+                seam_z = float(closed_z[i] + t * (closed_z[i + 1] - closed_z[i]))
+            seam_i = i
+            break
+
+    if seam_i is None or seam_z is None:
+        # Fall back to an integer-period wrap only. This preserves phase, even if
+        # the caller later rejects the trace as not spanning a usable seam window.
+        period_shift = math.floor((float(np.min(theta)) + 0.25) / period) * period
+        out = coords.copy()
+        out[:, 0] = theta - period_shift
+        return out
+
+    out = [[seam, seam_z]]
+    for j in range(seam_i + 1, len(closed_theta)):
+        out.append([closed_theta[j], closed_z[j]])
+    for j in range(1, seam_i + 1):
+        out.append([closed_theta[j] + period, closed_z[j]])
+    out.append([seam + period, seam_z])
+
+    out = np.asarray(out, dtype=float)
+    out[:, 0] -= seam
+    step = np.abs(np.diff(out, axis=0))
+    keep = np.concatenate([[True], np.any(step > 1e-9, axis=1)])
+    return out[keep]
 
 
 def is_simple_full_circle_loop(polygon, tol=1e-6, period=2 * np.pi):
@@ -629,16 +778,14 @@ def reconstruct_complex_full_circle_regions(
             return None
 
         coords = coords.copy()
-        if endpoint_is_full:
-            coords[:, 0] -= coords[0, 0]
-            coords[0, 0] = 0.0
-            coords[-1, 0] = period
-        else:
-            # Monotone full-span fragments may start at any equivalent theta.
-            # Move them into the shared one-turn window.
-            coords[:, 0] -= theta_min
-            coords[:, 0] = np.where(np.abs(coords[:, 0]) <= trace_span_tol, 0.0, coords[:, 0])
-            coords[:, 0] = np.where(np.abs(coords[:, 0] - period) <= trace_span_tol, period, coords[:, 0])
+        period_shift = math.floor((float(np.min(coords[:, 0])) + trace_internal_slack) / period) * period
+        if period_shift:
+            coords[:, 0] -= period_shift
+        # Preserve the slice phase.  Only whole-period wrapping is allowed here.
+        # Do not rebase by coords[0] or theta_min; that creates a real angular
+        # shift relative to the STL slice linework.
+        coords[:, 0] = np.where(np.abs(coords[:, 0]) <= trace_span_tol, 0.0, coords[:, 0])
+        coords[:, 0] = np.where(np.abs(coords[:, 0] - period) <= trace_span_tol, period, coords[:, 0])
 
         # Coarse, unsubdivided STL triangles can create small local theta
         # overshoots around the seam even when the boundary walk itself spans
@@ -698,7 +845,18 @@ def reconstruct_complex_full_circle_regions(
             _collect_lines(clipped, fragments, min_length=1e-9)
 
         traces = []
-        for frag_i, fragment in enumerate(fragments):
+        candidate_fragments = []
+        if fragments:
+            fragments = _dedupe_lines(fragments, min_length=1e-9)
+            try:
+                merged = linemerge(MultiLineString(fragments))
+                _collect_lines(merged, candidate_fragments, min_length=1e-9)
+            except (ValueError, shapely.errors.GEOSException):
+                candidate_fragments = []
+        if not candidate_fragments:
+            candidate_fragments = fragments
+
+        for frag_i, fragment in enumerate(candidate_fragments):
             frag_coords = np.asarray(fragment.coords, dtype=float)
             if len(frag_coords) < 2:
                 continue
@@ -731,6 +889,10 @@ def reconstruct_complex_full_circle_regions(
         if len(coords) < 4 or not is_full_circle(coords):
             return []
 
+        whole_trace = _make_trace(coords, source_index, 0)
+        if whole_trace is not None:
+            return [whole_trace]
+
         windowed_traces = _windowed_full_span_traces(coords, source_index)
         if windowed_traces:
             return windowed_traces
@@ -747,8 +909,8 @@ def reconstruct_complex_full_circle_regions(
         if split_traces:
             return split_traces
 
-        whole_trace = _make_trace(canonical, source_index, 0)
-        return [whole_trace] if whole_trace is not None else []
+        canonical_trace = _make_trace(canonical, source_index, 0)
+        return [canonical_trace] if canonical_trace is not None else []
 
     traces = []
     for source_index, loop in enumerate(loops):
@@ -2193,6 +2355,70 @@ def _remove_local_orthogonal_caps(lines, period=2 * math.pi):
     )
 
 
+def _remove_periodic_seam_aligned_edges(
+    lines,
+    seam_origins=(0.0,),
+    period=2 * math.pi,
+    seam_tol=0.15,
+    max_theta_span=0.25,
+    min_z_span=1e-4,
+):
+    """Drop artificial cut edges that lie on a periodic theta seam.
+
+    Full-wrap polygons need a flat cut edge so Shapely can store them as planar
+    polygons, but that edge is not a physical perimeter on the cylinder.  When
+    the true boundary winds through the seam, periodic unioning does not always
+    cancel the cut edge because the two seam intervals can sit at different z
+    ranges.  Remove only short-in-theta, z-changing segments centered on known
+    seam origins; real boundary traces leave the seam with a larger theta span
+    and are preserved.
+    """
+    if not lines:
+        return []
+
+    seam_origins = tuple(seam_origins or (0.0,))
+
+    def _seam_distance(theta, origin):
+        return abs((theta - origin + period / 2) % period - period / 2)
+
+    def _is_cut_edge(p0, p1):
+        dz = abs(float(p1[1] - p0[1]))
+        if dz <= min_z_span:
+            return False
+        raw_span = abs(float(p1[0] - p0[0]))
+        wrapped_span = abs((float(p1[0] - p0[0]) + period / 2) % period - period / 2)
+        theta_span = min(raw_span, wrapped_span)
+        if theta_span > max_theta_span:
+            return False
+        for origin in seam_origins:
+            if max(_seam_distance(p0[0], origin), _seam_distance(p1[0], origin)) <= seam_tol:
+                return True
+        return False
+
+    result = []
+    for line in lines:
+        if not isinstance(line, LineString) or line.is_empty:
+            continue
+        coords = np.asarray(line.coords, dtype=float)
+        if len(coords) < 2:
+            continue
+
+        current = [coords[0]]
+        for p1 in coords[1:]:
+            p0 = current[-1]
+            if _is_cut_edge(p0, p1):
+                if len(current) >= 2:
+                    result.append(LineString(current))
+                current = [p1]
+                continue
+            current.append(p1)
+
+        if len(current) >= 2:
+            result.append(LineString(current))
+
+    return _dedupe_lines(result, min_length=1e-9)
+
+
 def _split_local_seam_closure_edges(
     lines,
     period=2 * math.pi,
@@ -3063,6 +3289,13 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
     times.append((time.perf_counter(),"form poly with holes"))
     
     final = robust_polygonal_union(external_perimeters)
+    layer_data[layer_i]["external_peris_has_periodic"] = any(
+        poly_i in periodic_poly_indices
+        and levels[poly_i] % 2 == 0
+        and isinstance(polys[poly_i], Polygon)
+        and not polys[poly_i].is_empty
+        for poly_i in range(len(polys))
+    )
     layer_data[layer_i]["external_peris"] = final
     layer_data[layer_i]["external_peris_print"] = (
         robust_polygonal_union(external_perimeters_print)
@@ -3817,6 +4050,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     _layer_params["feed_mm_per_min"]   *= _speed_factor
     _layer_params["travel_mm_per_min"] *= _speed_factor
 
+    debug_emitted_segments = []
     with open("output.gcode","a") as f:
         f.write(f";LAYER:{i}\n")
         f.write(f";Z:{current_r}\n")
@@ -3837,9 +4071,10 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         # parallel. All sections get the same last_pos snapshot (start of layer);
         # actual last_pos is then updated sequentially below during to_gcode.
         _snap_pos = last_pos
+        _layer_has_periodic_external = bool(layer_data[i].get("external_peris_has_periodic", False))
         def _print_window_for_paths(geom):
             geom = keep_canonical_polygons(geom)
-            if has_full_wrap_component(geom):
+            if _layer_has_periodic_external or has_full_wrap_component(geom):
                 lower = math.pi
                 upper = lower + 2 * math.pi
                 return (
@@ -3852,23 +4087,36 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 
         def _prep_section(subsection):
             if subsection == "external_peris":
-                if has_full_wrap_component(current_ext_print):
+                if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
                     geom = layer_data[i].get("external_peris_print", current_ext_print)
                     lower = math.pi
                     upper = lower + 2 * math.pi
                     cut = lower
+                    is_full_wrap_section = True
                 else:
                     geom, lower, upper, cut = _print_window_for_paths(current_ext_print)
+                    is_full_wrap_section = cut is not None or has_full_wrap_component(geom, lower=lower, upper=upper)
                 lines = polygon_to_wrapped_lines(geom, lower=lower, upper=upper, cut_lower=cut)
                 lines = _remove_periodic_seam_caps(lines, seam_origin=cut if cut is not None else lower)
-                if has_full_wrap_component(current_ext_print):
+                if is_full_wrap_section:
+                    lines = _remove_periodic_seam_aligned_edges(
+                        lines,
+                        seam_origins=(0.0,),
+                    )
+                    if cut is not None:
+                        lines = _remove_periodic_seam_aligned_edges(
+                            lines,
+                            seam_origins=(cut,),
+                            seam_tol=0.02,
+                            max_theta_span=1e-6,
+                        )
                     lines = _remove_local_orthogonal_caps(lines)
                 lines = _split_local_seam_closure_edges(lines)
                 raw = shapely_to_paths(lines, current_r)
                 return [p for p in raw if p is not None]
             elif subsection == "internal_peris":
                 raw = []
-                if has_full_wrap_component(current_ext_print):
+                if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
                     lower = math.pi
                     upper = lower + 2 * math.pi
                     source = layer_data[i].get("external_peris_print", current_ext_print)
@@ -3888,6 +4136,16 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                             cut_lower=lower,
                         )
                         lines = _remove_periodic_seam_caps(lines, seam_origin=lower)
+                        lines = _remove_periodic_seam_aligned_edges(
+                            lines,
+                            seam_origins=(0.0,),
+                        )
+                        lines = _remove_periodic_seam_aligned_edges(
+                            lines,
+                            seam_origins=(lower,),
+                            seam_tol=0.02,
+                            max_theta_span=1e-6,
+                        )
                         lines = _remove_local_orthogonal_caps(lines)
                         lines = _split_local_seam_closure_edges(lines)
                         raw.extend(
@@ -3948,8 +4206,16 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 )
                 for emit_path in emit_paths:
                     f.write(f";TYPE:{section_name}\n")
+                    _path_start_e = last_e
                     g,last_pos,last_e = emit_path.to_gcode(_path_params,last_pos,last_e)
+                    if export_debug_layer:
+                        debug_emitted_segments.extend(
+                            extract_extrusion_segments_from_gcode(g, _path_start_e, section_name)
+                        )
                     f.write(g)
+
+    if export_debug_layer:
+        save_generated_lines_layer_plot(i, current_r, debug_emitted_segments)
 
     _ns  = layer_data[i].get("needs_support")
     _sup = layer_data[i].get("support", shapely.GeometryCollection())
