@@ -126,7 +126,12 @@ def _plot_theta_z_loop(ax, coords, current_r, style="-o", color=None, label=None
 def _plot_theta_z_polygon(ax, poly, current_r, facecolor, edgecolor, label=None, alpha=0.35):
     if poly is None or poly.is_empty or not isinstance(poly, Polygon):
         return
+    if not getattr(ax, "_theta_z_seam_lines_drawn", False):
+        for theta in (0.0, 2 * np.pi):
+            ax.axvline(theta * current_r, color="black", linewidth=0.9, alpha=0.85, zorder=5)
+        ax._theta_z_seam_lines_drawn = True
     exterior = np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1])
+    ax.scatter(exterior[:, 0], exterior[:, 1])
     ax.fill(exterior[:, 0], exterior[:, 1], facecolor=facecolor, edgecolor=edgecolor,
             alpha=alpha, linewidth=1.2, label=label)
     for interior in poly.interiors:
@@ -178,6 +183,8 @@ def save_reconstructed_candidates_layer_plot(layer_i, current_r, base_polys, com
         _plot_theta_z_polygon(ax, poly, current_r, "#a8dadc", "#1d3557", label="ordinary polygon", alpha=0.30)
     for poly in complex_parts:
         _plot_theta_z_polygon(ax, poly, current_r, "#ffadad", "#d00000", label="complex reconstruction", alpha=0.35)
+        _plot_theta_z_polygon(ax, shapely.affinity.translate(poly,2*np.pi,0,0), current_r, "#ffadad", "#d00000", label="complex reconstruction", alpha=0.35)
+        _plot_theta_z_polygon(ax, shapely.affinity.translate(poly,-2*np.pi,0,0), current_r, "#ffadad", "#d00000", label="complex reconstruction", alpha=0.35)
     for poly in paired_parts:
         _plot_theta_z_polygon(ax, poly, current_r, "#ffd166", "#bc6c25", label="simple full-circle pair", alpha=0.35)
     _finish_debug_stage_plot(fig, ax, layer_i, current_r, "reconstructed_candidates", "Reconstructed polygon candidates")
@@ -716,6 +723,8 @@ def reconstruct_complex_full_circle_regions(
 
     @dataclass
     class FullCircleTrace:
+        """Normalized one-turn boundary trace used for z-order pairing."""
+
         coords: np.ndarray
         z_samples: np.ndarray
         z_median: float
@@ -735,17 +744,28 @@ def reconstruct_complex_full_circle_regions(
     z_loop_max = max(float(np.max(zs)) for zs in z_values)
 
     def _dedupe_trace_coords(coords):
+        """Remove only duplicate points that are adjacent in trace order.
+
+        Trace extraction repeatedly clips and merges linework, which can leave
+        consecutive identical vertices. Those zero-length steps confuse span
+        checks and LineString construction but do not carry geometry. Non-adjacent
+        repeats, including a final point equal to the first, can represent real
+        trace connectivity and must be preserved.
+        """
         coords = np.asarray(coords, dtype=float)
         if len(coords) < 2:
             return coords
         step = np.abs(np.diff(coords, axis=0))
         keep = np.concatenate([[True], np.any(step > coord_tol, axis=1)])
-        coords = coords[keep]
-        if len(coords) >= 2 and np.linalg.norm(coords[0] - coords[-1]) <= coord_tol:
-            coords = coords[:-1]
-        return coords
+        return coords[keep]
 
     def _z_values_from_intersection(geom):
+        """Collect z ordinates from a Shapely point/line/collection result.
+
+        Vertical theta probes may intersect a trace at a point, overlap an edge,
+        or return a nested collection. Return all available y coordinates so the
+        caller can choose a robust representative z value.
+        """
         zs = []
         if geom is None or geom.is_empty:
             return zs
@@ -759,6 +779,12 @@ def reconstruct_complex_full_circle_regions(
         return zs
 
     def _sample_trace_z(coords):
+        """Sample a trace's z value at fixed interior theta positions.
+
+        The samples provide a coarse shape profile for deciding whether two
+        traces cross before they are paired. Missing/intersection-error samples
+        are stored as NaN so callers can compare only reliable positions.
+        """
         line = LineString(coords)
         z_pad = max(1.0, abs(z_loop_max - z_loop_min) + max(0.25, nozzle_size))
         sample_line_min = z_loop_min - z_pad
@@ -774,6 +800,13 @@ def reconstruct_complex_full_circle_regions(
         return np.asarray(samples, dtype=float)
 
     def _make_trace(coords, source_index, run_index):
+        """Validate and normalize a candidate one-turn boundary trace.
+
+        A valid trace must span exactly one angular period by endpoint or theta
+        range. The trace is oriented toward increasing theta, shifted only by
+        whole periods to preserve the STL slice phase, seam endpoints are snapped
+        to 0/period, and implausible internal seam overshoots are rejected.
+        """
         coords = _dedupe_trace_coords(coords)
         if len(coords) < 2:
             return None
@@ -815,6 +848,7 @@ def reconstruct_complex_full_circle_regions(
         return FullCircleTrace(coords, z_samples, z_median, source_index, run_index)
 
     def _trace_signature(trace):
+        """Build an orientation-independent rounded coordinate key for a trace."""
         coords = np.asarray(trace.coords, dtype=float)
         if len(coords) < 2:
             return ()
@@ -823,6 +857,7 @@ def reconstruct_complex_full_circle_regions(
         return min(rounded, reversed_rounded)
 
     def _dedupe_traces(traces):
+        """Keep the first instance of each geometric trace signature."""
         unique = []
         seen = set()
         for trace in traces:
@@ -834,6 +869,14 @@ def reconstruct_complex_full_circle_regions(
         return unique
 
     def _windowed_full_span_traces(coords, source_index):
+        """Extract full-period traces by clipping periodic loop copies.
+
+        Complex loops can cross the theta seam or contain local theta reversals,
+        so the raw coordinate order is not always a valid one-turn trace. Shift
+        enough whole-period copies to cover the canonical [0, period] window,
+        clip them to that window, merge compatible fragments, then validate each
+        fragment directly or after splitting it into monotone theta runs.
+        """
         coords = np.asarray(coords, dtype=float)
         if len(coords) < 2:
             return []
@@ -882,6 +925,7 @@ def reconstruct_complex_full_circle_regions(
         return _dedupe_traces(traces)
 
     def _full_span_monotone_runs(coords, source_index):
+        """Split a line into theta-monotone runs and keep full-span runs only."""
         runs = []
         try:
             split_runs = _split_theta_monotone_runs(LineString(coords), tol=coord_tol)
@@ -897,6 +941,13 @@ def reconstruct_complex_full_circle_regions(
         return runs
 
     def _extract_traces_from_loop(loop, source_index):
+        """Return all reconstructable full-period boundary traces from one loop.
+
+        Extraction proceeds from least to most invasive: try the loop as-is,
+        then clipped periodic copies, then a canonicalized loop and its monotone
+        runs. This preserves straightforward traces while still recovering the
+        separable full-circle boundaries inside more tangled STL slice loops.
+        """
         coords = np.asarray(loop, dtype=float)
         if len(coords) < 4 or not is_full_circle(coords):
             return []
@@ -940,6 +991,13 @@ def reconstruct_complex_full_circle_regions(
         return []
 
     def _trace_pair_crosses(lower, upper):
+        """Return True when two candidate pair traces swap z order.
+
+        Adjacent traces are paired by median z, but locally crossing profiles
+        would create a self-intersecting or topologically wrong polygon. Compare
+        only theta samples present on both traces and reject pairs whose lower
+        decile violates the expected z ordering beyond the connection tolerance.
+        """
         finite = np.isfinite(lower.z_samples) & np.isfinite(upper.z_samples)
         if np.count_nonzero(finite) < 3:
             return False
@@ -976,7 +1034,8 @@ def reconstruct_complex_full_circle_regions(
 
     reconstructed = []
     for lower, upper in trace_pairs:
-        ring = np.vstack([lower.coords, upper.coords[::-1]])
+
+        ring = np.vstack([lower.coords+np.array([-2*np.pi,0]),lower.coords,lower.coords+np.array([2*np.pi,0]),(upper.coords+np.array([2*np.pi,0]))[::-1],upper.coords[::-1],(upper.coords+np.array([-2*np.pi,0]))[::-1]])
         try:
             geom = polygonal_only(shapely.make_valid(Polygon(ring)))
             geom = polygonal_only(
@@ -999,7 +1058,6 @@ def reconstruct_complex_full_circle_regions(
                 if theta_width < period * 0.75:
                     continue
                 reconstructed.append(part)
-
     return reconstructed
 
 
