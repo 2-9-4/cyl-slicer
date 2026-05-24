@@ -46,7 +46,19 @@ def parse_args():
         action="store_true",
         help="Show selected debug layer windows interactively after saving.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-layer",
+        type=int,
+        default=None,
+        help=(
+            "Highest 0-based model layer key to slice and emit. "
+            "Layers above this are ignored, so this layer becomes the outer/top limit."
+        ),
+    )
+    parsed = parser.parse_args()
+    if parsed.max_layer is not None and parsed.max_layer < 0:
+        parser.error("--max-layer must be >= 0")
+    return parsed
 
 
 args = parse_args()
@@ -2927,7 +2939,7 @@ slicing_params["extrusion_per_mm"] = (
     slicing_params["nozzle_size"] * slicing_params["layer_height"]
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
-max_real_layers = None  # Set to an int to cap layers for testing, None for full print
+max_model_layer = args.max_layer
 mesh = trimesh.load_mesh(args.mesh)
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
 # Remove duplicate faces before anything else — Blender STL exports each face twice,
@@ -3016,18 +3028,34 @@ sliced_layer_count = 0
 # axial-line grid at a fixed θ-step that never drifts across layers.
 r_start = max(np.min(pts[:,0]) + slicing_params["layer_height"], printer_params["bed_radius"])
 r_end   = min(np.max(pts[:,0]) - 1e-3, printer_params["max_radius"])
+_layer_height = slicing_params["layer_height"]
+_uncapped_slice_radii = np.arange(r_start, r_end, _layer_height)
+_uncapped_layer_count = len(_uncapped_slice_radii)
+if max_model_layer is not None:
+    _requested_layer_count = max_model_layer + 1
+    _slice_layer_count = min(_uncapped_layer_count, _requested_layer_count)
+else:
+    _slice_layer_count = _uncapped_layer_count
+_slice_radii = _uncapped_slice_radii[:_slice_layer_count]
+if len(_slice_radii):
+    _cap_trimmed_layers = _slice_layer_count < _uncapped_layer_count
+    r_effective_end = float(_slice_radii[-1] + _layer_height) if _cap_trimmed_layers else r_end
+else:
+    _cap_trimmed_layers = False
+    r_effective_end = r_start
 print(f"Mesh radial range: {np.min(pts[:,0]):.2f} – {np.max(pts[:,0]):.2f} mm")
-print(f"Slicing range:     {r_start:.2f} – {r_end:.2f} mm  ({max(0, (r_end-r_start)/slicing_params['layer_height']):.0f} layers)")
+print(f"Slicing range:     {r_start:.2f} – {r_effective_end:.2f} mm  ({_slice_layer_count} layers)")
+if max_model_layer is not None:
+    if _cap_trimmed_layers:
+        print(f"Layer cap:         keeping model layers 0–{max_model_layer}; layers above {max_model_layer} ignored")
+    else:
+        print(f"Layer cap:         --max-layer {max_model_layer} is outside the model range; no layers trimmed")
 if r_start >= r_end:
     raise ValueError(f"bed_radius ({printer_params['bed_radius']} mm) is at or beyond the mesh max radius ({np.max(pts[:,0]):.2f} mm) — nothing to slice.")
 slicing_params["r_base"] = r_start
-_total_layers = max(0, int((r_end - r_start) / slicing_params["layer_height"]))
-print(f"\nPass 1 — slicing geometry ({_total_layers} layers, r={r_start:.2f}–{r_end:.2f} mm)")
-for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["layer_height"])):
-    if max_real_layers is not None and sliced_layer_count >= max_real_layers:
-        print(f"\nSliced {sliced_layer_count} layers, stopping.")
-        break
-
+_total_layers = len(_slice_radii)
+print(f"\nPass 1 — slicing geometry ({_total_layers} layers, r={r_start:.2f}–{r_effective_end:.2f} mm)")
+for layer_i,current_r in enumerate(_slice_radii):
     times = [(time.perf_counter(), "")]
     print(f"  [{sliced_layer_count+1}/{_total_layers}] r={current_r:.3f} mm", end="\r", flush=True)
     # Sample within the radial interior of the deposited layer, not exactly on its
@@ -3376,6 +3404,9 @@ for layer_i,current_r in enumerate( np.arange(r_start, r_end, slicing_params["la
 
 
 
+if not layer_data:
+    limit_text = f" up to --max-layer {max_model_layer}" if max_model_layer is not None else ""
+    raise ValueError(f"No non-empty model layers were sliced{limit_text}.")
 
 layer_data[list(layer_data)[-1]]["top_surfaces"] = layer_data[list(layer_data)[-1]]["external_peris"]
 
@@ -3614,8 +3645,6 @@ gcodes = []
 last_pos = [0,0]
 last_e = 0
 real_layer_count = 0
-if max_real_layers is not None:
-    print(f"\n=== CAPPED AT {max_real_layers} LAYERS FOR TESTING ===\n")
 _bed_r = printer_params["bed_radius"]
 _prime_e = 2 * np.pi * _bed_r * slicing_params["extrusion_per_mm"] * slicing_params["flow_rate"]
 _first_feed = slicing_params["feed_mm_per_min"] * slicing_params["first_layer_speed_factor"]
@@ -3699,9 +3728,6 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
 _sorted_model_keys = sorted(layer_data.keys())
 for _model_idx, i in enumerate(_sorted_model_keys):
     real_layer_count += 1
-    if max_real_layers is not None and real_layer_count > max_real_layers:
-        print(f"\nReached {max_real_layers} layer cap, exiting.")
-        break
 
     total = len(layer_data)
     print(f">>> Layer {real_layer_count}/{total} (layer_data key: {i})", end="\r",flush=True)
