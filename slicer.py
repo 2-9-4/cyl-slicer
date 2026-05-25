@@ -1127,7 +1127,13 @@ def reconstruct_complex_full_circle_regions(
     return reconstructed
 
 
-def promote_periodic_reconstruction_holes(polygons, period=2 * np.pi, min_area=1e-6):
+def promote_periodic_reconstruction_holes(
+    polygons,
+    period=2 * np.pi,
+    min_area=1e-6,
+    layer_i=None,
+    current_r=None,
+):
     """Split seam-discovered holes out of reconstructed full-wrap polygons.
 
     A hole whose side lands exactly on the theta cut may only become a closed
@@ -1165,7 +1171,7 @@ def promote_periodic_reconstruction_holes(polygons, period=2 * np.pi, min_area=1
         [
             shift_polygon(part, k * period) if k else part
             for part in source_parts
-            for k in (-1, 0, 1)
+            for k in (0, 1)
         ]
     )
 
@@ -1213,7 +1219,66 @@ def promote_periodic_reconstruction_holes(polygons, period=2 * np.pi, min_area=1
                 seen.add(sig)
                 holes.append(hole_part)
 
-    return shell_parts or source_parts, holes
+    promoted_shells = shell_parts or source_parts
+    if holes and False:
+        plot_radius = current_r if current_r is not None else 1.0
+        fig, axs = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
+        title_layer = f" layer {layer_i}" if layer_i is not None else ""
+        fig.suptitle(
+            f"Periodic reconstruction hole promotion{title_layer}: "
+            f"{len(holes)} promoted"
+        )
+
+        def _draw_geom(ax, geom, facecolor, edgecolor, label, alpha=0.25, copies=(0,)):
+            parts = _polygon_parts(geom)
+            for part in parts:
+                if not isinstance(part, Polygon) or part.is_empty:
+                    continue
+                for copy_i, k in enumerate(copies):
+                    draw_part = shift_polygon(part, k * period) if k else part
+                    draw_label = label if copy_i == 0 else None
+                    _plot_theta_z_polygon(
+                        ax,
+                        draw_part,
+                        plot_radius,
+                        facecolor,
+                        edgecolor,
+                        label=draw_label,
+                        alpha=alpha,
+                    )
+
+        for part in source_parts:
+            _draw_geom(axs[0], part, "#a8dadc", "#1d3557", "input", alpha=0.25, copies=(-1, 0, 1))
+        axs[0].set_title("input + period copies")
+
+        _draw_geom(axs[1], stitched, "#ffd166", "#bc6c25", "stitched union", alpha=0.30)
+        for hole in holes:
+            _draw_geom(axs[1], hole, "#ef476f", "#d00000", "promoted hole", alpha=0.60)
+        axs[1].set_title("stitched union holes")
+
+        for shell in promoted_shells:
+            _draw_geom(axs[2], shell, "#90be6d", "#2d6a4f", "output shell", alpha=0.25)
+        for hole in holes:
+            _draw_geom(axs[2], hole, "#ef476f", "#d00000", "added hole candidate", alpha=0.65)
+        axs[2].set_title("returned to normal hole pipeline")
+
+        for ax in axs:
+            ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.6)
+            ax.axvline(period * plot_radius, color="black", linewidth=0.8, alpha=0.6)
+            ax.set_xlabel("arc length theta*r (mm)")
+            ax.set_aspect("equal", adjustable="box")
+            handles, labels = ax.get_legend_handles_labels()
+            if labels:
+                by_label = dict(zip(labels, handles))
+                ax.legend(by_label.values(), by_label.keys(), loc="best")
+        axs[0].set_ylabel("z (mm)")
+        fig.tight_layout()
+        for hole in holes:
+            fig, ax = plt.subplots(1, 1, figsize=(18, 5), sharey=True)
+            _plot_theta_z_polygon(ax,poly,current_r,"#00ff00","#ff00ff")
+        plt.show()
+
+    return promoted_shells, holes
 
 
 def cylindrical_cross_section(mesh, radius):
@@ -3355,9 +3420,11 @@ for layer_i,current_r in enumerate(_slice_radii):
         debug_plot_radius=current_r,
     )
     complex_full_circle_parts, promoted_periodic_holes = promote_periodic_reconstruction_holes(
-        complex_full_circle_parts
+        complex_full_circle_parts,
+        layer_i=layer_i,
+        current_r=current_r,
     )
-    if promoted_periodic_holes and layer_i in debug_layers:
+    if promoted_periodic_holes:
         print(
             f"\nPromoted {len(promoted_periodic_holes)} seam-spanning periodic "
             f"hole candidate(s) on layer {layer_i}."
@@ -4418,10 +4485,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 lines = polygon_to_wrapped_lines(geom, lower=lower, upper=upper, cut_lower=cut)
                 lines = _remove_periodic_seam_caps(lines, seam_origin=cut if cut is not None else lower)
                 if is_full_wrap_section:
-                    lines = _remove_periodic_seam_aligned_edges(
-                        lines,
-                        seam_origins=(0.0,),
-                    )
+                    # In the shifted full-wrap print window, 0 mod 2pi lies in
+                    # the middle of the path window. Only clean the actual cut.
                     if cut is not None:
                         lines = _remove_periodic_seam_aligned_edges(
                             lines,
@@ -4455,10 +4520,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                             cut_lower=lower,
                         )
                         lines = _remove_periodic_seam_caps(lines, seam_origin=lower)
-                        lines = _remove_periodic_seam_aligned_edges(
-                            lines,
-                            seam_origins=(0.0,),
-                        )
+                        # The canonical 0/2pi line is valid printable geometry
+                        # here; only the shifted window cut is synthetic.
                         lines = _remove_periodic_seam_aligned_edges(
                             lines,
                             seam_origins=(lower,),
