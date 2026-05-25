@@ -1127,6 +1127,95 @@ def reconstruct_complex_full_circle_regions(
     return reconstructed
 
 
+def promote_periodic_reconstruction_holes(polygons, period=2 * np.pi, min_area=1e-6):
+    """Split seam-discovered holes out of reconstructed full-wrap polygons.
+
+    A hole whose side lands exactly on the theta cut may only become a closed
+    interior ring when neighbouring period copies are stitched together. Promote
+    those rings into normal polygon candidates so hierarchy/hole subtraction sees
+    them like any other STL loop.
+    """
+    if not polygons:
+        return [], []
+
+    source_parts = []
+    shell_parts = []
+    for poly in polygons:
+        if not isinstance(poly, Polygon) or poly.is_empty:
+            continue
+        repaired = repair_polygonal_geometry(poly)
+        parts = list(repaired.geoms) if hasattr(repaired, "geoms") else [repaired]
+        for part in parts:
+            if not isinstance(part, Polygon) or part.is_empty or part.area <= min_area:
+                continue
+            source_parts.append(part)
+            try:
+                shell = repair_polygonal_geometry(Polygon(part.exterior.coords))
+            except (ValueError, shapely.errors.GEOSException):
+                continue
+            shell_geoms = list(shell.geoms) if hasattr(shell, "geoms") else [shell]
+            for shell_part in shell_geoms:
+                if isinstance(shell_part, Polygon) and not shell_part.is_empty and shell_part.area > min_area:
+                    shell_parts.append(shell_part)
+
+    if not source_parts:
+        return [], []
+
+    stitched = robust_polygonal_union(
+        [
+            shift_polygon(part, k * period) if k else part
+            for part in source_parts
+            for k in (-1, 0, 1)
+        ]
+    )
+
+    def _polygon_parts(geom):
+        geom = polygonal_only(geom)
+        if geom.is_empty:
+            return []
+        return list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+
+    def _canonical_centroid_copy(poly):
+        centroid_x = poly.centroid.x
+        k = math.floor(-centroid_x / period)
+        while centroid_x + k * period < 0.0:
+            k += 1
+        while centroid_x + k * period >= period:
+            k -= 1
+        return shift_polygon(poly, k * period) if k else poly
+
+    def _periodic_signature(poly):
+        coords = np.asarray(poly.exterior.coords[:-1], dtype=float)
+        if len(coords) == 0:
+            return None
+        theta = np.mod(coords[:, 0], period)
+        theta = np.where(np.isclose(theta, period, atol=1e-8), 0.0, theta)
+        points = sorted((round(float(x), 7), round(float(z), 7)) for x, z in zip(theta, coords[:, 1]))
+        return round(float(poly.area), 7), tuple(points)
+
+    holes = []
+    seen = set()
+    for stitched_part in _polygon_parts(stitched):
+        if not isinstance(stitched_part, Polygon) or stitched_part.is_empty:
+            continue
+        for interior in stitched_part.interiors:
+            try:
+                hole_geom = repair_polygonal_geometry(Polygon(interior.coords))
+            except (ValueError, shapely.errors.GEOSException):
+                continue
+            for hole_part in _polygon_parts(hole_geom):
+                if not isinstance(hole_part, Polygon) or hole_part.is_empty or hole_part.area <= min_area:
+                    continue
+                hole_part = _canonical_centroid_copy(hole_part)
+                sig = _periodic_signature(hole_part)
+                if sig is None or sig in seen:
+                    continue
+                seen.add(sig)
+                holes.append(hole_part)
+
+    return shell_parts or source_parts, holes
+
+
 def cylindrical_cross_section(mesh, radius):
     """
     Compute the cross-section of mesh at cylindrical radius using directed marching triangles.
@@ -3265,8 +3354,17 @@ for layer_i,current_r in enumerate(_slice_radii):
         debug_layer=layer_i,
         debug_plot_radius=current_r,
     )
+    complex_full_circle_parts, promoted_periodic_holes = promote_periodic_reconstruction_holes(
+        complex_full_circle_parts
+    )
+    if promoted_periodic_holes and layer_i in debug_layers:
+        print(
+            f"\nPromoted {len(promoted_periodic_holes)} seam-spanning periodic "
+            f"hole candidate(s) on layer {layer_i}."
+        )
 
     base_polys = [Polygon(p) for i,p in enumerate(poly_pts) if i not in fc_original_indices]
+    base_polys.extend(promoted_periodic_holes)
     polys = list(base_polys)
     periodic_poly_indices = set()
     _complex_start = len(polys)
