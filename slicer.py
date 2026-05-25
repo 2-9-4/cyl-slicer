@@ -47,6 +47,11 @@ def parse_args():
         help="Show selected debug layer windows interactively after saving.",
     )
     parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Disable interactive plot windows. Debug PNGs are still written.",
+    )
+    parser.add_argument(
         "--max-layer",
         type=int,
         default=None,
@@ -63,6 +68,7 @@ def parse_args():
 
 args = parse_args()
 debug_layers = parse_layer_spec(args.debug_layers)
+defer_single_debug_layer_plots = len(debug_layers) == 1
 if debug_layers:
     os.makedirs(args.debug_dir, exist_ok=True)
 
@@ -111,6 +117,8 @@ def save_raw_stl_layer_plot(layer_i, current_r, slice_r, poly_pts_raw):
     fig.tight_layout()
     debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_raw_stl.png")
     fig.savefig(debug_path, dpi=200)
+    if args.no_plot:
+        plt.close(fig)
     print(f"\nSaved raw STL debug plot: {debug_path}")
 
 
@@ -152,6 +160,8 @@ def _finish_debug_stage_plot(fig, ax, layer_i, current_r, filename_suffix, title
     fig.tight_layout()
     debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_{filename_suffix}.png")
     fig.savefig(debug_path, dpi=200)
+    if args.no_plot:
+        plt.close(fig)
     print(f"\nSaved {title.lower()} debug plot: {debug_path}")
 
 
@@ -296,14 +306,19 @@ def save_stitched_holes_layer_plot(layer_i, current_r, polygons):
     if layer_i not in debug_layers or not polygons:
         return
     fig, ax = plt.subplots(figsize=(8, 6))
-    for poly in polygons:
-        if poly is None or poly.is_empty:
+    for geom in polygons:
+        geom = polygonal_only(geom)
+        if geom is None or geom.is_empty:
             continue
-        exterior = np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1])
-        ax.fill(exterior[:, 0], exterior[:, 1], facecolor="#8ecae6", edgecolor="#1d3557", alpha=0.45, linewidth=1.2)
-        for interior in poly.interiors:
-            hole = np.asarray(interior.coords, dtype=float) * np.array([current_r, 1])
-            ax.fill(hole[:, 0], hole[:, 1], facecolor="white", edgecolor="#e63946", alpha=1.0, linewidth=1.0)
+        parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+        for poly in parts:
+            if not isinstance(poly, Polygon) or poly.is_empty:
+                continue
+            exterior = np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1])
+            ax.fill(exterior[:, 0], exterior[:, 1], facecolor="#8ecae6", edgecolor="#1d3557", alpha=0.45, linewidth=1.2)
+            for interior in poly.interiors:
+                hole = np.asarray(interior.coords, dtype=float) * np.array([current_r, 1])
+                ax.fill(hole[:, 0], hole[:, 1], facecolor="white", edgecolor="#e63946", alpha=1.0, linewidth=1.0)
     ax.set_title(f"Stitched polygons with holes layer {layer_i} (r={current_r:.3f})")
     ax.set_xlabel("arc length theta*r (mm)")
     ax.set_ylabel("z (mm)")
@@ -311,7 +326,12 @@ def save_stitched_holes_layer_plot(layer_i, current_r, polygons):
     fig.tight_layout()
     debug_path = os.path.join(args.debug_dir, f"layer_{layer_i:04d}_stitched_holes.png")
     fig.savefig(debug_path, dpi=200)
-    plt.show()
+    if args.no_plot:
+        plt.close(fig)
+    elif defer_single_debug_layer_plots:
+        fig.canvas.draw_idle()
+    else:
+        plt.show()
     print(f"\nSaved stitched/holes debug plot: {debug_path}")
 
 
@@ -403,7 +423,10 @@ def save_generated_lines_layer_plot(layer_i, current_r, emitted_segments, period
         "generated_lines",
         "Generated G-code extrusion lines",
     )
-    plt.show()
+    if args.no_plot:
+        plt.close(fig)
+    else:
+        plt.show()
 
 def find_polygons(edges, num_points):
     # Build undirected edge map
@@ -487,17 +510,60 @@ def periodic_copies_for_bounds(geom, target_geom, period=2 * np.pi):
     copies = [shift_polygon(geom, k * period) if k else geom for k in range(k_min, k_max + 1)]
     return robust_polygonal_union(copies)
 
-def build_hierarchy(polygons, period=2 * np.pi):
+def stitch_periodic_shape(geom, period=2 * np.pi):
+    """Union a geometry with its seam-neighbour copies for periodic containment tests."""
+    if geom is None or geom.is_empty:
+        return shapely.GeometryCollection()
+    return robust_polygonal_union([
+        shift_polygon(geom, -period),
+        geom,
+        shift_polygon(geom, period),
+    ])
+
+
+def build_hierarchy(polygons, period=2 * np.pi, periodic_indices=None):
     from shapely import STRtree
+    periodic_indices = set(periodic_indices or ())
     hierarchy = [[] for _ in polygons]
     if len(polygons) < 2:
         return hierarchy
     tree = STRtree(polygons)
     for i, outer_poly in enumerate(polygons):
+        if not isinstance(outer_poly, Polygon) or outer_poly.is_empty:
+            continue
         seen = set()
+        if i in periodic_indices:
+            stitched_outer = stitch_periodic_shape(outer_poly, period=period)
+            if stitched_outer.is_empty:
+                continue
+            for j in tree.query(stitched_outer):
+                j = int(j)
+                if j == i or j in seen:
+                    continue
+                child = polygons[j]
+                if not isinstance(child, Polygon) or child.is_empty:
+                    continue
+                try:
+                    contained = stitched_outer.contains(child)
+                except shapely.errors.GEOSException:
+                    contained = False
+                if not contained:
+                    for child_shift in (-period, period):
+                        shifted_child = shift_polygon(child, child_shift)
+                        try:
+                            contained = stitched_outer.contains(shifted_child)
+                        except shapely.errors.GEOSException:
+                            contained = False
+                        if contained:
+                            break
+                if contained:
+                    seen.add(j)
+                    hierarchy[i].append(j)
+            continue
         for shift in [0, -period, period]:
             shifted = shift_polygon(outer_poly, shift) if shift != 0 else outer_poly
             for j in tree.query(shifted, predicate='contains'):
+                j = int(j)
                 if j != i and j not in seen:
                     seen.add(j)
                     hierarchy[i].append(j)
@@ -3236,7 +3302,7 @@ for layer_i,current_r in enumerate(_slice_radii):
     #     if is_full_circle(poly):
     #         plt.plot(poly[:,0],poly[:,1])
     # plt.show()
-    hier = build_hierarchy(polys)
+    hier = build_hierarchy(polys, periodic_indices=periodic_poly_indices)
     times.append((time.perf_counter(),"build_hierarchy"))
 
     flat_hier = [each2 for each in hier for each2 in each]
@@ -3274,22 +3340,80 @@ for layer_i,current_r in enumerate(_slice_radii):
             k -= 1
         return k
 
+    def _clean_polygon_shell(poly):
+        """Return a polygonal shell with slicer-scale collinear cleanup applied."""
+        if not isinstance(poly, Polygon) or poly.is_empty:
+            return shapely.GeometryCollection()
+        coords = remove_collinear_points_angle(
+            np.asarray(poly.exterior.coords, dtype=float) * np.array([current_r, 1]),
+            0.01,
+        ) * np.array([1 / current_r, 1])
+        if len(coords) < 4:
+            return shapely.GeometryCollection()
+        try:
+            return polygonal_only(shapely.make_valid(Polygon(coords)))
+        except (ValueError, shapely.errors.GEOSException):
+            return shapely.GeometryCollection()
+
+    def _is_contained_hole_copy(parent_geom, hole_geom):
+        if hole_geom is None or hole_geom.is_empty:
+            return False
+        try:
+            return parent_geom.contains(hole_geom) or parent_geom.covers(hole_geom)
+        except shapely.errors.GEOSException:
+            return False
+
+    def _contained_hole_copies(parent_geom, child_poly, period=2 * np.pi):
+        child_shell = _clean_polygon_shell(child_poly)
+        if child_shell.is_empty:
+            return []
+        child_parts = list(child_shell.geoms) if hasattr(child_shell, "geoms") else [child_shell]
+        hole_parts = []
+        for child_part in child_parts:
+            if not isinstance(child_part, Polygon) or child_part.is_empty:
+                continue
+            for shift in (-period, 0.0, period):
+                candidate = shift_polygon(child_part, shift) if shift else child_part
+                if _is_contained_hole_copy(parent_geom, candidate):
+                    hole_parts.append(candidate)
+        return hole_parts
+
     for poly_i,sub_polys in enumerate(hier):
         if levels[poly_i] % 2 == 1:
             continue
         if not isinstance(polys[poly_i], Polygon) or polys[poly_i].is_empty:
             continue
-        sub_poly_list = [np.array(polys[sub_poly].exterior.coords).astype(float) for sub_poly in sub_polys if levels[sub_poly] == levels[poly_i]+1 and isinstance(polys[sub_poly], Polygon) and not polys[sub_poly].is_empty]
-        sub_poly_list = [[each - [2*np.pi,0],each,each + [2*np.pi,0]] for each in sub_poly_list]
-        sub_poly_list = [remove_collinear_points_angle(each2*np.array([current_r,1]),0.01)*np.array([1/current_r,1]) for each in sub_poly_list for each2 in each]
-        sub_poly_list = [h for h in sub_poly_list if len(h) >= 4]
-        poly_exterior = remove_collinear_points_angle(polys[poly_i].exterior.coords*np.array([current_r,1]),0.01)*np.array([1/current_r,1])
-        if len(poly_exterior) < 4:
+        _is_periodic_poly = poly_i in periodic_poly_indices
+        parent_shell = _clean_polygon_shell(polys[poly_i])
+        if parent_shell.is_empty:
             continue
-        if not len(sub_poly_list):
-            poly_with_holes = Polygon(poly_exterior)
+        if _is_periodic_poly:
+            parent_for_holes = stitch_periodic_shape(parent_shell)
         else:
-            poly_with_holes = Polygon(poly_exterior,holes = sub_poly_list)
+            parent_for_holes = parent_shell
+        if parent_for_holes.is_empty:
+            continue
+
+        hole_parts = []
+        for sub_poly in sub_polys:
+            if (
+                levels[sub_poly] != levels[poly_i] + 1
+                or not isinstance(polys[sub_poly], Polygon)
+                or polys[sub_poly].is_empty
+            ):
+                continue
+            hole_parts.extend(_contained_hole_copies(parent_for_holes, polys[sub_poly]))
+
+        if hole_parts:
+            poly_with_holes = robust_polygonal_difference(
+                parent_for_holes,
+                robust_polygonal_union(hole_parts),
+            )
+        else:
+            poly_with_holes = parent_for_holes
+        poly_with_holes = repair_polygonal_geometry(poly_with_holes)
+        if poly_with_holes.is_empty:
+            continue
         if layer_i in debug_layers:
             stitched_hole_debug_polys.append(poly_with_holes)
 
@@ -3300,8 +3424,9 @@ for layer_i,current_r in enumerate(_slice_radii):
         _theta_span = _theta_max - _theta_min
         _buffer_source = poly_with_holes
         _needs_canonical_buffer_fold = False
-        _is_periodic_poly = poly_i in periodic_poly_indices
-        if _is_periodic_poly or (
+        if _is_periodic_poly:
+            _needs_canonical_buffer_fold = True
+        elif (
             _theta_span <= 2 * np.pi + 1e-6
             and (
                 (_theta_min <= 1e-6 and _theta_max >= 2 * np.pi - 1e-6)
@@ -3311,11 +3436,7 @@ for layer_i,current_r in enumerate(_slice_radii):
             # Full-wrap one-turn bands are periodic across the 0/2π seam.  Buffer
             # them with seam-neighbour copies so the inward wall offset does not
             # erode along synthetic seam endcaps.
-            _buffer_source = robust_polygonal_union([
-                shift_polygon(poly_with_holes, -2 * np.pi),
-                poly_with_holes,
-                shift_polygon(poly_with_holes, 2 * np.pi),
-            ])
+            _buffer_source = stitch_periodic_shape(poly_with_holes)
             _needs_canonical_buffer_fold = True
 
         _buffer_source_metric = do_transform(_buffer_source)
@@ -4110,7 +4231,9 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             debug_path = os.path.join(args.debug_dir, f"layer_{i:04d}.png")
             fig_layer.savefig(debug_path, dpi=200)
             print(f"\nSaved debug plot: {debug_path}")
-        if plot_per_layer or args.show_debug_layers:
+        if export_debug_layer and defer_single_debug_layer_plots and not args.no_plot:
+            fig_layer.canvas.draw_idle()
+        elif (plot_per_layer or args.show_debug_layers) and not args.no_plot:
             print(f"Close layer {i} window to continue...")
             while plt.fignum_exists(fig_layer.number):
                 plt.pause(0.1)
