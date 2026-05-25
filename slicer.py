@@ -3448,7 +3448,21 @@ for layer_i,current_r in enumerate(_slice_radii):
         )
         _buffered_metric = robust_polygonal_intersection(_buffered_metric, _buffer_source_metric)
         _poly_buffered_raw = do_transform_inverse(_buffered_metric)
-        if _needs_canonical_buffer_fold:
+        if _is_periodic_poly:
+            # The periodic parent was already stitched from -2π/0/+2π copies for
+            # hole assignment and buffering. Folding that stitched geometry by
+            # unioning shifted copies can fill holes when any neighbour copy covers
+            # the same canonical coordinate. Clip the stitched result directly to
+            # each one-turn window so voids survive into skin and infill clipping.
+            poly_with_holes = robust_polygonal_intersection(
+                _poly_buffered_raw,
+                theta_clip_box,
+            )
+            poly_with_holes_print = robust_polygonal_intersection(
+                _poly_buffered_raw,
+                box(math.pi, z_clip_min, math.pi + 2 * math.pi, z_clip_max),
+            )
+        elif _needs_canonical_buffer_fold:
             poly_with_holes = fold_to_canonical(_poly_buffered_raw, theta_clip_box)
             poly_with_holes_print = fold_to_theta_window(
                 _poly_buffered_raw,
