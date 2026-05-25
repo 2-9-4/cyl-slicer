@@ -786,6 +786,8 @@ def reconstruct_complex_full_circle_regions(
     if not loops:
         return []
     _ = mesh
+    plot_reconstruction_debug = debug_layer in debug_layers
+    plot_radius = debug_plot_radius if debug_plot_radius is not None else radius
 
     @dataclass
     class FullCircleTrace:
@@ -808,6 +810,215 @@ def reconstruct_complex_full_circle_regions(
         return []
     z_loop_min = min(float(np.min(zs)) for zs in z_values)
     z_loop_max = max(float(np.max(zs)) for zs in z_values)
+    reconstruction_debug_steps = []
+    trace_extraction_debug_steps = []
+
+    def _plot_reconstruction_debug(trace_pairs, leftovers, reconstructed_parts):
+        if not plot_reconstruction_debug:
+            return
+
+        layer_text = f" layer {debug_layer}" if debug_layer is not None else ""
+
+        def _new_stage_fig(stage_name):
+            fig, ax = plt.subplots(figsize=(9, 7))
+            ax.set_title(f"{stage_name}{layer_text}")
+            return fig, ax
+
+        def _plot_coords(ax, coords, color, label=None, linewidth=1.1, alpha=0.9, marker=None):
+            coords = np.asarray(coords, dtype=float)
+            if len(coords) < 2:
+                return
+            metric = coords * np.array([plot_radius, 1])
+            ax.plot(metric[:, 0], metric[:, 1], color=color, label=label,
+                    linewidth=linewidth, alpha=alpha, marker=marker, markersize=2)
+
+        def _plot_geom(ax, geom, facecolor, edgecolor, label=None, alpha=0.25):
+            geom = polygonal_only(geom)
+            if geom is None or geom.is_empty:
+                return
+            parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+            first = True
+            for part in parts:
+                if not isinstance(part, Polygon) or part.is_empty:
+                    continue
+                _plot_theta_z_polygon(
+                    ax,
+                    part,
+                    plot_radius,
+                    facecolor,
+                    edgecolor,
+                    label=label if first else None,
+                    alpha=alpha,
+                )
+                first = False
+
+        def _finish_stage_fig(fig, ax, suffix):
+            ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.6)
+            ax.axvline(period * plot_radius, color="black", linewidth=0.8, alpha=0.6)
+            ax.set_xlabel("arc length theta*r (mm)")
+            ax.set_ylabel("z (mm)")
+            ax.set_aspect("equal", adjustable="box")
+            handles, labels = ax.get_legend_handles_labels()
+            if labels:
+                by_label = dict(zip(labels, handles))
+                ax.legend(by_label.values(), by_label.keys(), loc="best", fontsize=8)
+            fig.tight_layout()
+            if debug_layer is not None:
+                debug_path = os.path.join(
+                    args.debug_dir,
+                    f"layer_{debug_layer:04d}_complex_reconstruction_{suffix}.png",
+                )
+                fig.savefig(debug_path, dpi=200)
+                print(f"\nSaved complex reconstruction debug plot: {debug_path}")
+            
+
+        fig1, ax = _new_stage_fig("raw complex loops + copies")
+        for loop_i, loop in enumerate(loops):
+            coords = np.asarray(loop, dtype=float)
+            for copy_i, turn in enumerate((-1, 0, 1)):
+                shifted = coords.copy()
+                shifted[:, 0] += turn * period
+                _plot_coords(
+                    ax,
+                    shifted,
+                    "#1d3557" if turn == 0 else "#8ecae6",
+                    label="raw loops" if loop_i == 0 and turn == 0 else None,
+                    alpha=0.95 if turn == 0 else 0.35,
+                    marker="o" if turn == 0 else None,
+                )
+        _finish_stage_fig(fig1, ax, "raw_loops")
+
+        colors = ["#d00000", "#1d3557", "#2a9d8f", "#bc6c25", "#6a4c93", "#f77f00"]
+        fig, ax = _new_stage_fig("extracted traces and z-pairs")
+        for pair_i, (lower, upper) in enumerate(trace_pairs or []):
+            color = colors[pair_i % len(colors)]
+            _plot_coords(ax, lower.coords, color, label=f"pair {pair_i} lower", linewidth=1.5)
+            _plot_coords(ax, upper.coords, color, label=f"pair {pair_i} upper", linewidth=1.5, alpha=0.65)
+        for leftover_i, trace in enumerate(leftovers or []):
+            _plot_coords(ax, trace.coords, "#6c757d", label="leftover" if leftover_i == 0 else None,
+                         linewidth=1.0, alpha=0.7)
+        _finish_stage_fig(fig, ax, "traces")
+
+        fig_ring, ax_ring = _new_stage_fig("wide stitched rings before polygonize")
+        fig_valid, ax_valid = _new_stage_fig("make_valid(Polygon(ring))")
+        fig_folded, ax_folded = _new_stage_fig("fold_to_theta_window result")
+        fig_returned, ax_returned = _new_stage_fig("returned reconstructed parts")
+        for step_i, step in enumerate(reconstruction_debug_steps):
+            color = colors[step_i % len(colors)]
+            _plot_coords(ax_ring, step["ring"], color, label=f"pair {step_i} ring", linewidth=0.9, alpha=0.75)
+            _plot_geom(ax_valid, step["valid_geom"], "#ffd166", "#bc6c25",
+                       label="make_valid ring" if step_i == 0 else None, alpha=0.20)
+            _plot_geom(ax_folded, step["folded_geom"], "#a8dadc", "#1d3557",
+                       label="folded candidate" if step_i == 0 else None, alpha=0.25)
+            for part in step["accepted_parts"]:
+                _plot_geom(ax_returned, part, "#90be6d", "#2d6a4f",
+                           label="accepted" if step_i == 0 else None, alpha=0.35)
+            for part in step["rejected_parts"]:
+                _plot_geom(ax_returned, part, "#f28482", "#d00000",
+                           label="rejected narrow" if step_i == 0 else None, alpha=0.25)
+        _finish_stage_fig(fig_ring, ax_ring, "ring")
+        _finish_stage_fig(fig_valid, ax_valid, "make_valid")
+        _finish_stage_fig(fig_folded, ax_folded, "folded")
+        _finish_stage_fig(fig_returned, ax_returned, "returned")
+        if args.no_plot:
+            plt.close(fig_ring)
+            plt.close(fig_valid)
+            plt.close(fig_folded)
+            plt.close(fig_returned)
+            plt.close(fig)
+            plt.close(fig1)
+
+        else:
+            plt.show()
+
+    def _plot_trace_extraction_debug():
+        if not plot_reconstruction_debug or not trace_extraction_debug_steps:
+            return
+
+        layer_text = f" layer {debug_layer}" if debug_layer is not None else ""
+        colors = ["#1d3557", "#d00000", "#2a9d8f", "#bc6c25", "#6a4c93", "#f77f00"]
+
+        def _plot_coords(ax, coords, color, label=None, linewidth=1.2, alpha=0.9, marker=None, copies=(0,)):
+            coords = np.asarray(coords, dtype=float)
+            if len(coords) < 2:
+                return
+            for copy_i, turn in enumerate(copies):
+                shifted = coords.copy()
+                shifted[:, 0] += turn * period
+                metric = shifted * np.array([plot_radius, 1])
+                ax.plot(
+                    metric[:, 0],
+                    metric[:, 1],
+                    color=color,
+                    label=label if copy_i == 0 else None,
+                    linewidth=linewidth,
+                    alpha=alpha if turn == 0 else min(alpha, 0.35),
+                    marker=marker,
+                    markersize=2,
+                )
+
+        def _finish(fig, ax, source_index, suffix, branch):
+            ax.axvline(0.0, color="black", linewidth=0.8, alpha=0.6)
+            ax.axvline(period * plot_radius, color="black", linewidth=0.8, alpha=0.6)
+            ax.set_xlabel("arc length theta*r (mm)")
+            ax.set_ylabel("z (mm)")
+            ax.set_aspect("equal", adjustable="box")
+            handles, labels = ax.get_legend_handles_labels()
+            if labels:
+                by_label = dict(zip(labels, handles))
+                ax.legend(by_label.values(), by_label.keys(), loc="best", fontsize=8)
+            fig.tight_layout()
+            if debug_layer is not None:
+                debug_path = os.path.join(
+                    args.debug_dir,
+                    f"layer_{debug_layer:04d}_trace_extract_loop_{source_index:02d}_{suffix}.png",
+                )
+                fig.savefig(debug_path, dpi=200)
+                print(f"\nSaved trace extraction debug plot: {debug_path}")
+            if args.no_plot:
+                plt.close(fig)
+
+        for step in trace_extraction_debug_steps:
+            source_index = step["source_index"]
+            branch = step["branch"]
+            stages = [
+                ("raw", "raw loop + copies", [step["raw"]], True),
+                ("whole", "whole-trace candidate", step["whole"], False),
+                ("windowed", "windowed clipped traces", step["windowed"], False),
+                ("canonical", "canonicalized loop", [step["canonical"]] if step["canonical"] is not None else [], False),
+                ("split", "canonical monotone split traces", step["split"], False),
+                ("canonical_trace", "canonical fallback trace", step["canonical_trace"], False),
+                ("returned", f"returned traces ({branch})", step["returned"], False),
+            ]
+            for suffix, title, items, include_copies in stages:
+                fig, ax = plt.subplots(figsize=(9, 7))
+                ax.set_title(f"{title}{layer_text} source {source_index}")
+                _plot_coords(
+                    ax,
+                    step["raw"],
+                    "#adb5bd",
+                    label="raw reference",
+                    linewidth=0.8,
+                    alpha=0.45,
+                    copies=(-1, 0, 1) if include_copies else (0,),
+                )
+                for item_i, coords in enumerate(items):
+                    if coords is None:
+                        continue
+                    _plot_coords(
+                        ax,
+                        coords,
+                        colors[item_i % len(colors)],
+                        label=f"{suffix} {item_i}",
+                        linewidth=1.6,
+                        alpha=0.9,
+                        marker="o",
+                    )
+                _finish(fig, ax, source_index, suffix, branch)
+
+        if not args.no_plot:
+            plt.show()
+
 
     def _dedupe_trace_coords(coords):
         """Remove only duplicate points that are adjacent in trace order.
@@ -895,8 +1106,13 @@ def reconstruct_complex_full_circle_regions(
         # Preserve the slice phase.  Only whole-period wrapping is allowed here.
         # Do not rebase by coords[0] or theta_min; that creates a real angular
         # shift relative to the STL slice linework.
-        coords[:, 0] = np.where(np.abs(coords[:, 0]) <= trace_span_tol, 0.0, coords[:, 0])
-        coords[:, 0] = np.where(np.abs(coords[:, 0] - period) <= trace_span_tol, period, coords[:, 0])
+        # Snap only the terminal seam endpoints. Snapping every vertex near
+        # 0/2pi flattens real complex-loop geometry into vertical seam walls.
+        for endpoint_i in (0, -1):
+            if abs(coords[endpoint_i, 0]) <= trace_span_tol:
+                coords[endpoint_i, 0] = 0.0
+            elif abs(coords[endpoint_i, 0] - period) <= trace_span_tol:
+                coords[endpoint_i, 0] = period
 
         # Coarse, unsubdivided STL triangles can create small local theta
         # overshoots around the seam even when the boundary walk itself spans
@@ -1015,35 +1231,71 @@ def reconstruct_complex_full_circle_regions(
         separable full-circle boundaries inside more tangled STL slice loops.
         """
         coords = np.asarray(loop, dtype=float)
+        if plot_reconstruction_debug:
+            debug_step = {
+                "source_index": source_index,
+                "raw": coords.copy(),
+                "whole": [],
+                "windowed": [],
+                "canonical": None,
+                "split": [],
+                "canonical_trace": [],
+                "returned": [],
+                "branch": "not-full-circle",
+            }
+        else:
+            debug_step = None
+
+        def _return_traces(traces_out, branch):
+            if debug_step is not None:
+                debug_step["returned"] = [np.asarray(trace.coords, dtype=float).copy() for trace in traces_out]
+                debug_step["branch"] = branch
+                trace_extraction_debug_steps.append(debug_step)
+            return traces_out
+
         if len(coords) < 4 or not is_full_circle(coords):
-            return []
+            return _return_traces([], "not-full-circle")
 
         whole_trace = _make_trace(coords, source_index, 0)
+        if debug_step is not None and whole_trace is not None:
+            debug_step["whole"] = [whole_trace.coords.copy()]
         if whole_trace is not None:
-            return [whole_trace]
+            return _return_traces([whole_trace], "whole")
 
         windowed_traces = _windowed_full_span_traces(coords, source_index)
+        if debug_step is not None:
+            debug_step["windowed"] = [trace.coords.copy() for trace in windowed_traces]
         if windowed_traces:
-            return windowed_traces
+            return _return_traces(windowed_traces, "windowed")
 
         try:
             canonical = canonicalize_full_circle_loop(coords, period=period, seam_angle=0.0)
         except (ValueError, FloatingPointError):
-            return []
+            return _return_traces([], "canonicalize-error")
         canonical = _dedupe_trace_coords(canonical)
+        if debug_step is not None:
+            debug_step["canonical"] = canonical.copy()
         if len(canonical) < 2:
-            return []
+            return _return_traces([], "empty-canonical")
 
         split_traces = _full_span_monotone_runs(canonical, source_index)
+        if debug_step is not None:
+            debug_step["split"] = [trace.coords.copy() for trace in split_traces]
         if split_traces:
-            return split_traces
+            return _return_traces(split_traces, "canonical-split")
 
         canonical_trace = _make_trace(canonical, source_index, 0)
-        return [canonical_trace] if canonical_trace is not None else []
+        if debug_step is not None and canonical_trace is not None:
+            debug_step["canonical_trace"] = [canonical_trace.coords.copy()]
+        return _return_traces(
+            [canonical_trace] if canonical_trace is not None else [],
+            "canonical-trace" if canonical_trace is not None else "no-trace",
+        )
 
     traces = []
     for source_index, loop in enumerate(loops):
         traces.extend(_extract_traces_from_loop(loop, source_index))
+    # _plot_trace_extraction_debug()
     traces = _dedupe_traces(traces)
     if len(traces) < 2:
         save_paired_full_circle_traces_layer_plot(
@@ -1052,6 +1304,7 @@ def reconstruct_complex_full_circle_regions(
             [],
             traces,
         )
+        # _plot_reconstruction_debug([], traces, [])
         if debug_layer in debug_layers:
             print(f"\nOnly found {len(traces)} full-circle trace(s) on layer {debug_layer}; skipping reconstruction.")
         return []
@@ -1096,6 +1349,7 @@ def reconstruct_complex_full_circle_regions(
     if leftovers and debug_layer in debug_layers:
         print(f"\nSkipped {len(leftovers)} unpaired/crossing full-circle trace(s) on layer {debug_layer}.")
     if not trace_pairs:
+        # _plot_reconstruction_debug(trace_pairs, leftovers, [])
         return []
 
     reconstructed = []
@@ -1103,10 +1357,10 @@ def reconstruct_complex_full_circle_regions(
 
         ring = np.vstack([lower.coords+np.array([-2*np.pi,0]),lower.coords,lower.coords+np.array([2*np.pi,0]),(upper.coords+np.array([2*np.pi,0]))[::-1],upper.coords[::-1],(upper.coords+np.array([-2*np.pi,0]))[::-1]])
         try:
-            geom = polygonal_only(shapely.make_valid(Polygon(ring)))
-            geom = polygonal_only(
+            valid_geom = polygonal_only(shapely.make_valid(Polygon(ring)))
+            folded_geom = polygonal_only(
                 fold_to_theta_window(
-                    geom,
+                    valid_geom,
                     0.0,
                     period,
                     z_loop_min,
@@ -1117,13 +1371,28 @@ def reconstruct_complex_full_circle_regions(
         except (ValueError, shapely.errors.GEOSException):
             continue
 
-        parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+        accepted_parts = []
+        rejected_parts = []
+        parts = list(folded_geom.geoms) if hasattr(folded_geom, "geoms") else [folded_geom]
         for part in parts:
             if isinstance(part, Polygon) and not part.is_empty and part.area > 1e-6:
                 theta_width = float(part.bounds[2] - part.bounds[0])
                 if theta_width < period * 0.75:
+                    rejected_parts.append(part)
                     continue
+                accepted_parts.append(part)
                 reconstructed.append(part)
+        if plot_reconstruction_debug:
+            reconstruction_debug_steps.append(
+                {
+                    "ring": ring,
+                    "valid_geom": valid_geom,
+                    "folded_geom": folded_geom,
+                    "accepted_parts": accepted_parts,
+                    "rejected_parts": rejected_parts,
+                }
+            )
+    # _plot_reconstruction_debug(trace_pairs, leftovers, reconstructed)
     return reconstructed
 
 
