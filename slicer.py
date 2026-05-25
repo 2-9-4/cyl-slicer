@@ -1156,8 +1156,9 @@ def reconstruct_complex_full_circle_regions(
         Complex loops can cross the theta seam or contain local theta reversals,
         so the raw coordinate order is not always a valid one-turn trace. Shift
         enough whole-period copies to cover the canonical [0, period] window,
-        clip them to that window, merge compatible fragments, then validate each
-        fragment directly or after splitting it into monotone theta runs.
+        clip them to that window plus the same seam slack accepted by trace
+        validation, merge compatible fragments, then validate each fragment
+        directly or after splitting it into monotone theta runs.
         """
         coords = np.asarray(coords, dtype=float)
         if len(coords) < 2:
@@ -1168,9 +1169,11 @@ def reconstruct_complex_full_circle_regions(
         theta_min = float(np.min(coords[:, 0]))
         theta_max = float(np.max(coords[:, 0]))
         z_pad = max(0.25, nozzle_size)
-        clip = box(0.0, z_loop_min - z_pad, period, z_loop_max + z_pad)
-        k_min = int(math.floor((0.0 - theta_max) / period)) - 1
-        k_max = int(math.ceil((period - theta_min) / period)) + 1
+        clip_lower = -trace_internal_slack
+        clip_upper = period + trace_internal_slack
+        clip = box(clip_lower, z_loop_min - z_pad, clip_upper, z_loop_max + z_pad)
+        k_min = int(math.floor((clip_lower - theta_max) / period)) - 1
+        k_max = int(math.ceil((clip_upper - theta_min) / period)) + 1
         fragments = []
         for k in range(k_min, k_max + 1):
             shifted = coords.copy()
@@ -1352,17 +1355,64 @@ def reconstruct_complex_full_circle_regions(
         # _plot_reconstruction_debug(trace_pairs, leftovers, [])
         return []
 
+    def _polygonize_trace_ring(ring_coords):
+        """Build polygonal area from trace linework without trusting ring winding."""
+        coords = np.asarray(ring_coords, dtype=float)
+        if len(coords) < 3:
+            return shapely.GeometryCollection()
+
+        closed = coords
+        if not np.allclose(closed[0], closed[-1], atol=coord_tol):
+            closed = np.vstack([closed, closed[0]])
+
+        segments = []
+        for a, b in zip(closed[:-1], closed[1:]):
+            if np.linalg.norm(b - a) <= coord_tol:
+                continue
+            segments.append(LineString([a, b]))
+        if not segments:
+            return shapely.GeometryCollection()
+
+        try:
+            noded = shapely.unary_union(MultiLineString(segments))
+            faces = [
+                poly
+                for poly in polygonize(noded)
+                if isinstance(poly, Polygon) and poly.area > 1e-9
+            ]
+            if faces:
+                return polygonal_only(shapely.make_valid(shapely.unary_union(faces)))
+        except (ValueError, shapely.errors.GEOSException):
+            pass
+
+        try:
+            return polygonal_only(shapely.make_valid(Polygon(coords)))
+        except (ValueError, shapely.errors.GEOSException):
+            return shapely.GeometryCollection()
+
     reconstructed = []
     for lower, upper in trace_pairs:
 
-        ring = np.vstack([lower.coords+np.array([-2*np.pi,0]),lower.coords,lower.coords+np.array([2*np.pi,0]),(upper.coords+np.array([2*np.pi,0]))[::-1],upper.coords[::-1],(upper.coords+np.array([-2*np.pi,0]))[::-1]])
+        period_vec = np.array([period, 0.0])
+        ring = np.vstack([
+            lower.coords - period_vec,
+            lower.coords,
+            lower.coords + period_vec,
+            (upper.coords + period_vec)[::-1],
+            upper.coords[::-1],
+            (upper.coords - period_vec)[::-1],
+        ])
         try:
-            valid_geom = polygonal_only(shapely.make_valid(Polygon(ring)))
+            valid_geom = _polygonize_trace_ring(ring)
+            if valid_geom.is_empty:
+                continue
+            reconstruction_lower = -period * 0.5
+            reconstruction_upper = reconstruction_lower + period
             folded_geom = polygonal_only(
                 fold_to_theta_window(
                     valid_geom,
-                    0.0,
-                    period,
+                    reconstruction_lower,
+                    reconstruction_upper,
                     z_loop_min,
                     z_loop_max,
                     period=period,
@@ -1440,7 +1490,7 @@ def promote_periodic_reconstruction_holes(
         [
             shift_polygon(part, k * period) if k else part
             for part in source_parts
-            for k in (0, 1)
+            for k in (-1, 0, 1)
         ]
     )
 
