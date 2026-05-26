@@ -1228,10 +1228,10 @@ def reconstruct_complex_full_circle_regions(
     def _extract_traces_from_loop(loop, source_index):
         """Return all reconstructable full-period boundary traces from one loop.
 
-        Extraction proceeds from least to most invasive: try the loop as-is,
-        then clipped periodic copies, then a canonicalized loop and its monotone
-        runs. This preserves straightforward traces while still recovering the
-        separable full-circle boundaries inside more tangled STL slice loops.
+        Extraction preserves real boundary walks before falling back to clipping:
+        try the loop as-is, then a canonical seam cut, then clipped periodic
+        copies. Clipping first can turn a seam cap into a false full-span trace
+        when the raw loop starts away from θ=0.
         """
         coords = np.asarray(loop, dtype=float)
         if plot_reconstruction_debug:
@@ -1265,35 +1265,38 @@ def reconstruct_complex_full_circle_regions(
         if whole_trace is not None:
             return _return_traces([whole_trace], "whole")
 
+        try:
+            canonical = canonicalize_full_circle_loop(coords, period=period, seam_angle=0.0)
+        except (ValueError, FloatingPointError):
+            canonical = None
+        if canonical is not None:
+            canonical = _dedupe_trace_coords(canonical)
+            if debug_step is not None:
+                debug_step["canonical"] = canonical.copy()
+            if len(canonical) >= 2:
+                split_traces = _full_span_monotone_runs(canonical, source_index)
+                if debug_step is not None:
+                    debug_step["split"] = [trace.coords.copy() for trace in split_traces]
+                if split_traces:
+                    return _return_traces(split_traces, "canonical-split")
+
+                canonical_trace = _make_trace(canonical, source_index, 0)
+                if debug_step is not None and canonical_trace is not None:
+                    debug_step["canonical_trace"] = [canonical_trace.coords.copy()]
+                if canonical_trace is not None:
+                    return _return_traces([canonical_trace], "canonical-trace")
+
         windowed_traces = _windowed_full_span_traces(coords, source_index)
         if debug_step is not None:
             debug_step["windowed"] = [trace.coords.copy() for trace in windowed_traces]
         if windowed_traces:
             return _return_traces(windowed_traces, "windowed")
 
-        try:
-            canonical = canonicalize_full_circle_loop(coords, period=period, seam_angle=0.0)
-        except (ValueError, FloatingPointError):
+        if canonical is None:
             return _return_traces([], "canonicalize-error")
-        canonical = _dedupe_trace_coords(canonical)
-        if debug_step is not None:
-            debug_step["canonical"] = canonical.copy()
         if len(canonical) < 2:
             return _return_traces([], "empty-canonical")
-
-        split_traces = _full_span_monotone_runs(canonical, source_index)
-        if debug_step is not None:
-            debug_step["split"] = [trace.coords.copy() for trace in split_traces]
-        if split_traces:
-            return _return_traces(split_traces, "canonical-split")
-
-        canonical_trace = _make_trace(canonical, source_index, 0)
-        if debug_step is not None and canonical_trace is not None:
-            debug_step["canonical_trace"] = [canonical_trace.coords.copy()]
-        return _return_traces(
-            [canonical_trace] if canonical_trace is not None else [],
-            "canonical-trace" if canonical_trace is not None else "no-trace",
-        )
+        return _return_traces([], "no-trace")
 
     traces = []
     for source_index, loop in enumerate(loops):
