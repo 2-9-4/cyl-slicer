@@ -528,6 +528,23 @@ def build_hierarchy(polygons, period=2 * np.pi, periodic_indices=None):
     if len(polygons) < 2:
         return hierarchy
     tree = STRtree(polygons)
+
+    def _contains_or_covers(outer, child):
+        try:
+            if outer.contains(child) or outer.covers(child):
+                return True
+        except shapely.errors.GEOSException:
+            return False
+        # Periodic seam children can be fully covered by area while GEOS still
+        # rejects strict predicates because the artificial cut touches them.
+        try:
+            inter = polygonal_only(outer.intersection(child))
+        except shapely.errors.GEOSException:
+            return False
+        if inter.is_empty or child.area <= 1e-12:
+            return False
+        return inter.area >= child.area * (1.0 - 1e-6)
+
     for i, outer_poly in enumerate(polygons):
         if not isinstance(outer_poly, Polygon) or outer_poly.is_empty:
             continue
@@ -543,17 +560,11 @@ def build_hierarchy(polygons, period=2 * np.pi, periodic_indices=None):
                 child = polygons[j]
                 if not isinstance(child, Polygon) or child.is_empty:
                     continue
-                try:
-                    contained = stitched_outer.contains(child)
-                except shapely.errors.GEOSException:
-                    contained = False
+                contained = _contains_or_covers(stitched_outer, child)
                 if not contained:
                     for child_shift in (-period, period):
                         shifted_child = shift_polygon(child, child_shift)
-                        try:
-                            contained = stitched_outer.contains(shifted_child)
-                        except shapely.errors.GEOSException:
-                            contained = False
+                        contained = _contains_or_covers(stitched_outer, shifted_child)
                         if contained:
                             break
                 if contained:
@@ -3846,9 +3857,18 @@ for layer_i,current_r in enumerate(_slice_radii):
         if hole_geom is None or hole_geom.is_empty:
             return False
         try:
-            return parent_geom.contains(hole_geom) or parent_geom.covers(hole_geom)
+            if parent_geom.contains(hole_geom) or parent_geom.covers(hole_geom):
+                return True
         except shapely.errors.GEOSException:
             return False
+        # Match periodic hierarchy behavior for holes that lie on the theta cut.
+        try:
+            inter = polygonal_only(parent_geom.intersection(hole_geom))
+        except shapely.errors.GEOSException:
+            return False
+        if inter.is_empty or hole_geom.area <= 1e-12:
+            return False
+        return inter.area >= hole_geom.area * (1.0 - 1e-6)
 
     def _contained_hole_copies(parent_geom, child_poly, period=2 * np.pi):
         child_shell = _clean_polygon_shell(child_poly)
