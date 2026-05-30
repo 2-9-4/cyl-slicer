@@ -1971,6 +1971,83 @@ def fold_to_theta_window(geom, lower, upper, z_min, z_max, period=2 * np.pi):
     )
 
 
+def choose_periodic_cut_away_from_holes(
+    geom,
+    preferred=math.pi,
+    period=2 * math.pi,
+    clearance=0.0,
+    extra_holes=(),
+):
+    """Pick a one-turn cut that does not pass through an interior ring."""
+    geom = polygonal_only(geom)
+    if geom is None or geom.is_empty:
+        return preferred
+
+    forbidden = []
+
+    def add_forbidden(minx, maxx):
+        start = float(minx) - clearance
+        end = float(maxx) + clearance
+        if end <= start:
+            return
+        if end - start >= period:
+            forbidden[:] = [(0.0, period)]
+            return
+        start_mod = start % period
+        end_mod = end % period
+        if start_mod <= end_mod and math.floor(start / period) == math.floor(end / period):
+            forbidden.append((start_mod, end_mod))
+        else:
+            forbidden.append((start_mod, period))
+            forbidden.append((0.0, end_mod))
+
+    parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+    for part in parts:
+        if not isinstance(part, Polygon) or part.is_empty:
+            continue
+        for interior in part.interiors:
+            try:
+                hole = Polygon(interior.coords)
+            except (ValueError, shapely.errors.GEOSException):
+                continue
+            if hole.is_empty or hole.area <= 1e-12:
+                continue
+            minx, _, maxx, _ = hole.bounds
+            add_forbidden(minx, maxx)
+
+    for hole_geom in extra_holes or ():
+        hole_geom = polygonal_only(hole_geom)
+        if hole_geom is None or hole_geom.is_empty:
+            continue
+        hole_parts = list(hole_geom.geoms) if hasattr(hole_geom, "geoms") else [hole_geom]
+        for hole_part in hole_parts:
+            if not isinstance(hole_part, Polygon) or hole_part.is_empty or hole_part.area <= 1e-12:
+                continue
+            minx, _, maxx, _ = hole_part.bounds
+            add_forbidden(minx, maxx)
+
+    if not forbidden:
+        return preferred
+
+    forbidden.sort()
+    merged = []
+    for start, end in forbidden:
+        if not merged or start > merged[-1][1] + 1e-9:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+
+    target = preferred % period
+    for start, end in merged:
+        if start - 1e-9 <= target <= end + 1e-9:
+            # Prefer the cut just before the hole. The stitched geometry already
+            # contains that full hole copy, while the copy after the upper edge
+            # may not have been materialized.
+            cut_mod = (start - max(1e-7, clearance * 0.1)) % period
+            return preferred + ((cut_mod - target + period / 2) % period - period / 2)
+    return preferred
+
+
 def _make_sine_wave_ls(theta_center, z_min, z_max, amplitude_rad, period_mm, pts_per_period=24):
     """
     Build a Shapely LineString for a single sine wave in (θ, z) space.
@@ -3811,6 +3888,11 @@ for layer_i,current_r in enumerate(_slice_radii):
     save_hierarchy_layer_plot(layer_i, current_r, polys, hier, levels)
     external_perimeters = []
     external_perimeters_print = []
+    _periodic_print_lower = None
+    _periodic_cut_clearance = (
+        slicing_params["nozzle_size"] * max(1, slicing_params["wall_count"])
+        / max(current_r, 1e-9)
+    )
     stitched_hole_debug_polys = []
     times.append((time.perf_counter(),"count levels"))
 
@@ -3956,6 +4038,13 @@ for layer_i,current_r in enumerate(_slice_radii):
         _buffered_metric = robust_polygonal_intersection(_buffered_metric, _buffer_source_metric)
         _poly_buffered_raw = do_transform_inverse(_buffered_metric)
         if _is_periodic_poly:
+            _print_lower = choose_periodic_cut_away_from_holes(
+                _poly_buffered_raw,
+                preferred=_periodic_print_lower if _periodic_print_lower is not None else math.pi,
+                clearance=_periodic_cut_clearance,
+                extra_holes=hole_parts,
+            )
+            _periodic_print_lower = _print_lower
             # The periodic parent was already stitched from -2π/0/+2π copies for
             # hole assignment and buffering. Folding that stitched geometry by
             # unioning shifted copies can fill holes when any neighbour copy covers
@@ -3967,14 +4056,21 @@ for layer_i,current_r in enumerate(_slice_radii):
             )
             poly_with_holes_print = robust_polygonal_intersection(
                 _poly_buffered_raw,
-                box(math.pi, z_clip_min, math.pi + 2 * math.pi, z_clip_max),
+                box(_print_lower, z_clip_min, _print_lower + 2 * math.pi, z_clip_max),
             )
         elif _needs_canonical_buffer_fold:
+            _print_lower = choose_periodic_cut_away_from_holes(
+                _poly_buffered_raw,
+                preferred=_periodic_print_lower if _periodic_print_lower is not None else math.pi,
+                clearance=_periodic_cut_clearance,
+                extra_holes=hole_parts,
+            )
+            _periodic_print_lower = _print_lower
             poly_with_holes = fold_to_canonical(_poly_buffered_raw, theta_clip_box)
             poly_with_holes_print = fold_to_theta_window(
                 _poly_buffered_raw,
-                math.pi,
-                math.pi + 2 * math.pi,
+                _print_lower,
+                _print_lower + 2 * math.pi,
                 z_clip_min,
                 z_clip_max,
             )
@@ -4030,6 +4126,8 @@ for layer_i,current_r in enumerate(_slice_radii):
         if external_perimeters_print
         else final
     )
+    if _periodic_print_lower is not None:
+        layer_data[layer_i]["periodic_print_lower"] = _periodic_print_lower
     times.append((time.perf_counter(),"full union"))
 
     if layer_i == 0:
@@ -4596,6 +4694,8 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         # Keep the artificial cut away from theta=0 while preparing sparse infill.
         # The cube in cubeandring sits on theta=0, so canonical buffering/opening
         # creates a visible seam gap through the cube interior.
+        _infill_lower = layer_data[i].get("periodic_print_lower", math.pi)
+        _infill_upper = _infill_lower + 2 * math.pi
         _periodic_final = periodic_copies(final_perimeter_raw, turns=1)
         _infill_boundary = robust_polygonal_buffer(
             do_transform(_periodic_final),
@@ -4617,12 +4717,14 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             polygonal_only(
                 fold_to_theta_window(
                     _diff_raw,
-                    math.pi,
-                    math.pi + 2 * math.pi,
+                    _infill_lower,
+                    _infill_upper,
                     z_clip_min,
                     z_clip_max,
                 )
-            )
+            ),
+            lower=_infill_lower,
+            upper=_infill_upper,
         )
     else:
         _infill_boundary = robust_polygonal_buffer(final_perimeter, -_half_noz, join_style="mitre")
@@ -4803,7 +4905,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         def _print_window_for_paths(geom):
             geom = keep_canonical_polygons(geom)
             if _layer_has_periodic_external or has_full_wrap_component(geom):
-                lower = math.pi
+                lower = layer_data[i].get("periodic_print_lower", math.pi)
                 upper = lower + 2 * math.pi
                 return (
                     fold_to_theta_window(periodic_copies(geom, turns=1), lower, upper, z_clip_min, z_clip_max),
@@ -4817,7 +4919,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             if subsection == "external_peris":
                 if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
                     geom = layer_data[i].get("external_peris_print", current_ext_print)
-                    lower = math.pi
+                    lower = layer_data[i].get("periodic_print_lower", math.pi)
                     upper = lower + 2 * math.pi
                     cut = lower
                     is_full_wrap_section = True
@@ -4843,7 +4945,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             elif subsection == "internal_peris":
                 raw = []
                 if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
-                    lower = math.pi
+                    lower = layer_data[i].get("periodic_print_lower", math.pi)
                     upper = lower + 2 * math.pi
                     source = layer_data[i].get("external_peris_print", current_ext_print)
                     source_metric = repair_polygonal_geometry(do_transform(source))
