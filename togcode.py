@@ -421,16 +421,22 @@ class PathObject:
         
         pts = np.asarray(self.points, dtype=float)  # shape (N, 2), [theta, x]
         
+        preserve_vertices = bool(slicing_params.get("preserve_path_vertices", False))
+
         # Filter duplicate points (vectorized) then remove collinear interior points.
+        # Perimeter callers can request exact vertex preservation; after rotary
+        # path rotation/folding, a small planar shortcut can become a visible
+        # outline error.
         if len(pts) > 1:
             dx   = pts[1:, 1] - pts[:-1, 1]
             dt   = (pts[1:, 0] - pts[:-1, 0]) * self.radius
-            keep = np.concatenate([[True], np.hypot(dx, dt) > 1e-2])
+            duplicate_tol = 1e-9 if preserve_vertices else 1e-2
+            keep = np.concatenate([[True], np.hypot(dx, dt) > duplicate_tol])
             pts  = pts[keep]
             if len(pts) < 2:
                 return "", current_pos, current_e
 
-        if len(pts) > 2:
+        if len(pts) > 2 and not preserve_vertices:
             pts = _reduce_collinear(pts, self.radius)
 
         # current_pos[0] is the printer's ACCUMULATED Y in radians (never resets to

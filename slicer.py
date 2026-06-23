@@ -1111,7 +1111,12 @@ def reconstruct_complex_full_circle_regions(
             return None
 
         coords = coords.copy()
-        period_shift = math.floor((float(np.min(coords[:, 0])) + trace_internal_slack) / period) * period
+        # Endpoint-spanning traces are anchored by their seam endpoints.  Complex
+        # seam-cut loops can legitimately dip below 0 or above 2π in the middle;
+        # using the global min/max for the period shift moves an already seam-cut
+        # trace into the wrong turn and makes it look invalid.
+        period_anchor = float(coords[0, 0]) if endpoint_is_full else float(np.min(coords[:, 0]))
+        period_shift = math.floor((period_anchor + trace_internal_slack) / period) * period
         if period_shift:
             coords[:, 0] -= period_shift
         # Preserve the slice phase.  Only whole-period wrapping is allowed here.
@@ -1125,13 +1130,22 @@ def reconstruct_complex_full_circle_regions(
             elif abs(coords[endpoint_i, 0] - period) <= trace_span_tol:
                 coords[endpoint_i, 0] = period
 
-        # Coarse, unsubdivided STL triangles can create small local theta
-        # overshoots around the seam even when the boundary walk itself spans
-        # exactly one turn. Keep those traces; reject only implausibly large
-        # excursions that would make the pair polygon ambiguous.
+        seam_cut_full_span = (
+            abs(coords[0, 0]) <= coord_tol
+            and abs(coords[-1, 0] - period) <= coord_tol
+        )
+        # Raw full-circle walks can start at an arbitrary phase.  Those must fit
+        # the canonical trace window after a whole-period shift; otherwise they
+        # need to go through canonicalize_full_circle_loop, which cuts at a real
+        # seam.  Once a trace has been seam-cut to exact 0→2π endpoints, interior
+        # theta excursions are valid complex boundary geometry, not a reason to
+        # discard the trace.
         if (
-            float(np.min(coords[:, 0])) < -trace_internal_slack
-            or float(np.max(coords[:, 0])) > period + trace_internal_slack
+            not seam_cut_full_span
+            and (
+                float(np.min(coords[:, 0])) < -trace_internal_slack
+                or float(np.max(coords[:, 0])) > period + trace_internal_slack
+            )
         ):
             return None
 
@@ -1370,10 +1384,17 @@ def reconstruct_complex_full_circle_regions(
         return []
 
     def _polygonize_trace_ring(ring_coords):
-        """Build polygonal area from trace linework without trusting ring winding."""
+        """Build polygonal area from trace linework while preserving parity."""
         coords = np.asarray(ring_coords, dtype=float)
         if len(coords) < 3:
             return shapely.GeometryCollection()
+
+        try:
+            valid = polygonal_only(shapely.make_valid(Polygon(coords)))
+            if not valid.is_empty:
+                return valid
+        except (ValueError, shapely.errors.GEOSException):
+            pass
 
         closed = coords
         if not np.allclose(closed[0], closed[-1], atol=coord_tol):
@@ -2708,13 +2729,13 @@ def _canonicalize_full_wrap_strips(geom, lower=0.0, upper=2 * math.pi):
         parts = [g for g in parts if g is not None and not g.is_empty]
         if not parts:
             return shapely.GeometryCollection()
-        return shapely.unary_union(parts)
+        return robust_polygonal_union(parts)
     if isinstance(geom, shapely.GeometryCollection):
         parts = [_canonicalize_full_wrap_strips(g, lower=lower, upper=upper) for g in geom.geoms]
         parts = [g for g in parts if g is not None and not g.is_empty]
         if not parts:
             return shapely.GeometryCollection()
-        return shapely.unary_union(parts)
+        return robust_polygonal_union(parts)
     return geom
 
 
@@ -3119,6 +3140,43 @@ def _remove_periodic_seam_aligned_edges(
     return _dedupe_lines(result, min_length=1e-9)
 
 
+def _remove_midspan_full_turn_lines(
+    lines,
+    z_bounds=None,
+    period=2 * math.pi,
+    span_tol=0.02,
+    z_tol=0.05,
+    edge_margin=2.0,
+):
+    """Drop synthetic one-revolution constant-z walls through interior infill."""
+    if not lines:
+        return []
+
+    z_min = z_max = None
+    if z_bounds is not None:
+        z_min, z_max = z_bounds
+
+    result = []
+    for line in lines:
+        if not isinstance(line, LineString) or line.is_empty:
+            continue
+        coords = np.asarray(line.coords, dtype=float)
+        if len(coords) < 2:
+            continue
+        theta_span = float(np.max(coords[:, 0]) - np.min(coords[:, 0]))
+        z_span = float(np.max(coords[:, 1]) - np.min(coords[:, 1]))
+        z_mid = float(np.median(coords[:, 1]))
+        near_real_edge = (
+            z_min is not None
+            and z_max is not None
+            and (abs(z_mid - z_min) <= edge_margin or abs(z_mid - z_max) <= edge_margin)
+        )
+        if abs(theta_span - period) <= span_tol and z_span <= z_tol and not near_real_edge:
+            continue
+        result.append(line)
+    return result
+
+
 def _split_local_seam_closure_edges(
     lines,
     period=2 * math.pi,
@@ -3184,9 +3242,8 @@ def _split_path_local_seam_closure_edges(
     period=2 * math.pi,
     min_short_theta=1e-4,
     max_short_theta=0.45,
-    x_tol=1e-3,
 ):
-    """Split near-full-turn local closure edges after path rotation."""
+    """Drop synthetic near-full-turn seam closure edges after path rotation."""
     if path is None or not getattr(path, "points", None):
         return [path]
 
@@ -3219,24 +3276,24 @@ def _split_path_local_seam_closure_edges(
 
     for idx, (p0, p1) in enumerate(zip(pts[:-1], pts[1:])):
         dtheta = emitted_theta[idx + 1] - emitted_theta[idx]
-        dx = p1[1] - p0[1]
         split_edge = False
 
-        if abs(dx) <= x_tol and dtheta > period / 2:
+        if dtheta > period / 2:
             short = period - (dtheta % period)
             if min_short_theta < short < max_short_theta:
                 if len(current) >= 2:
                     parts.append(current)
-                parts.append([p1, p0])
+                # This is the omitted seam chord, not physical perimeter. Adding
+                # a short connector here lets forward-only theta emission turn it
+                # back into a full revolution.
                 current = [p1]
                 split_edge = True
                 split_any = True
-        elif abs(dx) <= x_tol and dtheta < -period / 2:
+        elif dtheta < -period / 2:
             short = period - ((-dtheta) % period)
             if min_short_theta < short < max_short_theta:
                 if len(current) >= 2:
                     parts.append(current)
-                parts.append([p0, p1])
                 current = [p1]
                 split_edge = True
                 split_any = True
@@ -3952,7 +4009,7 @@ for layer_i,current_r in enumerate(_slice_radii):
             return False
         return inter.area >= hole_geom.area * (1.0 - 1e-6)
 
-    def _contained_hole_copies(parent_geom, child_poly, period=2 * np.pi):
+    def _contained_hole_copies(parent_geom, child_poly, period=2 * np.pi, periodic_parent=False):
         child_shell = _clean_polygon_shell(child_poly)
         if child_shell.is_empty:
             return []
@@ -3961,10 +4018,27 @@ for layer_i,current_r in enumerate(_slice_radii):
         for child_part in child_parts:
             if not isinstance(child_part, Polygon) or child_part.is_empty:
                 continue
+            contained_any = False
             for shift in (-period, 0.0, period):
                 candidate = shift_polygon(child_part, shift) if shift else child_part
                 if _is_contained_hole_copy(parent_geom, candidate):
-                    hole_parts.append(candidate)
+                    contained_any = True
+                    if not periodic_parent:
+                        hole_parts.append(candidate)
+            if not periodic_parent or not contained_any:
+                continue
+            # The parent was stitched from multiple period copies.  Once a child
+            # is identified as a hole in that periodic parent, subtract every
+            # copy that intersects the stitched parent; otherwise a later clip
+            # back to a one-turn window can pick a parent copy where the hole was
+            # never removed and fill seam-adjacent voids.
+            for shift in (-2 * period, -period, 0.0, period, 2 * period):
+                candidate = shift_polygon(child_part, shift) if shift else child_part
+                try:
+                    if parent_geom.intersects(candidate):
+                        hole_parts.append(candidate)
+                except shapely.errors.GEOSException:
+                    continue
         return hole_parts
 
     for poly_i,sub_polys in enumerate(hier):
@@ -3991,7 +4065,13 @@ for layer_i,current_r in enumerate(_slice_radii):
                 or polys[sub_poly].is_empty
             ):
                 continue
-            hole_parts.extend(_contained_hole_copies(parent_for_holes, polys[sub_poly]))
+            hole_parts.extend(
+                _contained_hole_copies(
+                    parent_for_holes,
+                    polys[sub_poly],
+                    periodic_parent=_is_periodic_poly,
+                )
+            )
 
         if hole_parts:
             poly_with_holes = robust_polygonal_difference(
@@ -4156,14 +4236,21 @@ for layer_i,current_r in enumerate(_slice_radii):
             layer_data[layer_i]["needs_support"] = ns
     times.append((time.perf_counter(),"support check"))
 
-    _surface_cover_tol = slicing_params["nozzle_size"] * 3.0
+    # Surface exposure is tested between neighboring cylindrical slices.  With
+    # coarse/non-watertight STL facets, adjacent slice outlines can drift by more
+    # than a nozzle while still representing continuous interior volume.  Use an
+    # infill-scale cover tolerance so one-layer outline jitter does not become a
+    # dense skin island in the middle of sparse infill.
+    _surface_cover_tol = max(
+        slicing_params["nozzle_size"] * 3.0,
+        slicing_params.get("infill_spacing", slicing_params["nozzle_size"]) * 2.0,
+    )
 
     prev_r = layer_data[layer_i-1]["radius"]
     e = do_transform_at_radius(layer_data[layer_i-1]["external_peris"], prev_r)
     # Shrink the previous layer before testing for top surfaces so wall centerline
     # offsets are not classified as exposed top skin. Compare coverage in metric
-    # space, with a nozzle-scale tolerance, so tiny phase differences across the
-    # periodic seam do not create solid infill inside enclosed cube/ring volume.
+    # space with the infill-scale tolerance above.
     e = robust_polygonal_buffer(e, -slicing_params["nozzle_size"], join_style="mitre")
     current_cover = robust_polygonal_buffer(
         do_transform_at_radius(periodic_copies(final, turns=2), prev_r),
@@ -4224,12 +4311,14 @@ _bot_sources  = [(pos, key, layer_data[key]["bottom_surfaces"])
                  if not layer_data[key].get("bottom_surfaces", _empty_geom).is_empty]
 
 for _pos, _key, _ts in _top_sources:
+    _carry = _ts
     for _depth in range(1, slicing_params["top_layers"]):
         _inner_pos = _pos - _depth
         if _inner_pos < 0:
             break
         _ik = _sorted_keys[_inner_pos]
-        _prop = robust_polygonal_intersection(_ts, layer_data[_ik]["external_peris"])
+        _carry = robust_polygonal_intersection(_carry, layer_data[_ik]["external_peris"])
+        _prop = _carry
         _prop = remove_tiny_regions(
             _prop,
             layer_data[_ik]["radius"],
@@ -4237,16 +4326,19 @@ for _pos, _key, _ts in _top_sources:
         )
         if _prop.is_empty:
             break
+        _carry = _prop
         _existing = layer_data[_ik].get("top_surfaces", _empty_geom)
         layer_data[_ik]["top_surfaces"] = robust_polygonal_union([_existing, _prop])
 
 for _pos, _key, _bs in _bot_sources:
+    _carry = _bs
     for _depth in range(1, slicing_params["bottom_layers"]):
         _outer_pos = _pos + _depth
         if _outer_pos >= len(_sorted_keys):
             break
         _ok = _sorted_keys[_outer_pos]
-        _prop = robust_polygonal_intersection(_bs, layer_data[_ok]["external_peris"])
+        _carry = robust_polygonal_intersection(_carry, layer_data[_ok]["external_peris"])
+        _prop = _carry
         _prop = remove_tiny_regions(
             _prop,
             layer_data[_ok]["radius"],
@@ -4254,6 +4346,7 @@ for _pos, _key, _bs in _bot_sources:
         )
         if _prop.is_empty:
             break
+        _carry = _prop
         _existing = layer_data[_ok].get("bottom_surfaces", _empty_geom)
         layer_data[_ok]["bottom_surfaces"] = robust_polygonal_union([_existing, _prop])
 
@@ -4591,13 +4684,11 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     final_top_surface = robust_polygonal_intersection(
         robust_polygonal_buffer(
             do_transform(periodic_copies_for_bounds(current_top_print, final_perimeter_raw)),
-            slicing_params["nozzle_size"] * slicing_params["wall_count"],
+            slicing_params["nozzle_size"],
             join_style="mitre",
         ),
         final_perimeter,
     )
-    if draw_layer_plot:
-        plot_polygonal_2d(final_top_surface, ax=ax_2d_layer, color="indigo")
     _solid_direction = "axial"
     _min_solid_lines = slicing_params.get("surface_min_solid_lines", 0)
 
@@ -4614,20 +4705,33 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             result.extend(part_solid)
         return result
 
-    final_top_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_top_surface))
-    top_solid_infill = _surface_solid_infill(final_top_surface_raw)
-
     final_bottom_surface = robust_polygonal_intersection(
         robust_polygonal_buffer(
             do_transform(periodic_copies_for_bounds(current_bottom_print, final_perimeter_raw)),
-            slicing_params["nozzle_size"] * slicing_params["wall_count"],
+            slicing_params["nozzle_size"],
             join_style="mitre",
         ),
         final_perimeter,
     )
+    same_layer_surface_overlap = robust_polygonal_intersection(final_top_surface, final_bottom_surface)
+    if not same_layer_surface_overlap.is_empty:
+        # A non-outer layer region that is classified as both top and bottom skin
+        # is usually a one-layer coverage artifact from adjacent cylindrical
+        # slices disagreeing at seams or coarse facets. Do not turn that into a
+        # dense island; leave it for sparse infill.
+        final_top_surface = robust_polygonal_difference(final_top_surface, same_layer_surface_overlap)
+        final_bottom_surface = robust_polygonal_difference(final_bottom_surface, same_layer_surface_overlap)
+    if draw_layer_plot:
+        plot_polygonal_2d(final_top_surface, ax=ax_2d_layer, color="indigo")
     if draw_layer_plot:
         plot_polygonal_2d(final_bottom_surface, ax=ax_2d_layer, color="cyan")
-    final_bottom_surface_raw = _canonicalize_full_wrap_strips(do_transform_inverse(final_bottom_surface))
+    final_top_surface_raw = _canonicalize_full_wrap_strips(
+        repair_polygonal_geometry(do_transform_inverse(final_top_surface))
+    )
+    top_solid_infill = _surface_solid_infill(final_top_surface_raw)
+    final_bottom_surface_raw = _canonicalize_full_wrap_strips(
+        repair_polygonal_geometry(do_transform_inverse(final_bottom_surface))
+    )
     bottom_solid_infill = _surface_solid_infill(final_bottom_surface_raw)
     layer_data[i]["solid_infill"] = top_solid_infill + bottom_solid_infill
 
@@ -4678,7 +4782,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
             layer_data[i]["support_infill"] = do_support_infill(support_print, slicing_params, current_r, direction=direction)
 
         if draw_layer_plot:
-            plot_polygonal_2d(do_transform(support_geom), ax=ax_2d_layer, color="magenta")
+            plot_polygonal_2d(do_transform(support_print), ax=ax_2d_layer, color="magenta")
     else:
         layer_data[i]["support_infill"] = []
 
@@ -4918,9 +5022,9 @@ for _model_idx, i in enumerate(_sorted_model_keys):
         def _prep_section(subsection):
             if subsection == "external_peris":
                 if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
-                    geom = layer_data[i].get("external_peris_print", current_ext_print)
                     lower = layer_data[i].get("periodic_print_lower", math.pi)
                     upper = lower + 2 * math.pi
+                    geom = current_ext_print
                     cut = lower
                     is_full_wrap_section = True
                 else:
@@ -4947,8 +5051,11 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 if _layer_has_periodic_external or has_full_wrap_component(current_ext_print):
                     lower = layer_data[i].get("periodic_print_lower", math.pi)
                     upper = lower + 2 * math.pi
-                    source = layer_data[i].get("external_peris_print", current_ext_print)
-                    source_metric = repair_polygonal_geometry(do_transform(source))
+                    # The print-window copy has artificial vertical cuts at
+                    # lower/upper. Internal wall offsets are physical geometry,
+                    # so offset the periodic source with neighbor copies present
+                    # and only clip/extract lines into the print window after.
+                    source_metric = repair_polygonal_geometry(do_transform(periodic_copies(current_ext_print, turns=1)))
                     for wall_number in range(1, slicing_params["wall_count"]):
                         internal_metric = robust_polygonal_buffer(
                             source_metric,
@@ -4973,6 +5080,10 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                             max_theta_span=1e-6,
                         )
                         lines = _remove_local_orthogonal_caps(lines)
+                        lines = _remove_midspan_full_turn_lines(
+                            lines,
+                            z_bounds=current_ext_print.bounds[1::2] if not current_ext_print.is_empty else None,
+                        )
                         lines = _split_local_seam_closure_edges(lines)
                         raw.extend(
                             shapely_to_paths(lines, current_r)
@@ -5016,6 +5127,9 @@ for _model_idx, i in enumerate(_sorted_model_keys):
                 _path_params = _infill_params
             else:
                 _path_params = _layer_params
+            if subsection in ("external_peris", "internal_peris"):
+                _path_params = _path_params.copy()
+                _path_params["preserve_path_vertices"] = True
             for path in _prepped[subsection]:
                 # For fully_radial_infill (full circles), rotate to start at current theta
                 # to avoid unnecessary travel back to theta=0

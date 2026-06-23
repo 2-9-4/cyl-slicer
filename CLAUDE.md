@@ -16,8 +16,10 @@ source .venv/bin/activate
 python slicer.py
 ```
 
+Useful slicer options:
+- `--max-layer N` — slice and emit only model layers `0..N`; layer `N` is treated as the outer/top limit.
+
 Key toggle at the top of `slicer.py`:
-- `max_real_layers` — set to an integer to cap layer count for fast iteration; `None` for a full print.
 - `plot_3d` / `plot_per_layer` — enable/disable matplotlib visualisation.
 
 ## Building the G-code viewer (C++)
