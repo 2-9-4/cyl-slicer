@@ -10,6 +10,7 @@ from .fixtures import FIXTURES, make_fixture
 from .gcode import emit_gcode
 from .layers import slice_mesh
 from .mesh_io import load_mesh
+from .occupancy_backends import build_occupancy_backend
 from .toolpaths import build_toolpaths
 
 
@@ -31,6 +32,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.cpu_count() or 1,
         help="Parallel worker processes for geometry slicing (default: CPU count).",
     )
+    parser.add_argument(
+        "--occupancy-backend",
+        choices=("mesh", "grid"),
+        default="mesh",
+        help="Point occupancy backend: exact mesh.contains or cached voxel grid.",
+    )
+    parser.add_argument("--grid-voxel-mm", type=float, default=1.0, help="Voxel size for --occupancy-backend grid.")
+    parser.add_argument("--grid-cache", default=None, help="Optional .npz cache path for grid backend.")
+    parser.add_argument("--rebuild-grid", action="store_true", help="Rebuild --grid-cache even when it exists.")
     return parser
 
 
@@ -62,7 +72,17 @@ def main(argv: list[str] | None = None) -> int:
         support_spacing=args.support_spacing,
         slice_workers=args.slice_workers,
     )
-    layers = timed("slice geometry", lambda: slice_mesh(mesh, config, max_layers=args.max_layers))
+    backend = timed(
+        "occupancy backend",
+        lambda: build_occupancy_backend(
+            mesh,
+            kind=args.occupancy_backend,
+            grid_voxel_mm=args.grid_voxel_mm,
+            grid_cache=args.grid_cache,
+            rebuild_grid=args.rebuild_grid,
+        ),
+    )
+    layers = timed("slice geometry", lambda: slice_mesh(mesh, config, max_layers=args.max_layers, occupancy_backend=backend))
     layer_paths = timed("generate toolpaths", lambda: build_toolpaths(layers, config))
     gcode = timed("emit gcode", lambda: emit_gcode(layer_paths, config))
     timed("write output", lambda: Path(args.out).write_text(gcode))

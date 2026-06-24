@@ -11,9 +11,10 @@ import trimesh
 from .config import SlicerConfig
 from .mesh_io import radial_bounds
 from .models import LayerSlice
+from .occupancy_backends import MeshContainsBackend, OccupancyBackend
 from .occupancy import axial_edges, sample_layer_with_edges, theta_edges
 
-_WORKER_MESH: trimesh.Trimesh | None = None
+_WORKER_BACKEND: OccupancyBackend | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
 _WORKER_T_EDGES: np.ndarray | None = None
 _WORKER_Z_EDGES: np.ndarray | None = None
@@ -40,20 +41,20 @@ def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
     return [float(start + i * config.layer_height) for i in range(count)]
 
 
-def _init_slice_worker(mesh: trimesh.Trimesh, config: SlicerConfig, t_edges: np.ndarray, z_edges: np.ndarray) -> None:
-    global _WORKER_MESH, _WORKER_CONFIG, _WORKER_T_EDGES, _WORKER_Z_EDGES
-    _WORKER_MESH = mesh
+def _init_slice_worker(backend: OccupancyBackend, config: SlicerConfig, t_edges: np.ndarray, z_edges: np.ndarray) -> None:
+    global _WORKER_BACKEND, _WORKER_CONFIG, _WORKER_T_EDGES, _WORKER_Z_EDGES
+    _WORKER_BACKEND = backend
     _WORKER_CONFIG = config
     _WORKER_T_EDGES = t_edges
     _WORKER_Z_EDGES = z_edges
 
 
 def _sample_layer_worker(item: tuple[int, float]):
-    if _WORKER_MESH is None or _WORKER_CONFIG is None or _WORKER_T_EDGES is None or _WORKER_Z_EDGES is None:
+    if _WORKER_BACKEND is None or _WORKER_CONFIG is None or _WORKER_T_EDGES is None or _WORKER_Z_EDGES is None:
         raise RuntimeError("slice worker was not initialized")
     index, radius = item
     geom, window, full = sample_layer_with_edges(
-        _WORKER_MESH,
+        _WORKER_BACKEND,
         radius,
         _WORKER_CONFIG,
         _WORKER_T_EDGES,
@@ -62,13 +63,13 @@ def _sample_layer_worker(item: tuple[int, float]):
     return index, geom, window, full
 
 
-def _sample_layers(mesh: trimesh.Trimesh, config: SlicerConfig, radii: list[float]):
+def _sample_layers(mesh: trimesh.Trimesh, config: SlicerConfig, radii: list[float], backend: OccupancyBackend):
     t_edges = theta_edges(config)
     z_edges = axial_edges(mesh, config)
     worker_count = min(config.slice_workers, len(radii))
     if worker_count <= 1:
         return [
-            (i, *sample_layer_with_edges(mesh, radius, config, t_edges, z_edges))
+            (i, *sample_layer_with_edges(backend, radius, config, t_edges, z_edges))
             for i, radius in enumerate(radii)
         ]
 
@@ -76,13 +77,19 @@ def _sample_layers(mesh: trimesh.Trimesh, config: SlicerConfig, radii: list[floa
     with ProcessPoolExecutor(
         max_workers=worker_count,
         initializer=_init_slice_worker,
-        initargs=(mesh, config, t_edges, z_edges),
+        initargs=(backend, config, t_edges, z_edges),
     ) as executor:
         return list(executor.map(_sample_layer_worker, enumerate(radii), chunksize=chunksize))
 
 
-def slice_mesh(mesh: trimesh.Trimesh, config: SlicerConfig, max_layers: int | None = None) -> list[LayerSlice]:
+def slice_mesh(
+    mesh: trimesh.Trimesh,
+    config: SlicerConfig,
+    max_layers: int | None = None,
+    occupancy_backend: OccupancyBackend | None = None,
+) -> list[LayerSlice]:
     config.validate()
+    backend = occupancy_backend or MeshContainsBackend(mesh)
     radii = layer_radii(mesh, config)
     if max_layers is not None:
         radii = radii[:max_layers]
@@ -90,7 +97,7 @@ def slice_mesh(mesh: trimesh.Trimesh, config: SlicerConfig, max_layers: int | No
     occupied = [GeometryCollection() for _ in radii]
     windows = [(0.0, 0.0) for _ in radii]
     full_flags = [False for _ in radii]
-    for i, geom, window, full in _sample_layers(mesh, config, radii):
+    for i, geom, window, full in _sample_layers(mesh, config, radii, backend):
         occupied[i] = _clean(geom)
         windows[i] = window
         full_flags[i] = full

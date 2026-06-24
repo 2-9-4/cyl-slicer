@@ -9,6 +9,7 @@ import trimesh
 from .config import SlicerConfig
 from .coordinates import cylindrical_to_cartesian
 from .mesh_io import axial_bounds
+from .occupancy_backends import MeshContainsBackend, OccupancyBackend
 from .periodic import normalize_periodic
 
 
@@ -27,12 +28,12 @@ def theta_edges(config: SlicerConfig) -> np.ndarray:
     return np.arange(start, stop + step * 0.5, step)
 
 
-def occupancy_mask(mesh: trimesh.Trimesh, radius: float, t_edges: np.ndarray, z_edges: np.ndarray) -> np.ndarray:
+def occupancy_mask(backend: OccupancyBackend, radius: float, t_edges: np.ndarray, z_edges: np.ndarray) -> np.ndarray:
     t_centers = (t_edges[:-1] + t_edges[1:]) * 0.5
     z_centers = (z_edges[:-1] + z_edges[1:]) * 0.5
     tt, zz = np.meshgrid(t_centers, z_centers, indexing="ij")
     points = cylindrical_to_cartesian(tt.ravel(), zz.ravel(), radius)
-    inside = mesh.contains(points)
+    inside = backend.contains(points)
     return inside.reshape((len(t_centers), len(z_centers)))
 
 
@@ -49,13 +50,13 @@ def mask_to_geometry(mask: np.ndarray, t_edges: np.ndarray, z_edges: np.ndarray)
 
 
 def sample_layer_with_edges(
-    mesh: trimesh.Trimesh,
+    backend: OccupancyBackend,
     radius: float,
     config: SlicerConfig,
     t_edges: np.ndarray,
     z_edges: np.ndarray,
 ) -> tuple[shapely.Geometry, tuple[float, float], bool]:
-    mask = occupancy_mask(mesh, radius, t_edges, z_edges)
+    mask = occupancy_mask(backend, radius, t_edges, z_edges)
     raw = mask_to_geometry(mask, t_edges, z_edges)
     return normalize_periodic(raw, float(z_edges[0]), float(z_edges[-1]))
 
@@ -63,4 +64,4 @@ def sample_layer_with_edges(
 def sample_layer(mesh: trimesh.Trimesh, radius: float, config: SlicerConfig) -> tuple[shapely.Geometry, tuple[float, float], bool]:
     z_edges = axial_edges(mesh, config)
     t_edges = theta_edges(config)
-    return sample_layer_with_edges(mesh, radius, config, t_edges, z_edges)
+    return sample_layer_with_edges(MeshContainsBackend(mesh), radius, config, t_edges, z_edges)

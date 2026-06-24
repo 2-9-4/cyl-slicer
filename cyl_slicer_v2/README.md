@@ -10,6 +10,20 @@ the legacy `slicer.py`/`togcode.py` pipeline.
 .venv/bin/python -m cyl_slicer_v2.cli tube.stl --out /tmp/tube_stl_v2.gcode --max-layers 2
 ```
 
+The default occupancy backend calls `trimesh.contains` directly. A faster
+approximate voxel-grid backend can be enabled and cached:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli cubeandring.stl \
+  --occupancy-backend grid \
+  --grid-voxel-mm 1.0 \
+  --grid-cache /tmp/cubeandring_v2_grid.npz \
+  --out /tmp/cubeandring_grid_v2.gcode
+```
+
+Use `--rebuild-grid` to refresh an existing cache. Cached grids validate their
+voxel size and mesh bounds before use.
+
 The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters
