@@ -25,6 +25,7 @@ class SlicerConfig:
     hotend_temp: int = 215
     min_path_length: float = 1e-4
     max_axial_segment: float = 1.5
+    slice_workers: int = 1
 
     @property
     def theta_step(self) -> float:
@@ -51,6 +52,8 @@ class SlicerConfig:
             raise ValueError("bed_radius must be non-negative")
         if self.max_axial_segment <= 0:
             raise ValueError("max_axial_segment must be positive")
+        if self.slice_workers < 1:
+            raise ValueError("slice_workers must be at least 1")
         if self.max_radius is not None and self.max_radius <= 0:
             raise ValueError("max_radius must be positive when set")
         if self.min_radius is not None and self.min_radius < 0:

@@ -35,6 +35,17 @@ class LayerClassificationTests(unittest.TestCase):
             self.assertGreater(t_max, t_min)
             self.assertGreater(z_max, z_min)
 
+    def test_parallel_slicing_matches_serial_slicing(self):
+        mesh = make_fixture("tube")
+        serial = slice_mesh(mesh, SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0, slice_workers=1), max_layers=3)
+        parallel = slice_mesh(mesh, SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0, slice_workers=2), max_layers=3)
+        self.assertEqual(len(serial), len(parallel))
+        for a, b in zip(serial, parallel):
+            self.assertAlmostEqual(a.occupied.area, b.occupied.area)
+            self.assertAlmostEqual(a.top_surfaces.area, b.top_surfaces.area)
+            self.assertAlmostEqual(a.bottom_surfaces.area, b.bottom_surfaces.area)
+            self.assertEqual(a.is_full_wrap, b.is_full_wrap)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,9 +48,19 @@ def mask_to_geometry(mask: np.ndarray, t_edges: np.ndarray, z_edges: np.ndarray)
     return geom
 
 
-def sample_layer(mesh: trimesh.Trimesh, radius: float, config: SlicerConfig) -> tuple[shapely.Geometry, tuple[float, float], bool]:
-    z_edges = axial_edges(mesh, config)
-    t_edges = theta_edges(config)
+def sample_layer_with_edges(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    config: SlicerConfig,
+    t_edges: np.ndarray,
+    z_edges: np.ndarray,
+) -> tuple[shapely.Geometry, tuple[float, float], bool]:
     mask = occupancy_mask(mesh, radius, t_edges, z_edges)
     raw = mask_to_geometry(mask, t_edges, z_edges)
     return normalize_periodic(raw, float(z_edges[0]), float(z_edges[-1]))
+
+
+def sample_layer(mesh: trimesh.Trimesh, radius: float, config: SlicerConfig) -> tuple[shapely.Geometry, tuple[float, float], bool]:
+    z_edges = axial_edges(mesh, config)
+    t_edges = theta_edges(config)
+    return sample_layer_with_edges(mesh, radius, config, t_edges, z_edges)

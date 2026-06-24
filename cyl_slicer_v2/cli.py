@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import time
 
@@ -24,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wall-count", type=int, default=2)
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--support-spacing", type=float, default=1.5)
+    parser.add_argument(
+        "--slice-workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="Parallel worker processes for geometry slicing (default: CPU count).",
+    )
     return parser
 
 
@@ -53,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         wall_count=args.wall_count,
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
+        slice_workers=args.slice_workers,
     )
     layers = timed("slice geometry", lambda: slice_mesh(mesh, config, max_layers=args.max_layers))
     layer_paths = timed("generate toolpaths", lambda: build_toolpaths(layers, config))
