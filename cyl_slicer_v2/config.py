@@ -7,10 +7,14 @@ import math
 @dataclass(frozen=True)
 class SlicerConfig:
     layer_height: float = 0.5
-    nozzle_width: float = 0.45
+    nozzle_width: float = 0.4
     wall_count: int = 2
     infill_spacing: float = 2.0
     support_spacing: float = 1.5
+    support_min_island_area: float = 0.05
+    support_min_region_area: float = 1.0
+    support_bearing_min_area: float = 1.0
+    support_merge_gap: float = 0.0
     theta_step_deg: float = 5.0
     axial_step: float = 1.0
     guard_columns: int = 2
@@ -46,6 +50,14 @@ class SlicerConfig:
             raise ValueError("infill_spacing must be positive")
         if self.support_spacing <= 0:
             raise ValueError("support_spacing must be positive")
+        if self.support_min_island_area < 0:
+            raise ValueError("support_min_island_area must be non-negative")
+        if self.support_min_region_area < 0:
+            raise ValueError("support_min_region_area must be non-negative")
+        if self.support_bearing_min_area < 0:
+            raise ValueError("support_bearing_min_area must be non-negative")
+        if self.support_merge_gap < 0:
+            raise ValueError("support_merge_gap must be non-negative")
         if self.theta_step_deg <= 0 or self.theta_step_deg > 90:
             raise ValueError("theta_step_deg must be in (0, 90]")
         if self.axial_step <= 0:

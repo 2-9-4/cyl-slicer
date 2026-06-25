@@ -4,11 +4,14 @@ import math
 from pathlib import Path
 import unittest
 
+from shapely.geometry import GeometryCollection, Point, box
+
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.intersection_backend import _polygon_parts
-from cyl_slicer_v2.layers import slice_mesh
+from cyl_slicer_v2.layers import _metric_area, _needs_support_from_previous, _support_regions, propagate_support, slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh
+from cyl_slicer_v2.models import LayerSlice
 
 
 def _corner_count(geom) -> int:
@@ -44,6 +47,69 @@ class LayerClassificationTests(unittest.TestCase):
             self.assertGreaterEqual(t_min, 0.0)
             self.assertGreater(t_max, t_min)
             self.assertGreater(z_max, z_min)
+
+    def test_tiny_support_islands_are_removed(self):
+        config = SlicerConfig(support_min_island_area=0.05, support_min_region_area=1.0)
+        tiny = box(0.0, 0.0, 0.001, 0.5)
+
+        self.assertTrue(_support_regions(tiny, 10.0, config).is_empty)
+
+    def test_surviving_small_support_regions_are_promoted(self):
+        config = SlicerConfig(support_min_island_area=0.05, support_min_region_area=1.0)
+        small = box(0.0, 0.0, 0.02, 0.5)
+
+        promoted = _support_regions(small, 10.0, config)
+
+        self.assertFalse(promoted.is_empty)
+        self.assertGreaterEqual(_metric_area(promoted, 10.0), 0.9)
+
+    def test_tiny_previous_contact_does_not_fully_support_layer_above(self):
+        config = SlicerConfig(support_min_island_area=0.0, support_min_region_area=0.0, support_bearing_min_area=1.0)
+        current = box(0.0, 0.0, 1.0, 1.0)
+        weak_previous = box(0.04, 0.45, 0.06, 0.55)
+
+        needs = _needs_support_from_previous(current, weak_previous, 10.0, config)
+
+        self.assertTrue(needs.covers(Point(0.05, 0.5)))
+
+    def test_tiny_model_contact_does_not_ground_carried_support(self):
+        config = SlicerConfig(support_min_island_area=0.0, support_min_region_area=0.0, support_bearing_min_area=1.0)
+        empty = GeometryCollection()
+        carry_source = box(0.0, 0.0, 1.0, 1.0)
+        layers = [
+            LayerSlice(
+                index=0,
+                radius=9.5,
+                occupied=empty,
+                top_surfaces=empty,
+                bottom_surfaces=empty,
+                needs_support=empty,
+                support=empty,
+            ),
+            LayerSlice(
+                index=1,
+                radius=10.0,
+                occupied=box(0.04, 0.45, 0.06, 0.55),
+                top_surfaces=empty,
+                bottom_surfaces=empty,
+                needs_support=empty,
+                support=empty,
+            ),
+            LayerSlice(
+                index=2,
+                radius=10.5,
+                occupied=empty,
+                top_surfaces=empty,
+                bottom_surfaces=empty,
+                needs_support=carry_source,
+                support=empty,
+            ),
+        ]
+
+        propagate_support(layers, config)
+
+        self.assertFalse(layers[1].support.covers(Point(0.05, 0.5)))
+        self.assertTrue(layers[0].support.covers(Point(0.05, 0.5)))
 
     def test_cubeandring2_layers_do_not_seed_full_frame_geometry(self):
         mesh_path = Path(__file__).resolve().parent / "fixtures" / "cubeandring2.stl"

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+import math
 
 import numpy as np
 import shapely
-from shapely.geometry import GeometryCollection
+from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 import trimesh
 
 from .config import SlicerConfig
+from .coordinates import TWO_PI
 from .intersection_backend import sample_intersection_layers
 from .mesh_io import radial_bounds
 from .models import LayerSlice
 from .occupancy_backends import MeshContainsBackend, OccupancyBackend
 from .occupancy import axial_edges, sample_layer_with_edges, theta_edges
-from .periodic import periodic_copies
+from .periodic import translate_theta
 
 _WORKER_BACKEND: OccupancyBackend | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
@@ -33,27 +35,248 @@ def _clean(geom):
     return geom
 
 
-def _metric_buffer(geom, radius: float, distance: float):
+def _safe_union(geoms):
+    parts = [part for part in geoms if part is not None and not part.is_empty]
+    if not parts:
+        return GeometryCollection()
+    if len(parts) == 1:
+        return _clean(parts[0])
+    try:
+        return _clean(unary_union(parts))
+    except shapely.errors.GEOSException:
+        repaired = []
+        for part in parts:
+            if not part.is_valid:
+                part = shapely.make_valid(part)
+            part = part.buffer(0)
+            if not part.is_empty:
+                repaired.append(part)
+        if not repaired:
+            return GeometryCollection()
+        return _clean(shapely.union_all(repaired, grid_size=1e-8))
+
+
+def _periodic_union(geom, turns: int = 1):
+    if geom is None or geom.is_empty:
+        return GeometryCollection()
+    shifts = (k * TWO_PI for k in range(-turns, turns + 1))
+    return _safe_union(translate_theta(geom, shift) for shift in shifts)
+
+
+def _safe_intersection(a, b):
+    if a is None or b is None or a.is_empty or b.is_empty:
+        return GeometryCollection()
+    try:
+        return _clean(a.intersection(b))
+    except shapely.errors.GEOSException:
+        left = _clean(a)
+        right = _clean(b)
+        if left.is_empty or right.is_empty:
+            return GeometryCollection()
+        return _clean(shapely.intersection(left, right, grid_size=1e-8))
+
+
+def _safe_difference(a, b):
+    if a is None or a.is_empty:
+        return GeometryCollection()
+    if b is None or b.is_empty:
+        return _clean(a)
+    try:
+        return _clean(a.difference(b))
+    except shapely.errors.GEOSException:
+        left = _clean(a)
+        right = _clean(b)
+        if left.is_empty:
+            return GeometryCollection()
+        if right.is_empty:
+            return left
+        return _clean(shapely.difference(left, right, grid_size=1e-8))
+
+
+def _polygon_parts(geom) -> list[Polygon]:
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, Polygon):
+        return [geom]
+    if isinstance(geom, MultiPolygon):
+        return list(geom.geoms)
+    if hasattr(geom, "geoms"):
+        result = []
+        for part in geom.geoms:
+            result.extend(_polygon_parts(part))
+        return result
+    return []
+
+
+def _to_metric(geom, radius: float):
     scale = max(radius, 1e-9)
-    metric = shapely.transform(geom, lambda p: p * [scale, 1.0])
+    return shapely.transform(geom, lambda p: p * [scale, 1.0])
+
+
+def _from_metric(geom, radius: float):
+    scale = max(radius, 1e-9)
+    return shapely.transform(geom, lambda p: p * [1.0 / scale, 1.0])
+
+
+def _metric_buffer(geom, radius: float, distance: float):
+    metric = _to_metric(geom, radius)
     buffered = metric.buffer(distance)
     if buffered.is_empty:
         return GeometryCollection()
-    raw = shapely.transform(buffered, lambda p: p * [1.0 / scale, 1.0])
+    raw = _from_metric(buffered, radius)
     return _clean(raw)
+
+
+def _metric_area(geom, radius: float) -> float:
+    if geom is None or geom.is_empty:
+        return 0.0
+    return float(_to_metric(geom, radius).area)
+
+
+def _fold_metric_result(raw):
+    raw = _clean(raw)
+    if raw.is_empty:
+        return GeometryCollection()
+    z_min, z_max = raw.bounds[1], raw.bounds[3]
+    clip = box(0.0, z_min, TWO_PI, z_max)
+    min_k = math.floor((raw.bounds[0] - TWO_PI) / TWO_PI)
+    max_k = math.ceil((raw.bounds[2] + TWO_PI) / TWO_PI)
+    pieces = []
+    for k in range(min_k, max_k + 1):
+        part = _safe_intersection(translate_theta(raw, -k * TWO_PI), clip)
+        if not part.is_empty:
+            pieces.append(part)
+    return _safe_union(pieces)
+
+
+def _metric_region_filter(
+    geom,
+    radius: float,
+    *,
+    min_area_mm2: float,
+    promote_area_mm2: float = 0.0,
+    merge_gap_mm: float = 0.0,
+):
+    if geom is None or geom.is_empty:
+        return GeometryCollection()
+
+    geom = _clean(geom)
+    if geom.is_empty:
+        return GeometryCollection()
+
+    distance_margin = max(
+        float(np.sqrt(promote_area_mm2 / np.pi)) if promote_area_mm2 > 0 else 0.0,
+        merge_gap_mm * 0.5,
+    )
+    theta_margin = distance_margin / max(radius, 1e-9) + 1e-9
+    theta_min, _, theta_max, _ = geom.bounds
+    can_cross_boundary = distance_margin > 0
+    reaches_lower_boundary = theta_min <= theta_margin
+    reaches_upper_boundary = theta_max >= TWO_PI - theta_margin
+    out_of_range = theta_min < -theta_margin or theta_max > TWO_PI + theta_margin
+    needs_periodic_neighbors = (
+        out_of_range
+        or (can_cross_boundary and reaches_lower_boundary and reaches_upper_boundary)
+    )
+    needs_fold = out_of_range or (can_cross_boundary and (reaches_lower_boundary or reaches_upper_boundary))
+    shifts = (-TWO_PI, 0.0, TWO_PI) if needs_periodic_neighbors else (0.0,)
+
+    kept = []
+    for shift in shifts:
+        source = translate_theta(geom, shift) if shift else geom
+        if source.is_empty:
+            continue
+        metric = _to_metric(source, radius)
+        for part in _polygon_parts(metric):
+            if part.is_empty:
+                continue
+            if not part.is_valid:
+                part = shapely.make_valid(part)
+            part = part.buffer(0)
+            if part.is_empty:
+                continue
+            area = float(part.area)
+            if area < min_area_mm2:
+                continue
+            if promote_area_mm2 > area:
+                target_radius = float(np.sqrt(promote_area_mm2 / np.pi))
+                current_radius = float(np.sqrt(max(area, 1e-12) / np.pi))
+                part = part.buffer(target_radius - current_radius)
+                if part.is_empty:
+                    continue
+            kept.append(part)
+
+    if not kept:
+        return GeometryCollection()
+
+    metric = _safe_union(kept)
+    if merge_gap_mm > 0:
+        metric = _clean(metric.buffer(merge_gap_mm * 0.5).buffer(-merge_gap_mm * 0.5))
+    if metric.is_empty:
+        return GeometryCollection()
+    raw = _from_metric(metric, radius)
+    return _fold_metric_result(raw) if needs_fold else _clean(raw)
+
+
+def _bearing_regions(geom, radius: float, config: SlicerConfig):
+    return _metric_region_filter(
+        geom,
+        radius,
+        min_area_mm2=config.support_bearing_min_area,
+    )
+
+
+def _support_regions(geom, radius: float, config: SlicerConfig, *, promote: bool = True):
+    return _metric_region_filter(
+        geom,
+        radius,
+        min_area_mm2=config.support_min_island_area,
+        promote_area_mm2=config.support_min_region_area if promote else 0.0,
+        merge_gap_mm=config.support_merge_gap,
+    )
 
 
 def _needs_support_from_previous(geom, previous, radius: float, config: SlicerConfig):
     if geom.is_empty:
         return GeometryCollection()
     if previous.is_empty:
-        return _clean(geom)
+        return _support_regions(geom, radius, config)
     previous_cover = _metric_buffer(
-        periodic_copies(previous, turns=1),
+        _periodic_union(previous, turns=1),
         radius,
         config.nozzle_width * 0.5,
     )
-    return _clean(geom.difference(previous_cover))
+    covered = _safe_intersection(geom, previous_cover)
+    bearing_cover = _bearing_regions(covered, radius, config)
+    return _support_regions(_safe_difference(geom, bearing_cover), radius, config)
+
+
+def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
+    carry = GeometryCollection()
+    for layer in reversed(layers):
+        support_here = GeometryCollection()
+        carried_support = GeometryCollection()
+        if not carry.is_empty:
+            occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
+            if occupied.is_empty:
+                ungrounded = carry
+            else:
+                contact = _safe_intersection(carry, occupied)
+                grounded = _bearing_regions(contact, layer.radius, config)
+                ungrounded = _safe_difference(carry, grounded)
+            carried_support = _support_regions(ungrounded, layer.radius, config, promote=False)
+            support_here = carried_support
+            if not occupied.is_empty and not carried_support.is_empty:
+                support_here = _fold_metric_result(_safe_difference(carried_support, occupied))
+                support_here = _support_regions(support_here, layer.radius, config, promote=False)
+        layer.support = support_here
+
+        pieces = []
+        if not carried_support.is_empty:
+            pieces.append(carried_support)
+        if not layer.needs_support.is_empty:
+            pieces.append(layer.needs_support)
+        carry = _support_regions(_safe_union(pieces), layer.radius, config, promote=False) if pieces else GeometryCollection()
 
 
 def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
@@ -156,15 +379,6 @@ def slice_mesh(
             )
         )
 
-    carry = GeometryCollection()
-    for layer in reversed(layers):
-        support_here = _clean(carry.difference(layer.occupied)) if not carry.is_empty else GeometryCollection()
-        layer.support = support_here
-        pieces = []
-        if not support_here.is_empty:
-            pieces.append(support_here)
-        if not layer.needs_support.is_empty:
-            pieces.append(layer.needs_support)
-        carry = _clean(unary_union(pieces)) if pieces else GeometryCollection()
+    propagate_support(layers, config)
 
     return layers

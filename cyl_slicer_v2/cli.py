@@ -27,6 +27,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
+        "--support-min-island-area",
+        type=float,
+        default=0.05,
+        help="Drop support fragments smaller than this metric area in mm^2.",
+    )
+    parser.add_argument(
+        "--support-min-region-area",
+        type=float,
+        default=1.0,
+        help="Inflate surviving support fragments below this metric area in mm^2.",
+    )
+    parser.add_argument(
+        "--support-bearing-min-area",
+        type=float,
+        default=1.0,
+        help="Minimum contact area in mm^2 before lower geometry counts as load-bearing.",
+    )
+    parser.add_argument(
+        "--support-merge-gap",
+        type=float,
+        default=0.0,
+        help="Merge support branches closer than this metric gap in mm.",
+    )
+    parser.add_argument(
         "--build-cylinder-radius",
         "--bed-radius",
         dest="bed_radius",
@@ -102,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         wall_count=args.wall_count,
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
+        support_min_island_area=args.support_min_island_area,
+        support_min_region_area=args.support_min_region_area,
+        support_bearing_min_area=args.support_bearing_min_area,
+        support_merge_gap=args.support_merge_gap,
         bed_radius=args.bed_radius,
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,
