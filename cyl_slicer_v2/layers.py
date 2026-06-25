@@ -26,6 +26,9 @@ def _clean(geom):
         return GeometryCollection()
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
+    geom = geom.buffer(0)
+    if geom.is_empty or geom.area <= 1e-12:
+        return GeometryCollection()
     return geom
 
 
@@ -108,17 +111,17 @@ def slice_mesh(
         windows[i] = window
         full_flags[i] = full
 
-    first_non_empty = next((i for i, geom in enumerate(occupied) if not geom.is_empty), None)
+    occupied_below = GeometryCollection()
     layers: list[LayerSlice] = []
     for i, geom in enumerate(occupied):
         prev = occupied[i - 1] if i > 0 else GeometryCollection()
         nxt = occupied[i + 1] if i + 1 < len(occupied) else GeometryCollection()
         top = _clean(geom.difference(nxt)) if not geom.is_empty else GeometryCollection()
         bottom = _clean(geom.difference(prev)) if not geom.is_empty else GeometryCollection()
-        if first_non_empty is None or i <= first_non_empty or geom.is_empty:
+        if bottom.is_empty or occupied_below.is_empty:
             needs = GeometryCollection()
         else:
-            needs = _clean(geom.difference(prev))
+            needs = _clean(bottom.intersection(occupied_below))
         layers.append(
             LayerSlice(
                 index=i,
@@ -132,6 +135,8 @@ def slice_mesh(
                 is_full_wrap=full_flags[i],
             )
         )
+        if not geom.is_empty:
+            occupied_below = _clean(unary_union([occupied_below, geom]) if not occupied_below.is_empty else geom)
 
     carry = GeometryCollection()
     for layer in reversed(layers):

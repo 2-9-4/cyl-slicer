@@ -33,6 +33,11 @@ point occupancy sampling and extracts closed intersection loops directly:
   --out /tmp/cubeandring_intersection_v2.gcode
 ```
 
+Layer toolpath generation also runs in parallel in the CLI. By default it uses
+the same worker count as `--slice-workers`; override it with
+`--toolpath-workers N` when geometry slicing and toolpath generation need
+different process counts.
+
 The intersection backend is experimental and intentionally small. Raster remains
 the default. `--intersection-refine-factor N` optionally enables smooth topology
 voting for mixed faces: sampled occupancy decides whether to keep or discard the

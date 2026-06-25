@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import shapely
 from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, box
@@ -20,6 +21,8 @@ ROLE_ORDER = [
     "INFILL_RADIAL",
     "INFILL_AXIAL",
 ]
+
+_WORKER_CONFIG: SlicerConfig | None = None
 
 
 def _to_metric(geom, radius: float):
@@ -205,5 +208,26 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=dict(paths))
 
 
+def _init_toolpath_worker(config: SlicerConfig) -> None:
+    global _WORKER_CONFIG
+    _WORKER_CONFIG = config
+
+
+def _build_layer_toolpaths_worker(layer: LayerSlice) -> LayerToolpaths:
+    if _WORKER_CONFIG is None:
+        raise RuntimeError("toolpath worker was not initialized")
+    return build_layer_toolpaths(layer, _WORKER_CONFIG)
+
+
 def build_toolpaths(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerToolpaths]:
-    return [build_layer_toolpaths(layer, config) for layer in layers]
+    worker_count = min(config.toolpath_workers, len(layers))
+    if worker_count <= 1:
+        return [build_layer_toolpaths(layer, config) for layer in layers]
+
+    chunksize = max(1, len(layers) // (worker_count * 4))
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_init_toolpath_worker,
+        initargs=(config,),
+    ) as executor:
+        return list(executor.map(_build_layer_toolpaths_worker, layers, chunksize=chunksize))

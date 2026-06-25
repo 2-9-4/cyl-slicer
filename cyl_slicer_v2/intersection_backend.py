@@ -11,7 +11,9 @@ from shapely.ops import polygonize, unary_union
 import trimesh
 
 from .config import SlicerConfig
+from .coordinates import TWO_PI
 from .mesh_io import axial_bounds
+from .periodic import fold_to_canonical
 
 _WORKER_MESH: trimesh.Trimesh | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
@@ -174,6 +176,60 @@ def _sample_face_solid_fraction(
     return (solid / total, total) if total else (0.0, 0)
 
 
+def _solid_mask(mesh: trimesh.Trimesh, radius: float, theta_z: list[tuple[float, float]]) -> np.ndarray:
+    if not theta_z:
+        return np.zeros(0, dtype=bool)
+    arr = np.asarray(theta_z, dtype=float)
+    points = np.column_stack(
+        [
+            radius * np.cos(arr[:, 0]),
+            radius * np.sin(arr[:, 0]),
+            arr[:, 1],
+        ]
+    )
+    return np.asarray(mesh.contains(points), dtype=bool)
+
+
+def _classify_face_cells(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: SlicerConfig) -> BaseGeometry:
+    theta_step = config.theta_step
+    z_step = config.axial_step
+    theta_min, z_min, theta_max, z_max = face.bounds
+    theta = np.floor(theta_min / theta_step) * theta_step
+    cell_bounds = []
+    probes = []
+    while theta < theta_max - 1e-12:
+        next_theta = min(theta + theta_step, theta_max)
+        z = np.floor(z_min / z_step) * z_step
+        while z < z_max - 1e-12:
+            next_z = min(z + z_step, z_max)
+            probe = Point((theta + next_theta) * 0.5, (z + next_z) * 0.5)
+            if face.covers(probe):
+                cell_bounds.append((theta, z, next_theta, next_z))
+                probes.append((float(probe.x), float(probe.y)))
+            z += z_step
+        theta += theta_step
+
+    if not cell_bounds:
+        probe = face.representative_point()
+        return face if _point_is_solid(mesh, radius, float(probe.x), float(probe.y)) else GeometryCollection()
+    solid = _solid_mask(mesh, radius, probes)
+    kept = []
+    for (theta0, z0, theta1, z1), is_solid in zip(cell_bounds, solid):
+        if not is_solid:
+            continue
+        cell = face.intersection(box(theta0, z0, theta1, z1))
+        if not cell.is_empty and cell.area > 1e-12:
+            probe = cell.representative_point()
+            if _point_is_solid(mesh, radius, float(probe.x), float(probe.y)):
+                kept.append(cell)
+    if not kept:
+        return GeometryCollection()
+    geom = unary_union(kept)
+    if not geom.is_valid:
+        geom = shapely.make_valid(geom)
+    return geom.buffer(0)
+
+
 def _vote_mixed_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: SlicerConfig) -> BaseGeometry:
     refine = config.intersection_refine_factor
     theta_step = config.theta_step / refine
@@ -212,12 +268,14 @@ def _classify_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: 
     for sample in samples:
         if face.covers(sample):
             inside.append(_point_is_solid(mesh, radius, float(sample.x), float(sample.y)))
-    if inside and all(inside):
+    if inside and all(inside) and len(inside) >= 3:
         return face
-    if inside and not any(inside):
+    if inside and not any(inside) and len(inside) >= 3:
         return GeometryCollection()
     if config.intersection_refine_factor > 0:
         return _vote_mixed_face(mesh, radius, face, config)
+    if inside and len(inside) < 3:
+        return _classify_face_cells(mesh, radius, face, config)
     if inside:
         fraction, total = _sample_face_solid_fraction(mesh, radius, face, 5)
         if total:
@@ -343,39 +401,78 @@ def sample_intersection_layer(
     if not lines:
         return GeometryCollection(), (0.0, 2.0 * np.pi), False
 
-    period = 2.0 * np.pi
-    central_frame = box(0.0, z_min, period, z_max)
-    expanded_frame = box(-period, z_min, 2.0 * period, z_max)
-    expanded_lines = []
-    for line in lines:
-        for shift in (-2, -1, 0, 1, 2):
-            shifted = affinity.translate(line, xoff=shift * period)
-            inter = shifted.intersection(expanded_frame)
-            expanded_lines.extend(part for part in _line_parts(inter) if part.length > 1e-12)
-    full_span_strips = _full_span_strips(walks, z_min, z_max, period=period)
-    strip_boundaries = []
-    for strip in full_span_strips:
-        for shift in (-1, 0, 1):
-            shifted = affinity.translate(strip.boundary, xoff=shift * period)
-            inter = shifted.intersection(expanded_frame)
-            strip_boundaries.extend(part for part in _line_parts(inter) if part.length > 1e-12)
-    arrangement = unary_union([expanded_frame.boundary, *expanded_lines, *strip_boundaries])
-    polygons = []
-    for face in polygonize(arrangement):
-        if not isinstance(face, Polygon) or face.area <= 1e-12:
-            continue
-        if face.disjoint(central_frame):
-            continue
-        classified = _classify_face(mesh, radius, face, config)
-        if not classified.is_empty:
-            clipped = classified.intersection(central_frame)
-            if not clipped.is_empty:
-                polygons.append(clipped)
+    period = TWO_PI
+    loop_span = max(float(np.max(walk[:, 0]) - np.min(walk[:, 0])) for walk in walks)
+    if loop_span > period * 1.5:
+        theta_min = min(float(line.bounds[0]) for line in lines)
+        theta_max = max(float(line.bounds[2]) for line in lines)
+        unwrapped_frame = box(theta_min - period, z_min, theta_max + period, z_max)
+        arrangement_lines = []
+        for line in lines:
+            inter = line.intersection(unwrapped_frame)
+            arrangement_lines.extend(part for part in _line_parts(inter) if part.length > 1e-12)
 
-    if not polygons:
-        return GeometryCollection(), (0.0, 2.0 * np.pi), False
+        full_span_strips = _full_span_strips(walks, z_min, z_max, period=period)
+        strip_boundaries = []
+        for strip in full_span_strips:
+            shift_min = int(np.floor((unwrapped_frame.bounds[0] - strip.bounds[2]) / period)) - 1
+            shift_max = int(np.ceil((unwrapped_frame.bounds[2] - strip.bounds[0]) / period)) + 1
+            for shift in range(shift_min, shift_max + 1):
+                shifted = affinity.translate(strip.boundary, xoff=shift * period)
+                inter = shifted.intersection(unwrapped_frame)
+                strip_boundaries.extend(part for part in _line_parts(inter) if part.length > 1e-12)
+        arrangement = unary_union([unwrapped_frame.boundary, *arrangement_lines, *strip_boundaries])
+        polygons = []
+        for face in polygonize(arrangement):
+            if not isinstance(face, Polygon) or face.area <= 1e-12:
+                continue
+            classified = _classify_face(mesh, radius, face, config)
+            if not classified.is_empty:
+                clipped = classified.intersection(unwrapped_frame)
+                if not clipped.is_empty:
+                    polygons.append(clipped)
 
-    geom = unary_union(polygons)
+        if not polygons:
+            return GeometryCollection(), (0.0, 2.0 * np.pi), False
+
+        raw = unary_union(polygons)
+        if not raw.is_valid:
+            raw = shapely.make_valid(raw)
+        raw = raw.buffer(0)
+        geom = fold_to_canonical(raw, z_min, z_max)
+    else:
+        central_frame = box(0.0, z_min, period, z_max)
+        expanded_frame = box(-period, z_min, 2.0 * period, z_max)
+        expanded_lines = []
+        for line in lines:
+            for shift in (-2, -1, 0, 1, 2):
+                shifted = affinity.translate(line, xoff=shift * period)
+                inter = shifted.intersection(expanded_frame)
+                expanded_lines.extend(part for part in _line_parts(inter) if part.length > 1e-12)
+        full_span_strips = _full_span_strips(walks, z_min, z_max, period=period)
+        strip_boundaries = []
+        for strip in full_span_strips:
+            for shift in (-1, 0, 1):
+                shifted = affinity.translate(strip.boundary, xoff=shift * period)
+                inter = shifted.intersection(expanded_frame)
+                strip_boundaries.extend(part for part in _line_parts(inter) if part.length > 1e-12)
+        arrangement = unary_union([expanded_frame.boundary, *expanded_lines, *strip_boundaries])
+        polygons = []
+        for face in polygonize(arrangement):
+            if not isinstance(face, Polygon) or face.area <= 1e-12:
+                continue
+            if face.disjoint(central_frame):
+                continue
+            classified = _classify_face(mesh, radius, face, config)
+            if not classified.is_empty:
+                clipped = classified.intersection(central_frame)
+                if not clipped.is_empty:
+                    polygons.append(clipped)
+
+        if not polygons:
+            return GeometryCollection(), (0.0, 2.0 * np.pi), False
+
+        geom = unary_union(polygons)
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
     geom = geom.buffer(0)

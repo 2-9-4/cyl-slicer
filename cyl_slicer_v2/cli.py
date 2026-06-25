@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parallel worker processes for geometry slicing (default: CPU count).",
     )
     parser.add_argument(
+        "--toolpath-workers",
+        type=int,
+        default=None,
+        help="Parallel worker processes for toolpath generation (default: --slice-workers).",
+    )
+    parser.add_argument(
         "--layer-backend",
         choices=("raster", "intersection"),
         default="raster",
@@ -83,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
         slice_workers=args.slice_workers,
+        toolpath_workers=args.toolpath_workers if args.toolpath_workers is not None else args.slice_workers,
         layer_backend=args.layer_backend,
         intersection_refine_factor=args.intersection_refine_factor,
     )

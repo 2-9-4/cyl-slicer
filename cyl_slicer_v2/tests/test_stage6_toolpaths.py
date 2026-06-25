@@ -10,7 +10,7 @@ from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.models import LayerSlice
-from cyl_slicer_v2.toolpaths import build_layer_toolpaths
+from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths
 
 
 class ToolpathTests(unittest.TestCase):
@@ -89,6 +89,13 @@ class ToolpathTests(unittest.TestCase):
         self.assertGreater(len(paths.get("SOLID_INFILL", [])), 0)
         self.assertEqual(paths.get("INFILL_RADIAL", []), [])
         self.assertEqual(paths.get("INFILL_AXIAL", []), [])
+
+    def test_parallel_toolpaths_match_serial_output(self):
+        slice_config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, wall_count=2)
+        layers = slice_mesh(make_fixture("tube"), slice_config, max_layers=4)
+        serial = build_toolpaths(layers, SlicerConfig(toolpath_workers=1))
+        parallel = build_toolpaths(layers, SlicerConfig(toolpath_workers=2))
+        self.assertEqual(parallel, serial)
 
 
 if __name__ == "__main__":

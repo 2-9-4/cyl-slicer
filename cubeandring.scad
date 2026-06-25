@@ -22,8 +22,9 @@ module subdivided_cube(size=1, center=false, dim=5) {
 }
 
 union(){
-    translate([30+25,0,0])rotate([35,0,45])subdivided_cube(20,center=true);
-    translate([-30-25,0,0])rotate([35,0,45])subdivided_cube(20,center=true);
+    for(i = [0:180:360]){
+    rotate([0,0,i])translate([30+25,0,0])rotate([35,0,45])subdivided_cube(20,center=true);
+    }
     difference(){
         cylinder(r=55,h=10);
         translate([0,0,-1]) cylinder(r=50,h=12,$fn=30);

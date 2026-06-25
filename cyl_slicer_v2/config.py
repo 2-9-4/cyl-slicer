@@ -28,6 +28,7 @@ class SlicerConfig:
     slice_workers: int = 1
     layer_backend: str = "raster"
     intersection_refine_factor: int = 0
+    toolpath_workers: int = 1
 
     @property
     def theta_step(self) -> float:
@@ -56,6 +57,8 @@ class SlicerConfig:
             raise ValueError("max_axial_segment must be positive")
         if self.slice_workers < 1:
             raise ValueError("slice_workers must be at least 1")
+        if self.toolpath_workers < 1:
+            raise ValueError("toolpath_workers must be at least 1")
         if self.layer_backend not in {"raster", "intersection"}:
             raise ValueError("layer_backend must be 'raster' or 'intersection'")
         if self.intersection_refine_factor < 0:

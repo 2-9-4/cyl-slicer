@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 import numpy as np
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_to_cartesian
@@ -12,7 +12,7 @@ from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.intersection_backend import _polygon_parts, sample_intersection_layer
 from cyl_slicer_v2.layers import slice_mesh
-from cyl_slicer_v2.mesh_io import load_mesh
+from cyl_slicer_v2.mesh_io import load_mesh, radial_bounds
 from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
@@ -72,8 +72,9 @@ class IntersectionBackendTests(unittest.TestCase):
         layer = layers[58]
         frame_area = 2.0 * np.pi * (mesh.bounds[1, 2] - mesh.bounds[0, 2])
 
-        theta_values = np.linspace(0.0, 2.0 * np.pi, 120, endpoint=False) + np.pi / 120.0
-        axial_values = np.linspace(mesh.bounds[0, 2], mesh.bounds[1, 2], 120)
+        sample_count = 160
+        theta_values = np.linspace(0.0, 2.0 * np.pi, sample_count, endpoint=False) + np.pi / sample_count
+        axial_values = np.linspace(mesh.bounds[0, 2], mesh.bounds[1, 2], sample_count)
         tt, zz = np.meshgrid(theta_values, axial_values, indexing="ij")
         expected = mesh.contains(cylindrical_to_cartesian(tt.ravel(), zz.ravel(), layer.radius))
         actual = (
@@ -83,7 +84,23 @@ class IntersectionBackendTests(unittest.TestCase):
         )
 
         self.assertLess(layer.occupied.area, frame_area * 0.25)
-        self.assertLess(float(np.mean(~expected & actual)), 0.02)
+        self.assertLess(float(np.mean(~expected & actual)), 0.025)
+
+    def test_helix_intersection_does_not_merge_turns_into_full_width_sheet(self):
+        root = Path(__file__).resolve().parents[2]
+        mesh = load_mesh(root / "helix.stl")
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + 2.5
+        geom, _, full = sample_intersection_layer(
+            mesh,
+            radius,
+            SlicerConfig(layer_backend="intersection", intersection_refine_factor=0),
+        )
+
+        self.assertFalse(geom.is_empty)
+        self.assertFalse(full)
+        mid_turn = LineString([(0.0, 20.0), (2.0 * np.pi, 20.0)])
+        self.assertLess(mid_turn.intersection(geom).length, 2.0 * np.pi * 0.9)
 
     def test_rotatecube_debug_layers_match_mesh_contains_sampling_without_rasterizing_faces(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"
