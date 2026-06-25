@@ -153,6 +153,28 @@ class IntersectionBackendTests(unittest.TestCase):
             with self.subTest(layer=layer_index):
                 self.assertLess(sample_area(layer_index), frame_area * 0.90)
 
+    def test_cubeandring2_layer_20_keeps_intersection_boundary_not_cell_grid(self):
+        root = Path(__file__).resolve().parents[2]
+        mesh = load_mesh(root / "cubeandring2.stl")
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.25, intersection_refine_factor=0)
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + config.layer_height * 0.5 + 20 * config.layer_height
+        geom, _, _ = sample_intersection_layer(mesh, radius, config)
+
+        self.assertFalse(geom.is_empty)
+        self.assertLess(geom.bounds[1], -7.0)
+        self.assertGreater(geom.bounds[3], 7.0)
+
+        axis_aligned = 0
+        segment_count = 0
+        for poly in _polygon_parts(geom):
+            for ring in (poly.exterior, *poly.interiors):
+                coords = np.asarray(ring.coords)
+                deltas = np.diff(coords, axis=0)
+                segment_count += len(deltas)
+                axis_aligned += int(np.count_nonzero((np.abs(deltas[:, 0]) < 1e-9) | (np.abs(deltas[:, 1]) < 1e-9)))
+        self.assertLess(axis_aligned / segment_count, 0.05)
+
     def test_helix_intersection_does_not_merge_turns_into_full_width_sheet(self):
         root = Path(__file__).resolve().parents[2]
         mesh = load_mesh(root / "helix.stl")

@@ -325,16 +325,14 @@ def _classify_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: 
     for sample in samples:
         if face.covers(sample):
             inside.append(_point_is_solid(mesh, radius, float(sample.x), float(sample.y)))
-    if inside and all(inside) and len(inside) >= 3:
+    if inside and all(inside):
         if theta_max - theta_min >= TWO_PI * 1.5:
             return _classify_face_cells(mesh, radius, face, config)
         return face
-    if inside and not any(inside) and len(inside) >= 3:
+    if inside and not any(inside):
         return GeometryCollection()
     if config.intersection_refine_factor > 0:
         return _vote_mixed_face(mesh, radius, face, config)
-    if inside and len(inside) < 3:
-        return _classify_face_cells(mesh, radius, face, config)
     if inside:
         fraction, total = _sample_face_solid_fraction(mesh, radius, face, 5)
         if total:
