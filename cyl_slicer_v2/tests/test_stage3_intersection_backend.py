@@ -5,18 +5,64 @@ import unittest
 
 import numpy as np
 from shapely.geometry import LineString, Point
+import trimesh
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_to_cartesian
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
-from cyl_slicer_v2.intersection_backend import _polygon_parts, sample_intersection_layer
+from cyl_slicer_v2.intersection_backend import _polygon_parts, cylindrical_intersection_segments, sample_intersection_layer
 from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh, radial_bounds
 from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
 class IntersectionBackendTests(unittest.TestCase):
+    def test_cylindrical_edge_crossings_are_exact_for_non_radial_edges(self):
+        mesh = trimesh.Trimesh(
+            vertices=np.array(
+                [
+                    [3.0, 4.0, 0.0],
+                    [8.0, 0.0, 0.0],
+                    [3.0, 4.0, 1.0],
+                ],
+                dtype=float,
+            ),
+            faces=np.array([[0, 1, 2]]),
+            process=False,
+        )
+
+        points, edges = cylindrical_intersection_segments(mesh, 6.0)
+
+        self.assertEqual(len(points), 2)
+        self.assertEqual(len(edges), 1)
+        self.assertTrue(np.allclose(np.hypot(points[:, 0], points[:, 1]), 6.0, atol=1e-9))
+
+    def test_cylindrical_intersection_can_tessellate_curved_face_crossing(self):
+        mesh = trimesh.Trimesh(
+            vertices=np.array(
+                [
+                    [3.0, 4.0, 0.0],
+                    [8.0, 0.0, 0.0],
+                    [3.0, 4.0, 8.0],
+                ],
+                dtype=float,
+            ),
+            faces=np.array([[0, 1, 2]]),
+            process=False,
+        )
+
+        points, edges = cylindrical_intersection_segments(
+            mesh,
+            6.0,
+            max_theta_step=np.radians(1.0),
+            max_axial_step=1.0,
+        )
+
+        self.assertGreater(len(points), 2)
+        self.assertGreater(len(edges), 1)
+        self.assertTrue(np.allclose(np.hypot(points[:, 0], points[:, 1]), 6.0, atol=1e-9))
+
     def test_tube_intersection_layer_is_nonempty_and_full_wrap(self):
         mesh = make_fixture("tube")
         geom, _, full = sample_intersection_layer(mesh, 11.0, SlicerConfig(layer_backend="intersection"))

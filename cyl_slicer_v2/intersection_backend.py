@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+import math
 
 import numpy as np
 import shapely
@@ -13,7 +14,7 @@ import trimesh
 from .config import SlicerConfig
 from .coordinates import TWO_PI
 from .mesh_io import axial_bounds
-from .periodic import fold_to_canonical
+from .periodic import normalize_periodic
 
 _WORKER_MESH: trimesh.Trimesh | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
@@ -332,7 +333,12 @@ def _loops_from_directed_edges(points: np.ndarray, edges: list[tuple[int, int]])
     return loops
 
 
-def cylindrical_intersection_segments(mesh: trimesh.Trimesh, radius: float) -> tuple[np.ndarray, list[tuple[int, int]]]:
+def cylindrical_intersection_segments(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    max_theta_step: float | None = None,
+    max_axial_step: float | None = None,
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
     vertex_radii = np.hypot(vertices[:, 0], vertices[:, 1])
@@ -343,17 +349,85 @@ def cylindrical_intersection_segments(mesh: trimesh.Trimesh, radius: float) -> t
     def crossing_index(a: int, b: int) -> int:
         key = (min(a, b), max(a, b))
         if key not in edge_cache:
-            ra = vertex_radii[a]
-            rb = vertex_radii[b]
-            denom = rb - ra
-            if abs(denom) < 1e-12:
-                edge_cache[key] = len(points)
-                points.append(vertices[a].copy())
+            start = vertices[a]
+            delta = vertices[b] - start
+            qa = float(delta[0] * delta[0] + delta[1] * delta[1])
+            qb = float(2.0 * (start[0] * delta[0] + start[1] * delta[1]))
+            qc = float(start[0] * start[0] + start[1] * start[1] - radius * radius)
+
+            if qa <= 1e-18:
+                t = 0.0
             else:
-                t = (radius - ra) / denom
-                edge_cache[key] = len(points)
-                points.append(vertices[a] + t * (vertices[b] - vertices[a]))
+                disc = max(0.0, qb * qb - 4.0 * qa * qc)
+                sqrt_disc = float(np.sqrt(disc))
+                candidates = [
+                    root
+                    for root in (
+                        (-qb - sqrt_disc) / (2.0 * qa),
+                        (-qb + sqrt_disc) / (2.0 * qa),
+                    )
+                    if -1e-9 <= root <= 1.0 + 1e-9
+                ]
+                if candidates:
+                    t = min(max(candidates[0], 0.0), 1.0)
+                else:
+                    ra = vertex_radii[a]
+                    rb = vertex_radii[b]
+                    denom = rb - ra
+                    t = 0.0 if abs(denom) < 1e-12 else (radius - ra) / denom
+                    t = min(max(float(t), 0.0), 1.0)
+
+            edge_cache[key] = len(points)
+            points.append(start + t * delta)
         return edge_cache[key]
+
+    def append_curve_edges(from_idx: int, to_idx: int, face_vertices: np.ndarray) -> None:
+        p0 = points[from_idx]
+        p1 = points[to_idx]
+        theta0 = math.atan2(float(p0[1]), float(p0[0]))
+        theta1 = math.atan2(float(p1[1]), float(p1[0]))
+        delta_theta = (theta1 - theta0 + math.pi) % (2.0 * math.pi) - math.pi
+
+        steps = 1
+        if max_theta_step is not None and max_theta_step > 0:
+            steps = max(steps, int(math.ceil(abs(delta_theta) / max_theta_step)))
+        if max_axial_step is not None and max_axial_step > 0:
+            steps = max(steps, int(math.ceil(abs(float(p1[2] - p0[2])) / max_axial_step)))
+        if steps <= 1:
+            edges.append((from_idx, to_idx))
+            return
+
+        normal = np.cross(face_vertices[1] - face_vertices[0], face_vertices[2] - face_vertices[0])
+        offset = -float(np.dot(normal, face_vertices[0]))
+        chain = [from_idx]
+        for step in range(1, steps):
+            frac = step / steps
+            if abs(float(normal[2])) > 1e-12:
+                theta = theta0 + delta_theta * frac
+                point = np.array(
+                    [
+                        radius * math.cos(theta),
+                        radius * math.sin(theta),
+                        -(
+                            float(normal[0]) * radius * math.cos(theta)
+                            + float(normal[1]) * radius * math.sin(theta)
+                            + offset
+                        )
+                        / float(normal[2]),
+                    ],
+                    dtype=float,
+                )
+            else:
+                point = p0 + (p1 - p0) * frac
+                radial = math.hypot(float(point[0]), float(point[1]))
+                if radial > 1e-12:
+                    point = point.copy()
+                    point[:2] *= radius / radial
+
+            chain.append(len(points))
+            points.append(point)
+        chain.append(to_idx)
+        edges.extend(zip(chain[:-1], chain[1:]))
 
     for v0, v1, v2 in faces:
         inside = vertex_radii[[v0, v1, v2]] < radius
@@ -371,7 +445,7 @@ def cylindrical_intersection_segments(mesh: trimesh.Trimesh, radius: float) -> t
                 to_idx = crossing_index(a, b)
 
         if from_idx is not None and to_idx is not None and from_idx != to_idx:
-            edges.append((from_idx, to_idx))
+            append_curve_edges(from_idx, to_idx, vertices[[v0, v1, v2]])
 
     return np.asarray(points, dtype=float), edges
 
@@ -383,7 +457,12 @@ def sample_intersection_layer(
     z_bounds: tuple[float, float] | None = None,
 ):
     z_min, z_max = z_bounds if z_bounds is not None else axial_bounds(mesh, config.axial_margin)
-    points_3d, edges = cylindrical_intersection_segments(mesh, radius)
+    points_3d, edges = cylindrical_intersection_segments(
+        mesh,
+        radius,
+        max_theta_step=min(config.theta_step, math.radians(2.0)),
+        max_axial_step=config.max_axial_segment,
+    )
     if len(points_3d) == 0 or not edges:
         return GeometryCollection(), (0.0, 2.0 * np.pi), False
 
@@ -435,11 +514,7 @@ def sample_intersection_layer(
         if not polygons:
             return GeometryCollection(), (0.0, 2.0 * np.pi), False
 
-        raw = unary_union(polygons)
-        if not raw.is_valid:
-            raw = shapely.make_valid(raw)
-        raw = raw.buffer(0)
-        geom = fold_to_canonical(raw, z_min, z_max)
+        geom = unary_union(polygons)
     else:
         central_frame = box(0.0, z_min, period, z_max)
         expanded_frame = box(-period, z_min, 2.0 * period, z_max)
@@ -476,7 +551,8 @@ def sample_intersection_layer(
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
     geom = geom.buffer(0)
-    return geom, (0.0, 2.0 * np.pi), _has_full_width_horizontal_span(geom)
+    geom, window, _ = normalize_periodic(geom, z_min, z_max)
+    return geom, window, _has_full_width_horizontal_span(geom)
 
 
 def _init_worker(mesh: trimesh.Trimesh, config: SlicerConfig, z_bounds: tuple[float, float]) -> None:
