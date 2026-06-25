@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import unittest
 
@@ -131,6 +132,26 @@ class IntersectionBackendTests(unittest.TestCase):
 
         self.assertLess(layer.occupied.area, frame_area * 0.25)
         self.assertLess(float(np.mean(~expected & actual)), 0.025)
+
+    def test_cubeandring2_intersection_layers_do_not_drop_or_fill_frames(self):
+        root = Path(__file__).resolve().parents[2]
+        mesh = load_mesh(root / "cubeandring2.stl")
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.25, intersection_refine_factor=0)
+        r_min, _ = radial_bounds(mesh)
+        frame_area = 2.0 * math.pi * (mesh.bounds[1, 2] - mesh.bounds[0, 2])
+
+        def sample_area(layer_index: int) -> float:
+            radius = r_min + config.layer_height * 0.5 + layer_index * config.layer_height
+            geom, _, _ = sample_intersection_layer(mesh, radius, config)
+            return 0.0 if geom.is_empty else geom.area
+
+        for layer_index in (19, 20, 23, 45):
+            with self.subTest(layer=layer_index):
+                self.assertGreater(sample_area(layer_index), frame_area * 0.30)
+
+        for layer_index in (21, 22, 24, 25, 44):
+            with self.subTest(layer=layer_index):
+                self.assertLess(sample_area(layer_index), frame_area * 0.90)
 
     def test_helix_intersection_does_not_merge_turns_into_full_width_sheet(self):
         root = Path(__file__).resolve().parents[2]

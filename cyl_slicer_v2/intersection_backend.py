@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+import itertools
 import math
 
 import numpy as np
@@ -20,6 +21,8 @@ _WORKER_MESH: trimesh.Trimesh | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
 _WORKER_Z_BOUNDS: tuple[float, float] | None = None
 _MIXED_FACE_SOLID_THRESHOLD = 0.35
+_INTERSECTION_POINT_WELD_TOL = 1e-5
+_POINT_WELD_NEIGHBOR_OFFSETS = tuple(itertools.product((-1, 0, 1), repeat=3))
 
 
 def _cart_to_theta_z(points: np.ndarray) -> np.ndarray:
@@ -35,6 +38,59 @@ def _restore_loop_walk(coords: np.ndarray) -> np.ndarray:
     if abs(float(out[-1, 0] - out[0, 0])) < 1e-8 and abs(float(out[-1, 1] - out[0, 1])) < 1e-8:
         out[-1] = out[0]
     return out
+
+
+def _weld_intersection_graph(
+    points: np.ndarray,
+    edges: list[tuple[int, int]],
+    tol: float = _INTERSECTION_POINT_WELD_TOL,
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    if len(points) == 0 or not edges:
+        return points, edges
+
+    inv_tol = 1.0 / tol
+    tol_sq = tol * tol
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    old_to_new = np.empty(len(points), dtype=np.int64)
+    welded: list[np.ndarray] = []
+
+    for old_index, point in enumerate(points):
+        key = (
+            math.floor(float(point[0]) * inv_tol),
+            math.floor(float(point[1]) * inv_tol),
+            math.floor(float(point[2]) * inv_tol),
+        )
+        match = None
+        for offset in _POINT_WELD_NEIGHBOR_OFFSETS:
+            neighbor_key = (key[0] + offset[0], key[1] + offset[1], key[2] + offset[2])
+            for candidate in buckets.get(neighbor_key, ()):
+                delta = welded[candidate] - point
+                if float(np.dot(delta, delta)) <= tol_sq:
+                    match = candidate
+                    break
+            if match is not None:
+                break
+
+        if match is None:
+            match = len(welded)
+            welded.append(point)
+            buckets.setdefault(key, []).append(match)
+        old_to_new[old_index] = match
+
+    welded_edges = []
+    seen_edges = set()
+    for start, end in edges:
+        welded_start = int(old_to_new[start])
+        welded_end = int(old_to_new[end])
+        if welded_start == welded_end:
+            continue
+        edge = (welded_start, welded_end)
+        if edge in seen_edges:
+            continue
+        seen_edges.add(edge)
+        welded_edges.append(edge)
+
+    return np.asarray(welded, dtype=float), welded_edges
 
 
 def _polygon_parts(geom: BaseGeometry) -> list[Polygon]:
@@ -270,6 +326,8 @@ def _classify_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: 
         if face.covers(sample):
             inside.append(_point_is_solid(mesh, radius, float(sample.x), float(sample.y)))
     if inside and all(inside) and len(inside) >= 3:
+        if theta_max - theta_min >= TWO_PI * 1.5:
+            return _classify_face_cells(mesh, radius, face, config)
         return face
     if inside and not any(inside) and len(inside) >= 3:
         return GeometryCollection()
@@ -447,7 +505,7 @@ def cylindrical_intersection_segments(
         if from_idx is not None and to_idx is not None and from_idx != to_idx:
             append_curve_edges(from_idx, to_idx, vertices[[v0, v1, v2]])
 
-    return np.asarray(points, dtype=float), edges
+    return _weld_intersection_graph(np.asarray(points, dtype=float), edges)
 
 
 def sample_intersection_layer(
