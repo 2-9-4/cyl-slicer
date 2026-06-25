@@ -16,7 +16,7 @@ class GcodeTests(unittest.TestCase):
         gcode = slice_to_gcode(make_fixture("tube"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
         self.assertIn(";LAYER:0", gcode)
         self.assertIn(";TYPE:EXTERNAL_PERIMETER", gcode)
-        self.assertIn(";TYPE:INFILL_RADIAL", gcode)
+        self.assertIn(";TYPE:SOLID_INFILL", gcode)
 
     def test_extrusion_is_monotonic(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)

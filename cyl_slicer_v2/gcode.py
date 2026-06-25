@@ -67,11 +67,11 @@ def _split_long_axial_segments(
     out = [pts[0]]
     for (t0, x0), (t1, x1) in zip(pts[:-1], pts[1:]):
         dx = x1 - x0
-        if abs(t1 - t0) <= 1e-9 and abs(dx) > max_axial_segment:
+        if abs(dx) > max_axial_segment:
             steps = int(math.ceil(abs(dx) / max_axial_segment))
             for i in range(1, steps + 1):
                 frac = i / steps
-                out.append((t1, x0 + dx * frac))
+                out.append((t0 + (t1 - t0) * frac, x0 + dx * frac))
         else:
             out.append((t1, x1))
     return out

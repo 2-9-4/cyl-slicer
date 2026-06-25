@@ -33,6 +33,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parallel worker processes for geometry slicing (default: CPU count).",
     )
     parser.add_argument(
+        "--layer-backend",
+        choices=("raster", "intersection"),
+        default="raster",
+        help="Layer geometry backend: raster occupancy sampling or narrow triangle/cylinder intersection.",
+    )
+    parser.add_argument(
+        "--intersection-refine-factor",
+        type=int,
+        default=0,
+        help="Optional smooth topology voting density for mixed intersection faces; 0 disables it.",
+    )
+    parser.add_argument(
         "--occupancy-backend",
         choices=("mesh", "grid"),
         default="mesh",
@@ -71,17 +83,21 @@ def main(argv: list[str] | None = None) -> int:
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
         slice_workers=args.slice_workers,
+        layer_backend=args.layer_backend,
+        intersection_refine_factor=args.intersection_refine_factor,
     )
-    backend = timed(
-        "occupancy backend",
-        lambda: build_occupancy_backend(
-            mesh,
-            kind=args.occupancy_backend,
-            grid_voxel_mm=args.grid_voxel_mm,
-            grid_cache=args.grid_cache,
-            rebuild_grid=args.rebuild_grid,
-        ),
-    )
+    backend = None
+    if args.layer_backend == "raster":
+        backend = timed(
+            "occupancy backend",
+            lambda: build_occupancy_backend(
+                mesh,
+                kind=args.occupancy_backend,
+                grid_voxel_mm=args.grid_voxel_mm,
+                grid_cache=args.grid_cache,
+                rebuild_grid=args.rebuild_grid,
+            ),
+        )
     layers = timed("slice geometry", lambda: slice_mesh(mesh, config, max_layers=args.max_layers, occupancy_backend=backend))
     layer_paths = timed("generate toolpaths", lambda: build_toolpaths(layers, config))
     gcode = timed("emit gcode", lambda: emit_gcode(layer_paths, config))

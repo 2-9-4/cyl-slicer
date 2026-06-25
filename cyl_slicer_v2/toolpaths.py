@@ -182,6 +182,11 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             periodic=periodic,
             theta_window=theta_window,
         )
+        if not solid_source.is_empty and not infill_source.is_empty:
+            infill_source = infill_source.difference(solid_source)
+            if not infill_source.is_valid:
+                infill_source = shapely.make_valid(infill_source)
+            infill_source = infill_source.buffer(0)
         paths["INFILL_RADIAL"].extend(
             line_grid_paths(infill_source, "INFILL_RADIAL", radius, config.infill_spacing, config, direction="radial")
         )

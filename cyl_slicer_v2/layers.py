@@ -9,6 +9,7 @@ from shapely.ops import unary_union
 import trimesh
 
 from .config import SlicerConfig
+from .intersection_backend import sample_intersection_layers
 from .mesh_io import radial_bounds
 from .models import LayerSlice
 from .occupancy_backends import MeshContainsBackend, OccupancyBackend
@@ -38,6 +39,7 @@ def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
     if stop < start:
         return []
     count = int(np.floor((stop - start) / config.layer_height)) + 1
+    print(f"layer radii goes up {r_min:.2f}->{r_max:.2f}")
     return [float(start + i * config.layer_height) for i in range(count)]
 
 
@@ -97,7 +99,11 @@ def slice_mesh(
     occupied = [GeometryCollection() for _ in radii]
     windows = [(0.0, 0.0) for _ in radii]
     full_flags = [False for _ in radii]
-    for i, geom, window, full in _sample_layers(mesh, config, radii, backend):
+    if config.layer_backend == "intersection":
+        sampled = sample_intersection_layers(mesh, config, radii)
+    else:
+        sampled = _sample_layers(mesh, config, radii, backend)
+    for i, geom, window, full in sampled:
         occupied[i] = _clean(geom)
         windows[i] = window
         full_flags[i] = full

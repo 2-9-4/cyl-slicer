@@ -26,6 +26,8 @@ class SlicerConfig:
     min_path_length: float = 1e-4
     max_axial_segment: float = 1.5
     slice_workers: int = 1
+    layer_backend: str = "raster"
+    intersection_refine_factor: int = 0
 
     @property
     def theta_step(self) -> float:
@@ -54,6 +56,10 @@ class SlicerConfig:
             raise ValueError("max_axial_segment must be positive")
         if self.slice_workers < 1:
             raise ValueError("slice_workers must be at least 1")
+        if self.layer_backend not in {"raster", "intersection"}:
+            raise ValueError("layer_backend must be 'raster' or 'intersection'")
+        if self.intersection_refine_factor < 0:
+            raise ValueError("intersection_refine_factor must be non-negative")
         if self.max_radius is not None and self.max_radius <= 0:
             raise ValueError("max_radius must be positive when set")
         if self.min_radius is not None and self.min_radius < 0:

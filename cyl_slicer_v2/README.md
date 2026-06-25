@@ -24,6 +24,21 @@ approximate voxel-grid backend can be enabled and cached:
 Use `--rebuild-grid` to refresh an existing cache. Cached grids validate their
 voxel size and mesh bounds before use.
 
+There is also a narrow triangle/cylinder intersection layer backend. It bypasses
+point occupancy sampling and extracts closed intersection loops directly:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli cubeandring.stl \
+  --layer-backend intersection \
+  --out /tmp/cubeandring_intersection_v2.gcode
+```
+
+The intersection backend is experimental and intentionally small. Raster remains
+the default. `--intersection-refine-factor N` optionally enables smooth topology
+voting for mixed faces: sampled occupancy decides whether to keep or discard the
+existing smooth polygonized face, but it does not replace boundaries with raster
+cells. `0` disables it and is the default.
+
 The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters
