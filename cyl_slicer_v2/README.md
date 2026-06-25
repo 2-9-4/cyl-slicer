@@ -38,6 +38,11 @@ the same worker count as `--slice-workers`; override it with
 `--toolpath-workers N` when geometry slicing and toolpath generation need
 different process counts.
 
+When a model's innermost radius is above the printer build cylinder, v2 emits
+support-only foundation layers with negative layer numbers before model layer 0.
+Set the printer surface with `--build-cylinder-radius R` (`--bed-radius R` also
+works), or pass `--no-gap-support` to disable those foundation layers.
+
 The intersection backend is experimental and intentionally small. Raster remains
 the default. `--intersection-refine-factor N` optionally enables smooth topology
 voting for mixed faces: sampled occupancy decides whether to keep or discard the

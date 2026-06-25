@@ -44,6 +44,11 @@ class CliTests(unittest.TestCase):
                 self.assertIn(";start of slice", gcode)
                 self.assertIn(";end of slice", gcode)
 
+    def test_cli_accepts_build_cylinder_radius(self):
+        gcode = self.run_cli("--fixture", "tube", "--build-cylinder-radius", "8.0")
+        self.assertIn(";LAYER:-", gcode)
+        self.assertIn(";TYPE:SUPPORT", gcode)
+
 
 if __name__ == "__main__":
     unittest.main()

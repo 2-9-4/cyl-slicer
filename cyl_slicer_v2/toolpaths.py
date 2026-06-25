@@ -33,6 +33,17 @@ def _from_metric(geom, radius: float):
     return shapely.transform(geom, lambda p: p * [1.0 / radius, 1.0])
 
 
+def _clean_polygonal(geom):
+    if geom.is_empty:
+        return GeometryCollection()
+    if not geom.is_valid:
+        geom = shapely.make_valid(geom)
+    geom = geom.buffer(0)
+    if geom.is_empty or geom.area <= 1e-12:
+        return GeometryCollection()
+    return geom
+
+
 def _polygon_parts(geom) -> list[Polygon]:
     if geom is None or geom.is_empty:
         return []
@@ -198,9 +209,10 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         )
 
     if not layer.support.is_empty:
-        paths["SUPPORT"].extend(
-            line_grid_paths(layer.support, "SUPPORT", radius, config.support_spacing, config, direction="axial")
-        )
+        if layer.index >= 0:
+            paths["SUPPORT"].extend(
+                line_grid_paths(layer.support, "SUPPORT", radius, config.support_spacing, config, direction="axial")
+            )
         paths["SUPPORT"].extend(
             line_grid_paths(layer.support, "SUPPORT", radius, config.support_spacing, config, direction="radial")
         )
@@ -219,15 +231,61 @@ def _build_layer_toolpaths_worker(layer: LayerSlice) -> LayerToolpaths:
     return build_layer_toolpaths(layer, _WORKER_CONFIG)
 
 
-def build_toolpaths(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerToolpaths]:
-    worker_count = min(config.toolpath_workers, len(layers))
-    if worker_count <= 1:
-        return [build_layer_toolpaths(layer, config) for layer in layers]
+def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerSlice]:
+    if not config.generate_gap_support or not layers or any(layer.index < 0 for layer in layers):
+        return []
 
-    chunksize = max(1, len(layers) // (worker_count * 4))
+    first_model = next((layer for layer in layers if not layer.occupied.is_empty), None)
+    if first_model is None:
+        return []
+
+    start = config.bed_radius + config.layer_height * 0.5
+    if start >= first_model.radius - 1e-9:
+        return []
+
+    pieces = []
+    if not first_model.support.is_empty:
+        pieces.append(first_model.support)
+    if not first_model.occupied.is_empty:
+        pieces.append(first_model.occupied)
+    footprint = _clean_polygonal(unary_union(pieces)) if pieces else GeometryCollection()
+    if footprint.is_empty:
+        return []
+
+    radii = []
+    radius = start
+    while radius < first_model.radius - 1e-9:
+        radii.append(float(radius))
+        radius += config.layer_height
+
+    count = len(radii)
+    empty = GeometryCollection()
+    return [
+        LayerSlice(
+            index=i - count,
+            radius=radius,
+            occupied=empty,
+            top_surfaces=empty,
+            bottom_surfaces=empty,
+            needs_support=empty,
+            support=footprint,
+            theta_window=first_model.theta_window,
+            is_full_wrap=first_model.is_full_wrap,
+        )
+        for i, radius in enumerate(radii)
+    ]
+
+
+def build_toolpaths(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerToolpaths]:
+    all_layers = [*gap_support_slices(layers, config), *layers]
+    worker_count = min(config.toolpath_workers, len(all_layers))
+    if worker_count <= 1:
+        return [build_layer_toolpaths(layer, config) for layer in all_layers]
+
+    chunksize = max(1, len(all_layers) // (worker_count * 4))
     with ProcessPoolExecutor(
         max_workers=worker_count,
         initializer=_init_toolpath_worker,
         initargs=(config,),
     ) as executor:
-        return list(executor.map(_build_layer_toolpaths_worker, layers, chunksize=chunksize))
+        return list(executor.map(_build_layer_toolpaths_worker, all_layers, chunksize=chunksize))

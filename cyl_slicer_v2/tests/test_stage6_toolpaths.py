@@ -10,7 +10,7 @@ from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.models import LayerSlice
-from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths
+from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_support_slices
 
 
 class ToolpathTests(unittest.TestCase):
@@ -89,6 +89,30 @@ class ToolpathTests(unittest.TestCase):
         self.assertGreater(len(paths.get("SOLID_INFILL", [])), 0)
         self.assertEqual(paths.get("INFILL_RADIAL", []), [])
         self.assertEqual(paths.get("INFILL_AXIAL", []), [])
+
+    def test_gap_support_layers_are_emitted_below_floating_model(self):
+        config = SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0, bed_radius=15.0, wall_count=1)
+        layers = slice_mesh(make_fixture("solid_box"), config, max_layers=1)
+        gap_layers = gap_support_slices(layers, config)
+        self.assertTrue(gap_layers)
+        self.assertTrue(all(layer.index < 0 for layer in gap_layers))
+        self.assertLess(gap_layers[-1].radius, layers[0].radius)
+
+        paths = build_toolpaths(layers, config)
+        support_layers = [layer for layer in paths if layer.layer_index < 0]
+        self.assertTrue(support_layers)
+        self.assertTrue(any(layer.paths_by_role.get("SUPPORT") for layer in support_layers))
+
+    def test_gap_support_can_be_disabled(self):
+        config = SlicerConfig(
+            theta_step_deg=15,
+            axial_step=2.0,
+            layer_height=1.0,
+            bed_radius=15.0,
+            generate_gap_support=False,
+        )
+        layers = slice_mesh(make_fixture("solid_box"), config, max_layers=1)
+        self.assertEqual(gap_support_slices(layers, config), [])
 
     def test_parallel_toolpaths_match_serial_output(self):
         slice_config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, wall_count=2)

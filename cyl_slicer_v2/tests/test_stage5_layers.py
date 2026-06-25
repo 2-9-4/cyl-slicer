@@ -56,11 +56,21 @@ class LayerClassificationTests(unittest.TestCase):
 
         layer25 = layers[25]
         self.assertGreater(layer25.occupied.area, 20.0)
-        self.assertTrue(layer25.support.is_empty)
+        self.assertLess(layer25.support.area, frame_area * 0.25)
 
         layer46 = layers[46]
         self.assertFalse(layer46.is_full_wrap)
         self.assertLess(layer46.occupied.area, frame_area * 0.75)
+
+    def test_cubeandring_early_growth_seeds_support(self):
+        mesh_path = Path(__file__).resolve().parents[2] / "cubeandring.stl"
+        layers = slice_mesh(
+            load_mesh(mesh_path),
+            SlicerConfig(layer_backend="intersection", layer_height=0.25, slice_workers=4),
+            max_layers=4,
+        )
+        self.assertTrue(any(not layer.needs_support.is_empty for layer in layers[1:]))
+        self.assertFalse(layers[0].support.is_empty)
 
     def test_cubeandring2_layers_79_and_80_do_not_spike_corner_count(self):
         mesh_path = Path(__file__).resolve().parent / "fixtures" / "cubeandring2.stl"

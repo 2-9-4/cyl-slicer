@@ -14,6 +14,7 @@ from .mesh_io import radial_bounds
 from .models import LayerSlice
 from .occupancy_backends import MeshContainsBackend, OccupancyBackend
 from .occupancy import axial_edges, sample_layer_with_edges, theta_edges
+from .periodic import periodic_copies
 
 _WORKER_BACKEND: OccupancyBackend | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
@@ -30,6 +31,29 @@ def _clean(geom):
     if geom.is_empty or geom.area <= 1e-12:
         return GeometryCollection()
     return geom
+
+
+def _metric_buffer(geom, radius: float, distance: float):
+    scale = max(radius, 1e-9)
+    metric = shapely.transform(geom, lambda p: p * [scale, 1.0])
+    buffered = metric.buffer(distance)
+    if buffered.is_empty:
+        return GeometryCollection()
+    raw = shapely.transform(buffered, lambda p: p * [1.0 / scale, 1.0])
+    return _clean(raw)
+
+
+def _needs_support_from_previous(geom, previous, radius: float, config: SlicerConfig):
+    if geom.is_empty:
+        return GeometryCollection()
+    if previous.is_empty:
+        return _clean(geom)
+    previous_cover = _metric_buffer(
+        periodic_copies(previous, turns=1),
+        radius,
+        config.nozzle_width * 0.5,
+    )
+    return _clean(geom.difference(previous_cover))
 
 
 def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
@@ -111,17 +135,13 @@ def slice_mesh(
         windows[i] = window
         full_flags[i] = full
 
-    occupied_below = GeometryCollection()
     layers: list[LayerSlice] = []
     for i, geom in enumerate(occupied):
         prev = occupied[i - 1] if i > 0 else GeometryCollection()
         nxt = occupied[i + 1] if i + 1 < len(occupied) else GeometryCollection()
         top = _clean(geom.difference(nxt)) if not geom.is_empty else GeometryCollection()
         bottom = _clean(geom.difference(prev)) if not geom.is_empty else GeometryCollection()
-        if bottom.is_empty or occupied_below.is_empty:
-            needs = GeometryCollection()
-        else:
-            needs = _clean(bottom.intersection(occupied_below))
+        needs = _needs_support_from_previous(geom, prev, radii[i], config) if i > 0 else GeometryCollection()
         layers.append(
             LayerSlice(
                 index=i,
@@ -135,8 +155,6 @@ def slice_mesh(
                 is_full_wrap=full_flags[i],
             )
         )
-        if not geom.is_empty:
-            occupied_below = _clean(unary_union([occupied_below, geom]) if not occupied_below.is_empty else geom)
 
     carry = GeometryCollection()
     for layer in reversed(layers):

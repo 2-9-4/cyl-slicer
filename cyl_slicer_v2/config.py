@@ -15,6 +15,7 @@ class SlicerConfig:
     axial_step: float = 1.0
     guard_columns: int = 2
     bed_radius: float = 0.0
+    generate_gap_support: bool = True
     max_radius: float | None = None
     min_radius: float | None = None
     axial_margin: float = 0.0

@@ -27,6 +27,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
+        "--build-cylinder-radius",
+        "--bed-radius",
+        dest="bed_radius",
+        type=float,
+        default=0.0,
+        help="Radius of the printer build cylinder; support foundations start from this radius.",
+    )
+    parser.add_argument(
+        "--no-gap-support",
+        action="store_false",
+        dest="generate_gap_support",
+        help="Disable support-only layers from the build cylinder up to the first model layer.",
+    )
+    parser.add_argument(
         "--slice-workers",
         type=int,
         default=os.cpu_count() or 1,
@@ -88,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         wall_count=args.wall_count,
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
+        bed_radius=args.bed_radius,
+        generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,
         toolpath_workers=args.toolpath_workers if args.toolpath_workers is not None else args.slice_workers,
         layer_backend=args.layer_backend,
