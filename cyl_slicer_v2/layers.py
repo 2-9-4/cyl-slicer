@@ -279,6 +279,43 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
         carry = _support_regions(_safe_union(pieces), layer.radius, config, promote=False) if pieces else GeometryCollection()
 
 
+def propagate_solid_surfaces(layers: list[LayerSlice], config: SlicerConfig) -> None:
+    top_sources = [
+        (index, layer.top_surfaces)
+        for index, layer in enumerate(layers)
+        if not layer.top_surfaces.is_empty
+    ]
+    bottom_sources = [
+        (index, layer.bottom_surfaces)
+        for index, layer in enumerate(layers)
+        if not layer.bottom_surfaces.is_empty
+    ]
+
+    for index, surface in top_sources:
+        carry = surface
+        for depth in range(1, config.top_layers):
+            target_index = index - depth
+            if target_index < 0:
+                break
+            target = layers[target_index]
+            carry = _safe_intersection(carry, target.occupied)
+            if carry.is_empty:
+                break
+            target.top_surfaces = _safe_union([target.top_surfaces, carry])
+
+    for index, surface in bottom_sources:
+        carry = surface
+        for depth in range(1, config.bottom_layers):
+            target_index = index + depth
+            if target_index >= len(layers):
+                break
+            target = layers[target_index]
+            carry = _safe_intersection(carry, target.occupied)
+            if carry.is_empty:
+                break
+            target.bottom_surfaces = _safe_union([target.bottom_surfaces, carry])
+
+
 def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
     r_min_mesh, r_max_mesh = radial_bounds(mesh)
     r_min = config.min_radius if config.min_radius is not None else r_min_mesh
@@ -379,6 +416,7 @@ def slice_mesh(
             )
         )
 
+    propagate_solid_surfaces(layers, config)
     propagate_support(layers, config)
 
     return layers

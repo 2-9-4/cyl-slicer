@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from cyl_slicer_v2.cli import build_parser
+
 
 class CliTests(unittest.TestCase):
     def run_cli(self, *args: str) -> str:
@@ -48,6 +50,12 @@ class CliTests(unittest.TestCase):
         gcode = self.run_cli("--fixture", "tube", "--build-cylinder-radius", "8.0")
         self.assertIn(";LAYER:-", gcode)
         self.assertIn(";TYPE:SUPPORT", gcode)
+
+    def test_cli_accepts_top_and_bottom_layers(self):
+        args = build_parser().parse_args(["--fixture", "tube", "--top-layers", "4", "--bottom-layers", "2"])
+
+        self.assertEqual(args.top_layers, 4)
+        self.assertEqual(args.bottom_layers, 2)
 
 
 if __name__ == "__main__":

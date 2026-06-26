@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--theta-step-deg", type=float, default=5.0)
     parser.add_argument("--axial-step", type=float, default=1.0)
     parser.add_argument("--wall-count", type=int, default=2)
+    parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
+    parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
@@ -124,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         theta_step_deg=args.theta_step_deg,
         axial_step=args.axial_step,
         wall_count=args.wall_count,
+        top_layers=args.top_layers,
+        bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
         support_spacing=args.support_spacing,
         support_min_island_area=args.support_min_island_area,

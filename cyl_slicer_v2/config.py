@@ -9,6 +9,8 @@ class SlicerConfig:
     layer_height: float = 0.5
     nozzle_width: float = 0.4
     wall_count: int = 2
+    top_layers: int = 3
+    bottom_layers: int = 3
     infill_spacing: float = 2.0
     support_spacing: float = 1.5
     support_min_island_area: float = 0.05
@@ -46,6 +48,10 @@ class SlicerConfig:
             raise ValueError("nozzle_width must be positive")
         if self.wall_count < 1:
             raise ValueError("wall_count must be at least 1")
+        if self.top_layers < 1:
+            raise ValueError("top_layers must be at least 1")
+        if self.bottom_layers < 1:
+            raise ValueError("bottom_layers must be at least 1")
         if self.infill_spacing <= 0:
             raise ValueError("infill_spacing must be positive")
         if self.support_spacing <= 0:

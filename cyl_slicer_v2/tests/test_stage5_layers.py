@@ -9,7 +9,14 @@ from shapely.geometry import GeometryCollection, Point, box
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.intersection_backend import _polygon_parts
-from cyl_slicer_v2.layers import _metric_area, _needs_support_from_previous, _support_regions, propagate_support, slice_mesh
+from cyl_slicer_v2.layers import (
+    _metric_area,
+    _needs_support_from_previous,
+    _support_regions,
+    propagate_solid_surfaces,
+    propagate_support,
+    slice_mesh,
+)
 from cyl_slicer_v2.mesh_io import load_mesh
 from cyl_slicer_v2.models import LayerSlice
 
@@ -27,11 +34,38 @@ class LayerClassificationTests(unittest.TestCase):
         self.assertAlmostEqual(first.bottom_surfaces.area, first.occupied.area)
 
     def test_tube_middle_layers_have_no_false_surface_churn(self):
-        layers = slice_mesh(make_fixture("tube"), SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=0.5))
+        config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=0.5, top_layers=1, bottom_layers=1)
+        layers = slice_mesh(make_fixture("tube"), config)
         occupied = [layer for layer in layers if not layer.occupied.is_empty]
         middle = occupied[len(occupied) // 2]
         self.assertLess(middle.top_surfaces.area, middle.occupied.area * 0.05)
         self.assertLess(middle.bottom_surfaces.area, middle.occupied.area * 0.05)
+
+    def test_solid_surfaces_propagate_in_expected_layer_directions(self):
+        empty = GeometryCollection()
+        occupied = box(0.0, 0.0, 2.0, 2.0)
+        top_skin = box(0.0, 0.0, 1.0, 1.0)
+        bottom_skin = box(1.0, 1.0, 2.0, 2.0)
+        layers = [
+            LayerSlice(
+                index=i,
+                radius=10.0 + i,
+                occupied=occupied,
+                top_surfaces=top_skin if i == 3 else empty,
+                bottom_surfaces=bottom_skin if i == 0 else empty,
+                needs_support=empty,
+                support=empty,
+            )
+            for i in range(5)
+        ]
+
+        propagate_solid_surfaces(layers, SlicerConfig(top_layers=3, bottom_layers=2))
+
+        self.assertTrue(layers[1].top_surfaces.covers(Point(0.5, 0.5)))
+        self.assertTrue(layers[2].top_surfaces.covers(Point(0.5, 0.5)))
+        self.assertTrue(layers[4].top_surfaces.is_empty)
+        self.assertTrue(layers[1].bottom_surfaces.covers(Point(1.5, 1.5)))
+        self.assertTrue(layers[2].bottom_surfaces.is_empty)
 
     def test_overhang_step_creates_support(self):
         layers = slice_mesh(make_fixture("overhang_step"), SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0))

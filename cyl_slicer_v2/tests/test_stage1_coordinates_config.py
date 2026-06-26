@@ -53,11 +53,18 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertAlmostEqual(values[1] - values[0], math.radians(0.292), places=9)
 
     def test_config_validation(self):
-        SlicerConfig().validate()
+        config = SlicerConfig()
+        config.validate()
+        self.assertEqual(config.top_layers, 3)
+        self.assertEqual(config.bottom_layers, 3)
         with self.assertRaises(ValueError):
             SlicerConfig(layer_height=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(nozzle_width=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(top_layers=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(bottom_layers=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(axial_step=0).validate()
 
