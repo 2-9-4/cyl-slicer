@@ -52,7 +52,7 @@ cells. `0` disables it and is the default.
 The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters
-- `Y`: accumulated rotary angle in degrees
+- `Y`: layer-local rotary angle in degrees after `G92 E0 Y0`
 - `Z`: radial lift from `bed_radius`
 - comments: `;LAYER`, `;Z`, `;TYPE`
 

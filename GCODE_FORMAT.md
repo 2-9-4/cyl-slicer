@@ -5,9 +5,9 @@
 The G-code uses a non-standard coordinate system adapted for cylindrical printing:
 
 - **X axis**: Axial position (Z in cylindrical coords), in millimeters
-- **Y axis**: Accumulated rotation angle in **degrees** (not canonical [0, 360) — never resets, always increases forward)
+- **Y axis**: Rotation angle in **degrees**, relative to the most recent layer's `G92 Y0`
 
-The printer rotates around the Y-axis, extruding radially outward. The Y value is cumulative — Marlin always moves forward on the rotary axis without resets.
+The printer rotates around the Y-axis, extruding radially outward. `E` and `Y` are reset on each layer change with `G92 E0 Y0` to keep accumulating axes close to zero. The slicer tracks physical rotary position internally, so emitted Y values after the reset are local offsets from the current physical angle.
 
 ## PathObject
 
@@ -61,7 +61,7 @@ Standard comments for layer identification:
 
 ## Key Transformations
 
-1. **Theta unwrapping**: Canonical theta values (0–2π) are unwrapped to maintain monotonic increase in accumulated space
+1. **Theta unwrapping**: Canonical theta values (0–2π) are unwrapped from the nearest equivalent angle to avoid full-turn travel for tiny backtracks
 2. **Seam handling**: Full-circle paths are rotated to start at current position via `rotate_full_circle_path()`
 3. **Path rotation**: Closed perimeters are rotated to nearest point via `rotate_closed_path_to_nearest()`
 4. **Local seam closure**: Segments crossing the periodic seam are handled by traveling to the equivalent endpoint and extruding the short chord

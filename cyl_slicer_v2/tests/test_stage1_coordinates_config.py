@@ -45,6 +45,13 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         values = unwrap_path_from_current([theta, theta - 1e-12], math.radians(350.0))
         self.assertAlmostEqual(values[-1] - values[0], 0.0)
 
+    def test_unwrap_starts_at_nearest_equivalent_to_current(self):
+        current = math.radians(358.038)
+        values = unwrap_path_from_current([math.radians(357.634), math.radians(357.926)], current)
+        self.assertLess(values[0], current)
+        self.assertLess(abs(values[0] - current), math.radians(1.0))
+        self.assertAlmostEqual(values[1] - values[0], math.radians(0.292), places=9)
+
     def test_config_validation(self):
         SlicerConfig().validate()
         with self.assertRaises(ValueError):

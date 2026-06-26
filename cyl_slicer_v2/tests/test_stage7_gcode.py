@@ -18,10 +18,25 @@ class GcodeTests(unittest.TestCase):
         self.assertIn(";TYPE:EXTERNAL_PERIMETER", gcode)
         self.assertIn(";TYPE:SOLID_INFILL", gcode)
 
-    def test_extrusion_is_monotonic(self):
+    def test_extrusion_is_monotonic_between_layer_resets(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
-        values = [float(match.group(1)) for match in re.finditer(r"\bE(-?\d+(?:\.\d+)?)", gcode)]
+        values = []
+        for line in gcode.splitlines():
+            if line.startswith("G92 ") and "E0" in line:
+                self.assertEqual(values, sorted(values))
+                values = []
+                continue
+            if line.startswith("G1 "):
+                match = re.search(r"\bE(-?\d+(?:\.\d+)?)", line)
+                if match:
+                    values.append(float(match.group(1)))
         self.assertEqual(values, sorted(values))
+
+    def test_layer_changes_reset_extrusion_and_rotary_axes(self):
+        gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
+        layer_count = len(re.findall(r"(?m)^;LAYER:", gcode))
+        reset_count = len(re.findall(r"(?m)^G92 E0 Y0 ; reset E/Y accumulators for layer$", gcode))
+        self.assertEqual(reset_count, layer_count)
 
     def test_no_extrusion_segment_moves_backward_in_y(self):
         gcode = slice_to_gcode(make_fixture("helix_like_ribbon"), SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0), max_layers=2)
@@ -54,6 +69,24 @@ class GcodeTests(unittest.TestCase):
                 if abs(y1 - y0) >= 300.0:
                     bad.append((layer, role, x0, y0, x1, y1))
         self.assertEqual(bad, [])
+
+    def test_single_rotated_cube_final_layer_does_not_spin_for_tiny_triangle(self):
+        root = Path(__file__).resolve().parents[2]
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.25, bed_radius=30.0, slice_workers=1, toolpath_workers=1)
+        gcode = slice_to_gcode(load_mesh(root / "single_rotated_cube.stl"), config)
+        y_values = []
+        in_final_layer = False
+        for line in gcode.splitlines():
+            if line.startswith(";LAYER:"):
+                in_final_layer = line == ";LAYER:134"
+                continue
+            if not in_final_layer or not line.startswith(("G0 ", "G1 ")):
+                continue
+            match = re.search(r"\bY(-?\d+(?:\.\d+)?)", line)
+            if match:
+                y_values.append(float(match.group(1)))
+        self.assertTrue(y_values)
+        self.assertLess(max(y_values) - min(y_values), 5.0)
 
 
 if __name__ == "__main__":

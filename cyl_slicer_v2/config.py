@@ -26,7 +26,7 @@ class SlicerConfig:
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float = 0.035
-    retract_mm: float = 0.0
+    retract_mm: float =1.0
     hotend_temp: int = 215
     min_path_length: float = 1e-4
     max_axial_segment: float = 1.5

@@ -24,6 +24,10 @@ def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z
     return " ".join(parts)
 
 
+def _emitted_y_degrees(theta: float, state: GcodeState) -> float:
+    return math.degrees(theta - state.theta_origin)
+
+
 def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> list[str]:
     if len(path.points) < 2:
         return []
@@ -34,7 +38,7 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> li
 
     lines = [";start of path"]
     t0, x0 = pts[0]
-    lines.append(_format_move("G0", x=x0, y_deg=math.degrees(t0), f=config.travel_mm_per_min))
+    lines.append(_format_move("G0", x=x0, y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
     state.theta_accum = t0
     state.axial = x0
 
@@ -47,7 +51,7 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> li
             _format_move(
                 "G1",
                 x=x,
-                y_deg=math.degrees(t),
+                y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
                 f=config.feed_mm_per_min,
             )
@@ -85,7 +89,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";LAYER_HEIGHT:{config.layer_height}",
         f";LINE_WIDTH:{config.nozzle_width}",
         "M82 ; absolute extrusion mode",
-        "G92 E0",
+        "G92 E0 Y0",
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
     ]
@@ -95,9 +99,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";Z:{layer.radius:.4f}")
         radial_lift = layer.radius - config.bed_radius
         out.append(_format_move("G0", z=radial_lift, f=config.travel_mm_per_min))
-        canon = math.degrees(state.theta_accum) % 360.0
-        out.append(f"G92 Y{canon:.6f} ; reset Y accumulator to canonical")
-        state.theta_accum = math.radians(canon)
+        out.append("G92 E0 Y0 ; reset E/Y accumulators for layer")
+        state.extrusion = 0.0
+        state.theta_origin = state.theta_accum
         state.radial = layer.radius
         for role in ROLE_ORDER:
             for path in layer.paths_by_role.get(role, []):

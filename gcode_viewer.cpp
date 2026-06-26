@@ -383,6 +383,7 @@ GcodeData load_gcode(const char* path) {
     if (!f) { std::cerr << "Cannot open: " << path << "\n"; return d; }
 
     float cur_x = 0.f, cur_t = 0.f, cur_e = 0.f;
+    float x_offset = 0.f, y_offset = 0.f;
     float radius = 10.f;
     bool  has_pos = false;
     bool  in_ext  = false;
@@ -457,22 +458,34 @@ GcodeData load_gcode(const char* path) {
 
         std::istringstream ss(line);
         std::string cmd; ss >> cmd;
-        if (cmd != "G0" && cmd != "G1") continue;
+        if (cmd != "G0" && cmd != "G1" && cmd != "G92") continue;
 
-        bool rapid = (cmd == "G0");
         float nx = cur_x, nt = cur_t, ne = cur_e;
         bool has_x_tok = false, has_t_tok = false, has_e_tok = false;
+        float raw_x = 0.f, raw_t = 0.f, raw_e = 0.f;
 
         std::string tok;
         while (ss >> tok) {
             if (tok.size() < 2) continue;
             try {
                 float v = std::stof(tok.substr(1));
-                if      (tok[0] == 'X') { nx = v; has_x_tok = true; }
-                else if (tok[0] == 'Y') { nt = v; has_t_tok = true; }
-                else if (tok[0] == 'E') { ne = v; has_e_tok = true; }
+                if      (tok[0] == 'X') { raw_x = v; nx = v + x_offset; has_x_tok = true; }
+                else if (tok[0] == 'Y') { raw_t = v; nt = v + y_offset; has_t_tok = true; }
+                else if (tok[0] == 'E') { raw_e = v; ne = v; has_e_tok = true; }
             } catch (...) {}
         }
+
+        if (cmd == "G92") {
+            for (int i = 0; i < ST_COUNT; ++i)
+                d.groups[i].flush_path();
+            if (has_x_tok) x_offset = cur_x - raw_x;
+            if (has_t_tok) y_offset = cur_t - raw_t;
+            if (has_e_tok) cur_e = raw_e;
+            in_ext = false;
+            continue;
+        }
+
+        bool rapid = (cmd == "G0");
 
         // Detect retraction: G1 with E going down and no X/Y motion
         if (!rapid && has_e_tok && ne < cur_e - 1e-6f && !has_x_tok && !has_t_tok && has_pos)

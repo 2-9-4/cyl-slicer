@@ -36,6 +36,7 @@ class LayerToolpaths:
 @dataclass
 class GcodeState:
     theta_accum: float = 0.0
+    theta_origin: float = 0.0
     axial: float = 0.0
     radial: float = 0.0
     extrusion: float = 0.0

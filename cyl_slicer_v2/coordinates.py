@@ -42,6 +42,15 @@ def _forward_delta(theta: float, reference: float, tol: float = 1e-9) -> float:
     return delta
 
 
+def _nearest_delta(theta: float, reference: float, tol: float = 1e-9) -> float:
+    delta = (theta - reference + math.pi) % TWO_PI - math.pi
+    if abs(delta) <= tol:
+        return 0.0
+    if abs(delta + math.pi) <= tol and theta > reference:
+        return math.pi
+    return delta
+
+
 def unwrap_forward(thetas: Iterable[float], start: float | None = None, tol: float = 1e-9) -> list[float]:
     values = [float(t) for t in thetas]
     if not values:
@@ -64,4 +73,17 @@ def unwrap_forward(thetas: Iterable[float], start: float | None = None, tol: flo
 
 
 def unwrap_path_from_current(thetas: Iterable[float], current_accum: float) -> list[float]:
-    return unwrap_forward(thetas, current_accum)
+    values = [float(t) for t in thetas]
+    if not values:
+        return []
+    out = [current_accum + _nearest_delta(values[0], current_accum)]
+    previous_raw = values[0]
+    for theta in values[1:]:
+        raw_delta = theta - previous_raw
+        if raw_delta >= -1e-9:
+            delta = max(0.0, raw_delta)
+        else:
+            delta = _forward_delta(theta, previous_raw)
+        out.append(out[-1] + delta)
+        previous_raw = theta
+    return out
