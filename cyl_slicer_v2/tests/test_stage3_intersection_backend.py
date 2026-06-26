@@ -14,7 +14,7 @@ from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.intersection_backend import _polygon_parts, cylindrical_intersection_segments, sample_intersection_layer
 from cyl_slicer_v2.layers import slice_mesh
-from cyl_slicer_v2.mesh_io import load_mesh, radial_bounds
+from cyl_slicer_v2.mesh_io import axial_bounds, load_mesh, radial_bounds
 from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
@@ -255,6 +255,27 @@ class IntersectionBackendTests(unittest.TestCase):
         )
         self.assertLess(float(np.mean(seam_expected & ~seam_actual)), 0.03)
         self.assertLess(float(np.mean(seam_expected != seam_actual)), 0.05)
+
+    def test_rotatecube_export_layer_33_does_not_fill_axial_margin(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2export.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        mesh = load_mesh(mesh_path)
+        config = SlicerConfig(
+            layer_backend="intersection",
+            intersection_refine_factor=0,
+            layer_height=0.25,
+            bed_radius=30.0,
+            axial_margin=15.0,
+        )
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + config.layer_height * 0.5 + 33 * config.layer_height
+        geom, _, full = sample_intersection_layer(mesh, radius, config)
+        z_min, z_max = axial_bounds(mesh, 0.0)
+
+        self.assertFalse(full)
+        self.assertGreaterEqual(geom.bounds[1], z_min - 1e-6)
+        self.assertLessEqual(geom.bounds[3], z_max + 1e-6)
 
     def test_rotatecube_debug_intersection_volume_stays_close_with_smooth_topology_voting(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"

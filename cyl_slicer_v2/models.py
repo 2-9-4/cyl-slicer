@@ -16,6 +16,7 @@ class LayerSlice:
     support: BaseGeometry
     theta_window: tuple[float, float] = (0.0, 0.0)
     is_full_wrap: bool = False
+    is_raft: bool = False
 
 
 @dataclass

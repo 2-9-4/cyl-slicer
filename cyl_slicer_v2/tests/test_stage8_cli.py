@@ -53,12 +53,24 @@ class CliTests(unittest.TestCase):
 
     def test_cli_accepts_top_and_bottom_layers(self):
         args = build_parser().parse_args(
-            ["--fixture", "tube", "--top-layers", "4", "--bottom-layers", "2", "--filament-diameter", "2.85"]
+            [
+                "--fixture",
+                "tube",
+                "--top-layers",
+                "4",
+                "--bottom-layers",
+                "2",
+                "--filament-diameter",
+                "2.85",
+                "--raft-layers",
+                "3",
+            ]
         )
 
         self.assertEqual(args.top_layers, 4)
         self.assertEqual(args.bottom_layers, 2)
         self.assertEqual(args.filament_diameter, 2.85)
+        self.assertEqual(args.raft_layers, 3)
 
 
 if __name__ == "__main__":

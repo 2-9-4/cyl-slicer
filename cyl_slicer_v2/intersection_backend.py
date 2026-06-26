@@ -463,13 +463,14 @@ def cylindrical_intersection_segments(
     return _weld_intersection_graph(np.asarray(points, dtype=float), edges)
 
 
-def sample_intersection_layer(
+def _sample_intersection_layer_once(
     mesh: trimesh.Trimesh,
     radius: float,
     config: SlicerConfig,
     z_bounds: tuple[float, float] | None = None,
 ):
     z_min, z_max = z_bounds if z_bounds is not None else axial_bounds(mesh, config.axial_margin)
+    clip_z_min, clip_z_max = axial_bounds(mesh, 0.0)
     points_3d, edges = cylindrical_intersection_segments(
         mesh,
         radius,
@@ -564,8 +565,77 @@ def sample_intersection_layer(
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
     geom = geom.buffer(0)
-    geom, window, _ = normalize_periodic(geom, z_min, z_max)
+    geom, window, _ = normalize_periodic(geom, clip_z_min, clip_z_max)
     return geom, window, _has_full_width_horizontal_span(geom)
+
+
+def _full_span_disagrees_with_mesh(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    geom: BaseGeometry,
+    *,
+    z_samples: int = 9,
+    theta_samples: int = 48,
+    min_solid_fraction: float = 0.90,
+) -> bool:
+    if geom.is_empty:
+        return False
+    z_min, z_max = geom.bounds[1], geom.bounds[3]
+    if z_max <= z_min:
+        return False
+
+    theta_values = np.linspace(0.0, TWO_PI, theta_samples, endpoint=False) + math.pi / theta_samples
+    for z in np.linspace(z_min, z_max, z_samples):
+        probe = LineString([(0.0, float(z)), (TWO_PI, float(z))])
+        if geom.intersection(probe).length < TWO_PI * 0.99:
+            continue
+        points = np.column_stack(
+            [
+                radius * np.cos(theta_values),
+                radius * np.sin(theta_values),
+                np.full_like(theta_values, float(z)),
+            ]
+        )
+        if float(np.mean(mesh.contains(points))) < min_solid_fraction:
+            return True
+    return False
+
+
+def _looks_like_degenerate_full_span(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    geom: BaseGeometry,
+    full: bool,
+    config: SlicerConfig,
+) -> bool:
+    if not full or geom.is_empty:
+        return False
+
+    mesh_z_min, mesh_z_max = axial_bounds(mesh, 0.0)
+    z_tol = max(config.layer_height, config.nozzle_width, 1e-3)
+    if geom.bounds[1] < mesh_z_min - z_tol or geom.bounds[3] > mesh_z_max + z_tol:
+        return True
+
+    return _full_span_disagrees_with_mesh(mesh, radius, geom)
+
+
+def sample_intersection_layer(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    config: SlicerConfig,
+    z_bounds: tuple[float, float] | None = None,
+):
+    geom, window, full = _sample_intersection_layer_once(mesh, radius, config, z_bounds)
+    if not _looks_like_degenerate_full_span(mesh, radius, geom, full, config):
+        return geom, window, full
+
+    epsilon = max(1e-6, min(config.layer_height, config.nozzle_width) * 1e-5)
+    for delta in (epsilon, -epsilon, epsilon * 10.0, -epsilon * 10.0, epsilon * 100.0, -epsilon * 100.0):
+        candidate = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
+        if not _looks_like_degenerate_full_span(mesh, radius + delta, candidate[0], candidate[2], config):
+            return candidate
+
+    return geom, window, full
 
 
 def _init_worker(mesh: trimesh.Trimesh, config: SlicerConfig, z_bounds: tuple[float, float]) -> None:

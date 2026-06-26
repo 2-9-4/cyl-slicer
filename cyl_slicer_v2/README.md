@@ -42,6 +42,8 @@ When a model's innermost radius is above the printer build cylinder, v2 emits
 support-only foundation layers with negative layer numbers before model layer 0.
 Set the printer surface with `--build-cylinder-radius R` (`--bed-radius R` also
 works), or pass `--no-gap-support` to disable those foundation layers.
+The first four foundation layers default to a continuous raft envelope under the
+part; change that with `--raft-layers N`.
 
 Extrusion is derived from line width, layer height, and filament cross-section:
 `nozzle_width * layer_height / (pi * (filament_diameter / 2)^2)`. The default

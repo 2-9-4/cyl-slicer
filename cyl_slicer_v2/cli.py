@@ -30,6 +30,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
+        "--raft-layers",
+        type=int,
+        default=4,
+        help="Number of bed-side gap support layers printed as a continuous raft.",
+    )
+    parser.add_argument(
         "--support-min-island-area",
         type=float,
         default=0.05,
@@ -136,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         support_min_region_area=args.support_min_region_area,
         support_bearing_min_area=args.support_bearing_min_area,
         support_merge_gap=args.support_merge_gap,
+        raft_layers=args.raft_layers,
         bed_radius=args.bed_radius,
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,

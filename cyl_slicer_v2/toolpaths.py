@@ -239,12 +239,13 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         )
 
     if not layer.support.is_empty:
-        if layer.index >= 0:
+        support_spacing = config.nozzle_width if layer.is_raft else config.support_spacing
+        if layer.index >= 0 or layer.is_raft:
             paths["SUPPORT"].extend(
-                line_grid_paths(layer.support, "SUPPORT", radius, config.support_spacing, config, direction="axial")
+                line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="axial")
             )
         paths["SUPPORT"].extend(
-            line_grid_paths(layer.support, "SUPPORT", radius, config.support_spacing, config, direction="radial")
+            line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="radial")
         )
 
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=dict(paths))
@@ -281,6 +282,8 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
     footprint = _clean_polygonal(unary_union(pieces)) if pieces else GeometryCollection()
     if footprint.is_empty:
         return []
+    theta_min, z_min, theta_max, z_max = footprint.bounds
+    raft_footprint = _clean_polygonal(box(theta_min, z_min, theta_max, z_max))
 
     radii = []
     radius = start
@@ -298,9 +301,10 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             top_surfaces=empty,
             bottom_surfaces=empty,
             needs_support=empty,
-            support=footprint,
+            support=raft_footprint if i < config.raft_layers else footprint,
             theta_window=first_model.theta_window,
             is_full_wrap=first_model.is_full_wrap,
+            is_raft=i < config.raft_layers,
         )
         for i, radius in enumerate(radii)
     ]

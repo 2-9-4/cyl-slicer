@@ -18,6 +18,7 @@ class SlicerConfig:
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
     support_merge_gap: float = 0.0
+    raft_layers: int = 4
     theta_step_deg: float = 5.0
     axial_step: float = 1.0
     guard_columns: int = 2
@@ -25,7 +26,7 @@ class SlicerConfig:
     generate_gap_support: bool = True
     max_radius: float | None = None
     min_radius: float | None = None
-    axial_margin: float = 0.0
+    axial_margin: float = 15.0
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float | None = None
@@ -79,6 +80,8 @@ class SlicerConfig:
             raise ValueError("support_bearing_min_area must be non-negative")
         if self.support_merge_gap < 0:
             raise ValueError("support_merge_gap must be non-negative")
+        if self.raft_layers < 0:
+            raise ValueError("raft_layers must be non-negative")
         if self.theta_step_deg <= 0 or self.theta_step_deg > 90:
             raise ValueError("theta_step_deg must be in (0, 90]")
         if self.axial_step <= 0:
