@@ -71,6 +71,8 @@ def parse_extrusion_segments(gcode_path: Path, roles: set[str]) -> list[Segment]
     cur_x: float | None = None
     cur_y: float | None = None
     cur_e: float | None = None
+    x_offset = 0.0
+    y_offset = 0.0
 
     for line_no, raw_line in enumerate(gcode_path.read_text().splitlines(), start=1):
         line = raw_line.split(";", 1)[0].strip()
@@ -93,9 +95,17 @@ def parse_extrusion_segments(gcode_path: Path, roles: set[str]) -> list[Segment]
         if cmd == "G92":
             words = parse_axis_words(line)
             if "X" in words:
-                cur_x = words["X"]
+                if cur_x is None:
+                    cur_x = words["X"]
+                    x_offset = 0.0
+                else:
+                    x_offset = cur_x - words["X"]
             if "Y" in words:
-                cur_y = words["Y"]
+                if cur_y is None:
+                    cur_y = words["Y"]
+                    y_offset = 0.0
+                else:
+                    y_offset = cur_y - words["Y"]
             if "E" in words:
                 cur_e = words["E"]
             continue
@@ -103,8 +113,8 @@ def parse_extrusion_segments(gcode_path: Path, roles: set[str]) -> list[Segment]
             continue
 
         words = parse_axis_words(line)
-        next_x = words.get("X", cur_x)
-        next_y = words.get("Y", cur_y)
+        next_x = words["X"] + x_offset if "X" in words else cur_x
+        next_y = words["Y"] + y_offset if "Y" in words else cur_y
         next_e = words.get("E", cur_e)
 
         is_extrusion = (

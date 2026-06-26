@@ -129,6 +129,8 @@ def parse_extrusion_segments(gcode: str) -> list[tuple[int, str, float, float, f
     role = "UNKNOWN"
     x = None
     y = None
+    x_offset = 0.0
+    y_offset = 0.0
     segments = []
     for line in gcode.splitlines():
         if line.startswith(";LAYER:"):
@@ -140,13 +142,31 @@ def parse_extrusion_segments(gcode: str) -> list[tuple[int, str, float, float, f
         if line.startswith(";TYPE:"):
             role = line.split(":", 1)[1]
             continue
+        if line.startswith("G92 "):
+            mx = X_RE.search(line)
+            my = Y_RE.search(line)
+            if mx:
+                raw_x = float(mx.group(1))
+                if x is None:
+                    x = raw_x
+                    x_offset = 0.0
+                else:
+                    x_offset = x - raw_x
+            if my:
+                raw_y = float(my.group(1))
+                if y is None:
+                    y = raw_y
+                    y_offset = 0.0
+                else:
+                    y_offset = y - raw_y
+            continue
         if not line.startswith(("G0 ", "G1 ")):
             continue
         mx = X_RE.search(line)
         my = Y_RE.search(line)
         me = E_RE.search(line)
-        nx = float(mx.group(1)) if mx else x
-        ny = float(my.group(1)) if my else y
+        nx = float(mx.group(1)) + x_offset if mx else x
+        ny = float(my.group(1)) + y_offset if my else y
         if line.startswith("G1 ") and me and x is not None and y is not None and nx is not None and ny is not None:
             segments.append((layer, role, x, y, nx, ny))
         x, y = nx, ny

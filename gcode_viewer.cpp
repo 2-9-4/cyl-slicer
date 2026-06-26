@@ -87,9 +87,13 @@ inline Vec3 v3norm(Vec3 a) {
     return l > 1e-8f ? v3scale(a, 1.f / l) : Vec3{0, 1, 0};
 }
 
-Vec3 cyl_to_cart(float theta_deg, float ax, float r) {
-    float t = std::fmod(theta_deg, 360.f) * (float)M_PI / 180.f;
-    return { ax, r * std::cos(t), r * std::sin(t) };
+Vec3 cyl_to_cart(double theta_deg, double ax, double r) {
+    double t = std::fmod(theta_deg, 360.0) * M_PI / 180.0;
+    return {
+        (float)ax,
+        (float)(r * std::cos(t)),
+        (float)(r * std::sin(t)),
+    };
 }
 
 // Radial direction outward from cylinder axis (X-axis)
@@ -382,9 +386,9 @@ GcodeData load_gcode(const char* path) {
     std::ifstream f(path);
     if (!f) { std::cerr << "Cannot open: " << path << "\n"; return d; }
 
-    float cur_x = 0.f, cur_t = 0.f, cur_e = 0.f;
-    float x_offset = 0.f, y_offset = 0.f;
-    float radius = 10.f;
+    double cur_x = 0.0, cur_t = 0.0, cur_e = 0.0;
+    double x_offset = 0.0, y_offset = 0.0;
+    double radius = 10.0;
     bool  has_pos = false;
     bool  in_ext  = false;
     SType ext_type = ST_UNKNOWN;
@@ -446,9 +450,9 @@ GcodeData load_gcode(const char* path) {
                 lw = std::stof(line.substr(12));
                 for (auto& grp : d.groups) grp.tube_lw = lw;
             } else if (line.rfind(";Z:", 0) == 0) {
-                radius = std::stof(line.substr(3));
-                d.r_min = std::min(d.r_min, radius);
-                d.r_max = std::max(d.r_max, radius);
+                radius = std::stod(line.substr(3));
+                d.r_min = std::min(d.r_min, (float)radius);
+                d.r_max = std::max(d.r_max, (float)radius);
             } else if (line.rfind(";TYPE:", 0) == 0) {
                 SType nt = parse_stype(line.substr(6));
                 if (nt != sec_type) { sec_type = nt; in_ext = false; }
@@ -460,15 +464,15 @@ GcodeData load_gcode(const char* path) {
         std::string cmd; ss >> cmd;
         if (cmd != "G0" && cmd != "G1" && cmd != "G92") continue;
 
-        float nx = cur_x, nt = cur_t, ne = cur_e;
+        double nx = cur_x, nt = cur_t, ne = cur_e;
         bool has_x_tok = false, has_t_tok = false, has_e_tok = false;
-        float raw_x = 0.f, raw_t = 0.f, raw_e = 0.f;
+        double raw_x = 0.0, raw_t = 0.0, raw_e = 0.0;
 
         std::string tok;
         while (ss >> tok) {
             if (tok.size() < 2) continue;
             try {
-                float v = std::stof(tok.substr(1));
+                double v = std::stod(tok.substr(1));
                 if      (tok[0] == 'X') { raw_x = v; nx = v + x_offset; has_x_tok = true; }
                 else if (tok[0] == 'Y') { raw_t = v; nt = v + y_offset; has_t_tok = true; }
                 else if (tok[0] == 'E') { raw_e = v; ne = v; has_e_tok = true; }
@@ -492,8 +496,8 @@ GcodeData load_gcode(const char* path) {
             d.retract_pts.push_back({cyl_to_cart(cur_t, cur_x, radius), cur_layer, cur_layer_seq});
         cur_e = ne;
 
-        d.x_min = std::min(d.x_min, nx);
-        d.x_max = std::max(d.x_max, nx);
+        d.x_min = std::min(d.x_min, (float)nx);
+        d.x_max = std::max(d.x_max, (float)nx);
         Vec3 nv = cyl_to_cart(nt, nx, radius);
 
         if (rapid) {
@@ -512,26 +516,26 @@ GcodeData load_gcode(const char* path) {
             }
         } else {
             // Compute angular delta with wrap-around handling
-            float raw_delta_t = nt - cur_t;
+            double raw_delta_t = nt - cur_t;
             // For tessellation, we want the actual angular travel, not shortest path
             // A move from Y360 to Y720 is a full 360° circle, not 0°
             // But we still need to handle cases where the slicer uses Y0 vs Y360 interchangeably
             
             // Check if this is a "large" angular move (> 180°) - likely intentional full/partial circle
-            bool large_angular = fabsf(raw_delta_t) > 180.f;
+            bool large_angular = std::fabs(raw_delta_t) > 180.0;
             
             // Compute Cartesian positions
             Vec3 cur_pos = cyl_to_cart(cur_t, cur_x, radius);
             Vec3 new_pos = cyl_to_cart(nt, nx, radius);
-            float dx = new_pos.x - cur_pos.x;
-            float dy = new_pos.y - cur_pos.y;
-            float dz = new_pos.z - cur_pos.z;
-            float dist_sq = dx*dx + dy*dy + dz*dz;
+            double dx = new_pos.x - cur_pos.x;
+            double dy = new_pos.y - cur_pos.y;
+            double dz = new_pos.z - cur_pos.z;
+            double dist_sq = dx*dx + dy*dy + dz*dz;
             
             // Skip only truly degenerate segments (no axial AND no significant angular motion)
-            float axial_dist_sq = (nx - cur_x) * (nx - cur_x);
-            bool has_axial_motion = axial_dist_sq > 1e-6f;
-            bool has_angular_motion = large_angular || (dist_sq > 1e-6f && fabsf(raw_delta_t) > 0.1f);
+            double axial_dist_sq = (nx - cur_x) * (nx - cur_x);
+            bool has_axial_motion = axial_dist_sq > 1e-6;
+            bool has_angular_motion = large_angular || (dist_sq > 1e-6 && std::fabs(raw_delta_t) > 0.1);
             
             if (!has_axial_motion && !has_angular_motion) {
                 cur_x = nx; cur_t = nt;
@@ -550,23 +554,23 @@ GcodeData load_gcode(const char* path) {
             pending_lines[ext_type].push_back(line);  // record G1 in this path's feed
 
             // Tessellate angular spans
-            float delta_t = raw_delta_t;
+            double delta_t = raw_delta_t;
             if (!large_angular) {
                 // For small moves, use shortest path across 0/360 boundary
-                if (delta_t > 180.f)      delta_t -= 360.f;
-                else if (delta_t < -180.f) delta_t += 360.f;
+                if (delta_t > 180.0)      delta_t -= 360.0;
+                else if (delta_t < -180.0) delta_t += 360.0;
             }
             // For large angular moves (>180°), use the raw delta_t as-is (full circle, etc.)
             
             bool is_perim = (sec_type == ST_EXTERNAL || sec_type == ST_INTERNAL);
-            int steps = std::max(1, (int)(std::abs(delta_t) / (is_perim ? 2.f : 10.f)));
+            int steps = std::max(1, (int)(std::abs(delta_t) / (is_perim ? 2.0 : 10.0)));
             for (int s = 1; s <= steps; ++s) {
-                float frac = (float)s / (float)steps;
-                float it = cur_t + delta_t * frac;
+                double frac = (double)s / (double)steps;
+                double it = cur_t + delta_t * frac;
                 // Keep interpolated angle in [0, 360) for consistent Cartesian conversion
-                it = std::fmod(it, 360.f);
-                if (it < 0.f) it += 360.f;
-                float ix = cur_x + (nx - cur_x) * frac;
+                it = std::fmod(it, 360.0);
+                if (it < 0.0) it += 360.0;
+                double ix = cur_x + (nx - cur_x) * frac;
                 d.groups[ext_type].add_pt(cyl_to_cart(it, ix, radius));
             }
         }

@@ -74,10 +74,34 @@ def _line_parts(geom) -> list[LineString]:
     return []
 
 
-def _ring_to_paths(ring, role: str, radius: float, config: SlicerConfig) -> list[Toolpath]:
+def _is_window_boundary_edge(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    theta_window: tuple[float, float] | None,
+    tol: float = 1e-8,
+) -> bool:
+    if theta_window is None:
+        return False
+    lower, upper = theta_window
+    if upper - lower <= tol:
+        return False
+    return (abs(a[0] - lower) <= tol and abs(b[0] - lower) <= tol) or (
+        abs(a[0] - upper) <= tol and abs(b[0] - upper) <= tol
+    )
+
+
+def _ring_to_paths(
+    ring,
+    role: str,
+    radius: float,
+    config: SlicerConfig,
+    theta_window: tuple[float, float] | None = None,
+) -> list[Toolpath]:
     pts = [(float(t), float(z)) for t, z in ring.coords]
     paths = []
     for a, b in zip(pts[:-1], pts[1:]):
+        if _is_window_boundary_edge(a, b, theta_window):
+            continue
         edge = [a, b] if b[0] >= a[0] else [b, a]
         path = _make_path(role, radius, edge, False, config)
         if path is not None:
@@ -97,12 +121,18 @@ def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed:
     return Toolpath(role=role, radius=radius, points=cleaned, closed=closed)
 
 
-def perimeter_paths(geom, role: str, radius: float, config: SlicerConfig) -> list[Toolpath]:
+def perimeter_paths(
+    geom,
+    role: str,
+    radius: float,
+    config: SlicerConfig,
+    theta_window: tuple[float, float] | None = None,
+) -> list[Toolpath]:
     paths = []
     for poly in _polygon_parts(geom):
-        paths.extend(_ring_to_paths(poly.exterior, role, radius, config))
+        paths.extend(_ring_to_paths(poly.exterior, role, radius, config, theta_window))
         for interior in poly.interiors:
-            paths.extend(_ring_to_paths(interior, role, radius, config))
+            paths.extend(_ring_to_paths(interior, role, radius, config, theta_window))
     return paths
 
 
@@ -168,7 +198,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     if not model.is_empty:
         periodic = layer.is_full_wrap
         theta_window = layer.theta_window
-        paths["EXTERNAL_PERIMETER"].extend(perimeter_paths(model, "EXTERNAL_PERIMETER", radius, config))
+        paths["EXTERNAL_PERIMETER"].extend(perimeter_paths(model, "EXTERNAL_PERIMETER", radius, config, theta_window))
         last_inset = model
         for wall in range(1, config.wall_count):
             inset = inset_geometry(
@@ -180,7 +210,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             )
             if inset.is_empty:
                 break
-            paths["INTERNAL_PERIMETER"].extend(perimeter_paths(inset, "INTERNAL_PERIMETER", radius, config))
+            paths["INTERNAL_PERIMETER"].extend(perimeter_paths(inset, "INTERNAL_PERIMETER", radius, config, theta_window))
             last_inset = inset
 
         solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import re
 import unittest
 
@@ -37,6 +38,30 @@ class GcodeTests(unittest.TestCase):
         layer_count = len(re.findall(r"(?m)^;LAYER:", gcode))
         reset_count = len(re.findall(r"(?m)^G92 E0 Y0 ; reset E/Y accumulators for layer$", gcode))
         self.assertEqual(reset_count, layer_count)
+
+    def test_parse_extrusion_segments_applies_g92_rotary_offsets(self):
+        gcode = "\n".join(
+            [
+                ";LAYER:0",
+                ";TYPE:EXTERNAL_PERIMETER",
+                "G0 X0.000 Y350.000",
+                "G1 X0.000 Y355.000 E1.00000",
+                "G92 E0 Y0",
+                "G0 X0.000 Y5.000",
+                "G1 X0.000 Y10.000 E1.00000",
+                "",
+            ]
+        )
+
+        segments = parse_extrusion_segments(gcode)
+
+        self.assertEqual(
+            segments,
+            [
+                (0, "EXTERNAL_PERIMETER", 0.0, 350.0, 0.0, 355.0),
+                (0, "EXTERNAL_PERIMETER", 0.0, 360.0, 0.0, 365.0),
+            ],
+        )
 
     def test_no_extrusion_segment_moves_backward_in_y(self):
         gcode = slice_to_gcode(make_fixture("helix_like_ribbon"), SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0), max_layers=2)
@@ -87,6 +112,31 @@ class GcodeTests(unittest.TestCase):
                 y_values.append(float(match.group(1)))
         self.assertTrue(y_values)
         self.assertLess(max(y_values) - min(y_values), 5.0)
+
+    def test_rotatecube_debug_gcode_does_not_emit_periodic_seam_wall_segments(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        config = SlicerConfig(
+            layer_backend="intersection",
+            layer_height=0.25,
+            bed_radius=30.0,
+            slice_workers=1,
+            toolpath_workers=1,
+            intersection_refine_factor=0,
+        )
+        gcode = slice_to_gcode(load_mesh(mesh_path), config, max_layers=18)
+
+        seam_segments = []
+        for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
+            if layer != 17 or role != "EXTERNAL_PERIMETER":
+                continue
+            a = math.radians(y0 % 360.0)
+            b = math.radians(y1 % 360.0)
+            if min(a, 2.0 * math.pi - a) < 1e-4 and min(b, 2.0 * math.pi - b) < 1e-4:
+                seam_segments.append((x0, y0, x1, y1))
+
+        self.assertEqual(seam_segments, [])
 
 
 if __name__ == "__main__":
