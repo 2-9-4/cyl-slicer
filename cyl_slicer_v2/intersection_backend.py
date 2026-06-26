@@ -233,60 +233,6 @@ def _sample_face_solid_fraction(
     return (solid / total, total) if total else (0.0, 0)
 
 
-def _solid_mask(mesh: trimesh.Trimesh, radius: float, theta_z: list[tuple[float, float]]) -> np.ndarray:
-    if not theta_z:
-        return np.zeros(0, dtype=bool)
-    arr = np.asarray(theta_z, dtype=float)
-    points = np.column_stack(
-        [
-            radius * np.cos(arr[:, 0]),
-            radius * np.sin(arr[:, 0]),
-            arr[:, 1],
-        ]
-    )
-    return np.asarray(mesh.contains(points), dtype=bool)
-
-
-def _classify_face_cells(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: SlicerConfig) -> BaseGeometry:
-    theta_step = config.theta_step
-    z_step = config.axial_step
-    theta_min, z_min, theta_max, z_max = face.bounds
-    theta = np.floor(theta_min / theta_step) * theta_step
-    cell_bounds = []
-    probes = []
-    while theta < theta_max - 1e-12:
-        next_theta = min(theta + theta_step, theta_max)
-        z = np.floor(z_min / z_step) * z_step
-        while z < z_max - 1e-12:
-            next_z = min(z + z_step, z_max)
-            probe = Point((theta + next_theta) * 0.5, (z + next_z) * 0.5)
-            if face.covers(probe):
-                cell_bounds.append((theta, z, next_theta, next_z))
-                probes.append((float(probe.x), float(probe.y)))
-            z += z_step
-        theta += theta_step
-
-    if not cell_bounds:
-        probe = face.representative_point()
-        return face if _point_is_solid(mesh, radius, float(probe.x), float(probe.y)) else GeometryCollection()
-    solid = _solid_mask(mesh, radius, probes)
-    kept = []
-    for (theta0, z0, theta1, z1), is_solid in zip(cell_bounds, solid):
-        if not is_solid:
-            continue
-        cell = face.intersection(box(theta0, z0, theta1, z1))
-        if not cell.is_empty and cell.area > 1e-12:
-            probe = cell.representative_point()
-            if _point_is_solid(mesh, radius, float(probe.x), float(probe.y)):
-                kept.append(cell)
-    if not kept:
-        return GeometryCollection()
-    geom = unary_union(kept)
-    if not geom.is_valid:
-        geom = shapely.make_valid(geom)
-    return geom.buffer(0)
-
-
 def _vote_mixed_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: SlicerConfig) -> BaseGeometry:
     refine = config.intersection_refine_factor
     theta_step = config.theta_step / refine
@@ -312,6 +258,20 @@ def _vote_mixed_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config
     return face if solid / total >= _MIXED_FACE_SOLID_THRESHOLD else GeometryCollection()
 
 
+def _vote_face(
+    mesh: trimesh.Trimesh,
+    radius: float,
+    face: Polygon,
+    samples_per_axis: int = 7,
+    threshold: float = 0.5,
+) -> BaseGeometry:
+    fraction, total = _sample_face_solid_fraction(mesh, radius, face, samples_per_axis)
+    if total:
+        return face if fraction >= threshold else GeometryCollection()
+    rep = face.representative_point()
+    return face if _point_is_solid(mesh, radius, float(rep.x), float(rep.y)) else GeometryCollection()
+
+
 def _classify_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: SlicerConfig) -> BaseGeometry:
     theta_min, z_min, theta_max, z_max = face.bounds
     samples = [
@@ -327,17 +287,14 @@ def _classify_face(mesh: trimesh.Trimesh, radius: float, face: Polygon, config: 
             inside.append(_point_is_solid(mesh, radius, float(sample.x), float(sample.y)))
     if inside and all(inside):
         if theta_max - theta_min >= TWO_PI * 1.5:
-            return _classify_face_cells(mesh, radius, face, config)
+            return _vote_face(mesh, radius, face)
         return face
     if inside and not any(inside):
         return GeometryCollection()
     if config.intersection_refine_factor > 0:
         return _vote_mixed_face(mesh, radius, face, config)
     if inside:
-        fraction, total = _sample_face_solid_fraction(mesh, radius, face, 5)
-        if total:
-            return face if fraction >= 0.5 else GeometryCollection()
-        return face if sum(inside) / len(inside) >= 0.5 else GeometryCollection()
+        return _vote_face(mesh, radius, face, samples_per_axis=5)
     rep = face.representative_point()
     return face if _point_is_solid(mesh, radius, float(rep.x), float(rep.y)) else GeometryCollection()
 
