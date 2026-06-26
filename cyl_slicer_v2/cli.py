@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", default="output_v2.gcode", help="G-code output path")
     parser.add_argument("--max-layers", type=int, default=None)
     parser.add_argument("--layer-height", type=float, default=0.5)
+    parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
     parser.add_argument("--theta-step-deg", type=float, default=5.0)
     parser.add_argument("--axial-step", type=float, default=1.0)
     parser.add_argument("--wall-count", type=int, default=2)
@@ -123,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = SlicerConfig(
         layer_height=args.layer_height,
+        filament_diameter=args.filament_diameter,
         theta_step_deg=args.theta_step_deg,
         axial_step=args.axial_step,
         wall_count=args.wall_count,

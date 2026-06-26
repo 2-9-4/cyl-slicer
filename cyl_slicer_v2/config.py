@@ -8,6 +8,7 @@ import math
 class SlicerConfig:
     layer_height: float = 0.5
     nozzle_width: float = 0.4
+    filament_diameter: float = 1.75
     wall_count: int = 2
     top_layers: int = 3
     bottom_layers: int = 3
@@ -27,7 +28,7 @@ class SlicerConfig:
     axial_margin: float = 0.0
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
-    extrusion_per_mm: float = 0.035
+    extrusion_per_mm: float | None = None
     retract_mm: float =1.0
     hotend_temp: int = 215
     min_path_length: float = 1e-4
@@ -36,6 +37,16 @@ class SlicerConfig:
     layer_backend: str = "raster"
     intersection_refine_factor: int = 0
     toolpath_workers: int = 1
+
+    def __post_init__(self) -> None:
+        if self.extrusion_per_mm is not None or self.filament_diameter <= 0:
+            return
+        filament_area = math.pi * (self.filament_diameter / 2.0) ** 2
+        object.__setattr__(
+            self,
+            "extrusion_per_mm",
+            self.nozzle_width * self.layer_height / filament_area,
+        )
 
     @property
     def theta_step(self) -> float:
@@ -46,6 +57,10 @@ class SlicerConfig:
             raise ValueError("layer_height must be positive")
         if self.nozzle_width <= 0:
             raise ValueError("nozzle_width must be positive")
+        if self.filament_diameter <= 0:
+            raise ValueError("filament_diameter must be positive")
+        if self.extrusion_per_mm is None or self.extrusion_per_mm <= 0:
+            raise ValueError("extrusion_per_mm must be positive")
         if self.wall_count < 1:
             raise ValueError("wall_count must be at least 1")
         if self.top_layers < 1:

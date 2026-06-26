@@ -43,6 +43,10 @@ support-only foundation layers with negative layer numbers before model layer 0.
 Set the printer surface with `--build-cylinder-radius R` (`--bed-radius R` also
 works), or pass `--no-gap-support` to disable those foundation layers.
 
+Extrusion is derived from line width, layer height, and filament cross-section:
+`nozzle_width * layer_height / (pi * (filament_diameter / 2)^2)`. The default
+filament diameter is 1.75 mm; override it with `--filament-diameter D`.
+
 The intersection backend is experimental and intentionally small. Raster remains
 the default. `--intersection-refine-factor N` optionally enables smooth topology
 voting for mixed faces: sampled occupancy decides whether to keep or discard the

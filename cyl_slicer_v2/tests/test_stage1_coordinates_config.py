@@ -57,10 +57,21 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         config.validate()
         self.assertEqual(config.top_layers, 3)
         self.assertEqual(config.bottom_layers, 3)
+        expected_extrusion = config.nozzle_width * config.layer_height / (
+            math.pi * (config.filament_diameter / 2.0) ** 2
+        )
+        self.assertAlmostEqual(config.extrusion_per_mm, expected_extrusion)
+
+        override = SlicerConfig(extrusion_per_mm=0.035)
+        self.assertEqual(override.extrusion_per_mm, 0.035)
         with self.assertRaises(ValueError):
             SlicerConfig(layer_height=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(nozzle_width=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(filament_diameter=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(extrusion_per_mm=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(top_layers=0).validate()
         with self.assertRaises(ValueError):
