@@ -52,6 +52,23 @@ class GcodeTests(unittest.TestCase):
         self.assertIn("; unretract", gcode)
         self.assertRegex(gcode, r"(?m)^G1 E-?[0-9.]+ F[0-9.]+ ; retract$")
 
+    def test_short_same_role_travels_do_not_retract(self):
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "SUPPORT": [
+                    Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 1.0)]),
+                    Toolpath("SUPPORT", 10.0, [(0.01, 1.0), (0.01, 2.0)]),
+                ]
+            },
+        )
+
+        gcode = emit_gcode([layer], SlicerConfig(nozzle_width=0.4, max_axial_segment=20.0, retract_mm=1.0))
+
+        self.assertEqual(gcode.count("; retract"), 1)
+        self.assertEqual(gcode.count("; unretract"), 0)
+
     def test_layer_changes_reset_extrusion_and_rotary_axes(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
         layer_count = len(re.findall(r"(?m)^;LAYER:", gcode))
@@ -92,7 +109,13 @@ class GcodeTests(unittest.TestCase):
             all(
                 end_y >= start_y
                 for _, role, _, start_y, _, end_y in segments
-                if role not in {"SUPPORT", "SUPPORT_INTERFACE"}
+                if role
+                not in {
+                    "EXTERNAL_PERIMETER",
+                    "INTERNAL_PERIMETER",
+                    "SUPPORT",
+                    "SUPPORT_INTERFACE",
+                }
             )
         )
 
@@ -114,6 +137,28 @@ class GcodeTests(unittest.TestCase):
         self.assertEqual(len(segments), 2)
         self.assertLess(segments[0][2], segments[0][4])
         self.assertGreater(segments[1][2], segments[1][4])
+
+    def test_paths_within_role_are_ordered_from_current_position(self):
+        config = SlicerConfig(axial_min=0.0, max_axial_segment=20.0)
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "EXTERNAL_PERIMETER": [
+                    Toolpath("EXTERNAL_PERIMETER", 10.0, [(0.0, 10.0), (0.1, 10.0)]),
+                    Toolpath("EXTERNAL_PERIMETER", 10.0, [(0.0, 0.0), (0.1, 0.0)]),
+                ]
+            },
+        )
+
+        segments = [
+            segment
+            for segment in parse_extrusion_segments(emit_gcode([layer], config))
+            if segment[1] == "EXTERNAL_PERIMETER"
+        ]
+
+        self.assertTrue(segments)
+        self.assertEqual(segments[0][2], 0.0)
 
     def test_support_meander_preserves_reverse_radial_leg(self):
         config = SlicerConfig(max_axial_segment=20.0)

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import unittest
 
-from shapely.geometry import GeometryCollection, Point, box
+from shapely.geometry import GeometryCollection, Point, Polygon, box
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.layers import slice_mesh
+from cyl_slicer_v2.mesh_io import load_mesh
 from cyl_slicer_v2.models import LayerSlice, Toolpath
 from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_support_slices, _postprocess_role_paths
 
@@ -38,6 +40,52 @@ class ToolpathTests(unittest.TestCase):
         paths = build_layer_toolpaths(layer, config).paths_by_role
         self.assertGreaterEqual(len(paths.get("EXTERNAL_PERIMETER", [])), 1)
         self.assertGreaterEqual(len(paths.get("INTERNAL_PERIMETER", [])), 1)
+
+    def test_full_wrap_external_perimeter_is_two_continuous_window_runs(self):
+        theta_max = 2.0 * math.pi
+        occupied = Polygon(
+            [
+                (0.05, 10.0),
+                (1.0, 10.0),
+                (theta_max, 10.0),
+                (theta_max, -10.0),
+                (1.0, -10.0),
+                (0.05, -10.0),
+                (0.0, -10.0),
+                (0.0, 10.0),
+                (0.05, 10.0),
+            ]
+        )
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=occupied,
+            top_surfaces=GeometryCollection(),
+            bottom_surfaces=GeometryCollection(),
+            needs_support=GeometryCollection(),
+            support=GeometryCollection(),
+            theta_window=(0.0, theta_max),
+            is_full_wrap=True,
+        )
+
+        paths = build_layer_toolpaths(layer, SlicerConfig(wall_count=1)).paths_by_role.get("EXTERNAL_PERIMETER", [])
+
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(len(path.points) > 2 for path in paths))
+        self.assertTrue(all(b[0] >= a[0] for path in paths for a, b in zip(path.points, path.points[1:])))
+
+    def test_cubeandring_layer_73_external_perimeters_are_continuous_runs(self):
+        mesh_path = Path(__file__).resolve().parents[2] / "cubeandring.stl"
+        layers = slice_mesh(
+            load_mesh(mesh_path),
+            SlicerConfig(layer_backend="intersection", intersection_refine_factor=0, layer_height=0.2, slice_workers=4),
+            max_layers=74,
+        )
+
+        paths = build_layer_toolpaths(layers[73], SlicerConfig(layer_height=0.2)).paths_by_role.get("EXTERNAL_PERIMETER", [])
+
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(len(path.points) > 100 for path in paths))
 
     def test_infill_spacing_is_reasonable(self):
         config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, infill_spacing=2.0)

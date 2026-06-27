@@ -10,6 +10,7 @@ from .toolpaths import MIN_OUTPUT_LENGTH_GUARD, ROLE_ORDER
 
 
 TWO_PI = 2.0 * math.pi
+PATH_ORDER_OPTIMIZE_LIMIT = 1024
 
 
 def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z: float | None = None, e: float | None = None, f: float | None = None) -> str:
@@ -77,6 +78,67 @@ def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Tool
     return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
 
 
+def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
+    accum = _unwrap_toolpath_thetas(path, state.theta_accum)
+    if not accum:
+        return state
+    return GcodeState(
+        theta_accum=accum[-1],
+        theta_origin=state.theta_origin,
+        axial=path.points[-1][1],
+        radial=state.radial,
+        extrusion=state.extrusion,
+        retracted=state.retracted,
+    )
+
+
+def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState) -> list[Toolpath]:
+    if len(paths) > PATH_ORDER_OPTIMIZE_LIMIT:
+        return paths
+
+    remaining = list(paths)
+    ordered = []
+    shadow = GcodeState(
+        theta_accum=state.theta_accum,
+        theta_origin=state.theta_origin,
+        axial=state.axial,
+        radial=state.radial,
+        extrusion=state.extrusion,
+        retracted=state.retracted,
+    )
+    while remaining:
+        best_index = 0
+        best_path = _orient_path_for_current_position(remaining[0], shadow)
+        best_distance = _travel_distance_to_point(best_path, best_path.points[0], shadow)
+        for index, path in enumerate(remaining[1:], start=1):
+            oriented = _orient_path_for_current_position(path, shadow)
+            distance = _travel_distance_to_point(oriented, oriented.points[0], shadow)
+            if distance < best_distance:
+                best_index = index
+                best_path = oriented
+                best_distance = distance
+        remaining.pop(best_index)
+        ordered.append(best_path)
+        shadow = _shadow_after_path(best_path, shadow)
+    return ordered
+
+
+def _should_retract_after_path(
+    path: Toolpath,
+    next_path: Toolpath | None,
+    state: GcodeState,
+    config: SlicerConfig,
+) -> bool:
+    if config.retract_mm <= 0:
+        return False
+    if next_path is None:
+        return True
+
+    end_state = _shadow_after_path(path, state)
+    travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
+    return travel_distance >= config.nozzle_width * 2.0
+
+
 def _retract(state: GcodeState, config: SlicerConfig) -> list[str]:
     if config.retract_mm <= 0 or state.retracted:
         return []
@@ -109,13 +171,25 @@ def _unwrap_bidirectional_path_from_current(thetas: list[float], current_accum: 
 
 def _unwrap_toolpath_thetas(path: Toolpath, current_accum: float) -> list[float]:
     raw_thetas = [point[0] for point in path.points]
-    allows_reverse = path.role in {"SUPPORT", "SUPPORT_INTERFACE"}
+    allows_reverse = path.role in {
+        "EXTERNAL_PERIMETER",
+        "INTERNAL_PERIMETER",
+        "SUPPORT",
+        "SUPPORT_INTERFACE",
+    }
     if allows_reverse and any(b < a - 1e-9 for a, b in zip(raw_thetas, raw_thetas[1:])):
         return _unwrap_bidirectional_path_from_current(raw_thetas, current_accum)
     return unwrap_path_from_current(raw_thetas, current_accum)
 
 
-def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, output_x_offset: float) -> list[str]:
+def emit_toolpath(
+    path: Toolpath,
+    state: GcodeState,
+    config: SlicerConfig,
+    output_x_offset: float,
+    *,
+    retract_after: bool = True,
+) -> list[str]:
     if len(path.points) < 2:
         return []
     accum = _unwrap_toolpath_thetas(path, state.theta_accum)
@@ -148,7 +222,7 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, outpu
         )
         state.theta_accum = t
         state.axial = x
-    if extruded:
+    if extruded and retract_after:
         lines.extend(_retract(state, config))
     lines.append(";end of path")
     return lines
@@ -197,10 +271,13 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         state.theta_origin = state.theta_accum
         state.radial = layer.radius
         for role in ROLE_ORDER:
-            for path in layer.paths_by_role.get(role, []):
+            role_paths = _ordered_paths_for_current_position(layer.paths_by_role.get(role, []), state)
+            for index, path in enumerate(role_paths):
                 path = _orient_path_for_current_position(path, state)
+                next_path = role_paths[index + 1] if index + 1 < len(role_paths) else None
+                retract_after = _should_retract_after_path(path, next_path, state, config)
                 out.append(f";TYPE:{role}")
-                out.extend(emit_toolpath(path, state, config, output_x_offset))
+                out.extend(emit_toolpath(path, state, config, output_x_offset, retract_after=retract_after))
 
     out.extend(
         [

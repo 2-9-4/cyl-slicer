@@ -164,6 +164,68 @@ def _ring_to_paths(
     theta_window: tuple[float, float] | None = None,
 ) -> list[Toolpath]:
     pts = [(float(t), float(z)) for t, z in ring.coords]
+    if _is_full_theta_window(theta_window):
+        return _ring_to_window_runs(pts, role, radius, config, theta_window)
+    return _ring_to_edge_paths(pts, role, radius, config, theta_window)
+
+
+def _is_full_theta_window(theta_window: tuple[float, float] | None, tol: float = 1e-8) -> bool:
+    if theta_window is None:
+        return False
+    lower, upper = theta_window
+    return upper - lower >= TWO_PI - tol
+
+
+def _theta_is_nondecreasing(pts: list[tuple[float, float]], tol: float = 1e-9) -> bool:
+    return all(b[0] + tol >= a[0] for a, b in zip(pts, pts[1:]))
+
+
+def _ring_to_window_runs(
+    pts: list[tuple[float, float]],
+    role: str,
+    radius: float,
+    config: SlicerConfig,
+    theta_window: tuple[float, float] | None,
+) -> list[Toolpath]:
+    runs: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for a, b in zip(pts[:-1], pts[1:]):
+        if _is_window_boundary_edge(a, b, theta_window):
+            if len(current) >= 2:
+                runs.append(current)
+            current = []
+            continue
+        if not current:
+            current = [a, b]
+        elif abs(current[-1][0] - a[0]) <= 1e-9 and abs(current[-1][1] - a[1]) <= 1e-9:
+            current.append(b)
+        else:
+            if len(current) >= 2:
+                runs.append(current)
+            current = [a, b]
+    if len(current) >= 2:
+        runs.append(current)
+    if len(runs) > 1 and _points_close(runs[-1][-1], runs[0][0]):
+        runs[0] = [*runs[-1], *runs[0][1:]]
+        runs.pop()
+
+    paths = []
+    for run in runs:
+        if not _theta_is_nondecreasing(run):
+            run = list(reversed(run))
+        path = _make_path(role, radius, run, False, config)
+        if path is not None:
+            paths.append(path)
+    return sorted(paths, key=lambda p: (p.points[0][0], p.points[0][1], p.points[-1][0], p.points[-1][1]))
+
+
+def _ring_to_edge_paths(
+    pts: list[tuple[float, float]],
+    role: str,
+    radius: float,
+    config: SlicerConfig,
+    theta_window: tuple[float, float] | None = None,
+) -> list[Toolpath]:
     paths = []
     for a, b in zip(pts[:-1], pts[1:]):
         if _is_window_boundary_edge(a, b, theta_window):
@@ -320,9 +382,45 @@ def _remove_contained_straight_paths(paths: list[Toolpath], tol: float = 1e-8) -
     return [path for index, path in enumerate(paths) if index not in remove]
 
 
+def _points_close(a: tuple[float, float], b: tuple[float, float], tol: float = 1e-8) -> bool:
+    return abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
+
+
+def _can_reverse_join(path: Toolpath) -> bool:
+    return path.role not in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}
+
+
+def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
+    remaining = [path for path in paths if not path.closed]
+    joined = [path for path in paths if path.closed]
+    while remaining:
+        chain = remaining.pop(0)
+        changed = True
+        while changed:
+            changed = False
+            for index, candidate in enumerate(remaining):
+                if chain.role != candidate.role or abs(chain.radius - candidate.radius) > 1e-9:
+                    continue
+                if _points_close(chain.points[-1], candidate.points[0]):
+                    chain = Toolpath(chain.role, chain.radius, [*chain.points, *candidate.points[1:]], False)
+                elif _points_close(candidate.points[-1], chain.points[0]):
+                    chain = Toolpath(chain.role, chain.radius, [*candidate.points[:-1], *chain.points], False)
+                elif _can_reverse_join(chain) and _points_close(chain.points[-1], candidate.points[-1]):
+                    chain = Toolpath(chain.role, chain.radius, [*chain.points, *reversed(candidate.points[:-1])], False)
+                elif _can_reverse_join(chain) and _points_close(candidate.points[0], chain.points[0]):
+                    chain = Toolpath(chain.role, chain.radius, [*reversed(candidate.points[1:]), *chain.points], False)
+                else:
+                    continue
+                remaining.pop(index)
+                changed = True
+                break
+        joined.append(chain)
+    return joined
+
+
 def _postprocess_role_paths(paths: list[Toolpath], config: SlicerConfig) -> list[Toolpath]:
     kept = [path for path in paths if _path_length(path) >= _min_printable_length(config)]
-    return _remove_contained_straight_paths(kept)
+    return _remove_contained_straight_paths(_join_touching_paths(kept))
 
 
 def _radial_line_specs(geom, radius: float, spacing: float, config: SlicerConfig) -> list[tuple[float, float, float]]:
