@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
     parser.add_argument("--theta-step-deg", type=float, default=5.0)
     parser.add_argument("--axial-step", type=float, default=1.0)
+    parser.add_argument("--axial-min", type=float, default=15.0, help="Minimum emitted X position in mm.")
     parser.add_argument("--wall-count", type=int, default=2)
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
@@ -34,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help="Number of bed-side gap support layers printed as a continuous raft.",
+    )
+    parser.add_argument(
+        "--raft-grid-spacing",
+        type=float,
+        default=None,
+        help="Raft grid spacing in mm; defaults to nozzle width.",
     )
     parser.add_argument(
         "--support-min-island-area",
@@ -133,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         filament_diameter=args.filament_diameter,
         theta_step_deg=args.theta_step_deg,
         axial_step=args.axial_step,
+        axial_min=args.axial_min,
         wall_count=args.wall_count,
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
@@ -143,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         support_bearing_min_area=args.support_bearing_min_area,
         support_merge_gap=args.support_merge_gap,
         raft_layers=args.raft_layers,
+        raft_grid_spacing=args.raft_grid_spacing,
         bed_radius=args.bed_radius,
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,

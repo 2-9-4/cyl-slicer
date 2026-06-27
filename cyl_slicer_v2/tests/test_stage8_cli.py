@@ -64,6 +64,10 @@ class CliTests(unittest.TestCase):
                 "2.85",
                 "--raft-layers",
                 "3",
+                "--raft-grid-spacing",
+                "2.5",
+                "--axial-min",
+                "12.5",
             ]
         )
 
@@ -71,6 +75,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.bottom_layers, 2)
         self.assertEqual(args.filament_diameter, 2.85)
         self.assertEqual(args.raft_layers, 3)
+        self.assertEqual(args.raft_grid_spacing, 2.5)
+        self.assertEqual(args.axial_min, 12.5)
 
 
 if __name__ == "__main__":

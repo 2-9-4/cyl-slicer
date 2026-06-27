@@ -239,14 +239,26 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         )
 
     if not layer.support.is_empty:
-        support_spacing = config.nozzle_width if layer.is_raft else config.support_spacing
-        if layer.index >= 0 or layer.is_raft:
+        support_spacing = (config.raft_grid_spacing or config.nozzle_width) if layer.is_raft else config.support_spacing
+        if layer.is_raft:
             paths["SUPPORT"].extend(
-                line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="axial")
+                line_grid_paths(
+                    layer.support,
+                    "SUPPORT",
+                    radius,
+                    support_spacing,
+                    config,
+                    direction=layer.raft_direction or "radial",
+                )
             )
-        paths["SUPPORT"].extend(
-            line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="radial")
-        )
+        else:
+            if layer.index >= 0:
+                paths["SUPPORT"].extend(
+                    line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="axial")
+                )
+            paths["SUPPORT"].extend(
+                line_grid_paths(layer.support, "SUPPORT", radius, support_spacing, config, direction="radial")
+            )
 
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=dict(paths))
 
@@ -305,6 +317,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             theta_window=first_model.theta_window,
             is_full_wrap=first_model.is_full_wrap,
             is_raft=i < config.raft_layers,
+            raft_direction=("radial" if i % 2 == 0 else "axial") if i < config.raft_layers else None,
         )
         for i, radius in enumerate(radii)
     ]

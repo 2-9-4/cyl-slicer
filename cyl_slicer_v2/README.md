@@ -43,7 +43,9 @@ support-only foundation layers with negative layer numbers before model layer 0.
 Set the printer surface with `--build-cylinder-radius R` (`--bed-radius R` also
 works), or pass `--no-gap-support` to disable those foundation layers.
 The first four foundation layers default to a continuous raft envelope under the
-part; change that with `--raft-layers N`.
+part. Raft layers alternate one grid direction per layer, radial first, with
+spacing defaulting to nozzle width. Change these with `--raft-layers N` and
+`--raft-grid-spacing S`.
 
 Extrusion is derived from line width, layer height, and filament cross-section:
 `nozzle_width * layer_height / (pi * (filament_diameter / 2)^2)`. The default
@@ -57,7 +59,7 @@ cells. `0` disables it and is the default.
 
 The emitted G-code preserves the current viewer convention:
 
-- `X`: axial position in millimeters
+- `X`: axial position in millimeters, shifted so the minimum emitted X is `--axial-min`
 - `Y`: layer-local rotary angle in degrees after `G92 E0 Y0`
 - `Z`: radial lift from `bed_radius`
 - comments: `;LAYER`, `;Z`, `;TYPE`

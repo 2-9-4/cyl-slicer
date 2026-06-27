@@ -7,8 +7,9 @@ import unittest
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
-from cyl_slicer_v2.gcode import parse_extrusion_segments
+from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.mesh_io import load_mesh
+from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 from cyl_slicer_v2.pipeline import slice_to_gcode
 
 
@@ -68,6 +69,53 @@ class GcodeTests(unittest.TestCase):
         segments = parse_extrusion_segments(gcode)
         self.assertTrue(segments)
         self.assertTrue(all(end_y >= start_y for _, _, _, start_y, _, end_y in segments))
+
+    def test_constant_theta_paths_are_oriented_from_current_position(self):
+        config = SlicerConfig(max_axial_segment=20.0)
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "SUPPORT": [
+                    Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 10.0)]),
+                    Toolpath("SUPPORT", 10.0, [(0.1, 0.0), (0.1, 10.0)]),
+                ]
+            },
+        )
+
+        segments = [segment for segment in parse_extrusion_segments(emit_gcode([layer], config)) if segment[1] == "SUPPORT"]
+
+        self.assertEqual(len(segments), 2)
+        self.assertLess(segments[0][2], segments[0][4])
+        self.assertGreater(segments[1][2], segments[1][4])
+
+    def test_emitted_x_values_are_shifted_by_axial_min(self):
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={"SUPPORT": [Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 10.0)])]},
+        )
+
+        default_gcode = emit_gcode([layer], SlicerConfig(max_axial_segment=20.0))
+        shifted_gcode = emit_gcode([layer], SlicerConfig(axial_min=2.5, max_axial_segment=20.0))
+
+        self.assertIn("G0 X15.000 Y0.000", default_gcode)
+        self.assertIn("G1 X25.000 Y0.000", default_gcode)
+        self.assertIn("G0 X2.500 Y0.000", shifted_gcode)
+        self.assertIn("G1 X12.500 Y0.000", shifted_gcode)
+
+    def test_axial_min_sets_minimum_emitted_x_for_negative_model_coordinates(self):
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={"SUPPORT": [Toolpath("SUPPORT", 10.0, [(0.0, -16.0), (0.0, 4.0)])]},
+        )
+
+        gcode = emit_gcode([layer], SlicerConfig(axial_min=30.0, max_axial_segment=30.0))
+
+        x_values = [float(value) for value in re.findall(r"\bX(-?\d+(?:\.\d+)?)", gcode)]
+        self.assertEqual(min(x_values), 30.0)
+        self.assertEqual(max(x_values), 50.0)
 
     def test_no_thread_jump_like_segments(self):
         for fixture in ("helix_like_ribbon", "tube"):

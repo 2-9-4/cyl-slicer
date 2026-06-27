@@ -4,7 +4,7 @@
 
 The G-code uses a non-standard coordinate system adapted for cylindrical printing:
 
-- **X axis**: Axial position (Z in cylindrical coords), in millimeters
+- **X axis**: Axial position (Z in cylindrical coords), in millimeters, shifted so the minimum emitted X is the configured output minimum
 - **Y axis**: Rotation angle in **degrees**, relative to the most recent layer's `G92 Y0`
 
 The printer rotates around the Y-axis, extruding radially outward. `E` and `Y` are reset on each layer change with `G92 E0 Y0` to keep accumulating axes close to zero. The slicer tracks physical rotary position internally, so emitted Y values after the reset are local offsets from the current physical angle.

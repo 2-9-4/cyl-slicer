@@ -58,6 +58,8 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertEqual(config.top_layers, 3)
         self.assertEqual(config.bottom_layers, 3)
         self.assertEqual(config.raft_layers, 4)
+        self.assertIsNone(config.raft_grid_spacing)
+        self.assertEqual(config.axial_min, 15.0)
         expected_extrusion = config.nozzle_width * config.layer_height / (
             math.pi * (config.filament_diameter / 2.0) ** 2
         )
@@ -79,6 +81,10 @@ class CoordinatesAndConfigTests(unittest.TestCase):
             SlicerConfig(bottom_layers=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(raft_layers=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(raft_grid_spacing=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(axial_min=-1).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(axial_step=0).validate()
 

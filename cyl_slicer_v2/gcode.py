@@ -9,6 +9,9 @@ from .models import GcodeState, LayerToolpaths, Toolpath
 from .toolpaths import ROLE_ORDER
 
 
+TWO_PI = 2.0 * math.pi
+
+
 def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z: float | None = None, e: float | None = None, f: float | None = None) -> str:
     parts = [cmd]
     if x is not None:
@@ -28,7 +31,53 @@ def _emitted_y_degrees(theta: float, state: GcodeState) -> float:
     return math.degrees(theta - state.theta_origin)
 
 
-def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> list[str]:
+def _emitted_x(axial: float, output_x_offset: float) -> float:
+    return axial + output_x_offset
+
+
+def _output_x_offset(layers: list[LayerToolpaths], config: SlicerConfig) -> float:
+    axial_values = [
+        point[1]
+        for layer in layers
+        for paths in layer.paths_by_role.values()
+        for path in paths
+        for point in path.points
+    ]
+    if not axial_values:
+        return config.axial_min
+    return config.axial_min - min(axial_values)
+
+
+def _nearest_theta(theta: float, reference: float) -> float:
+    delta = (theta - reference + math.pi) % TWO_PI - math.pi
+    return reference + delta
+
+
+def _travel_distance_to_point(path: Toolpath, point: tuple[float, float], state: GcodeState) -> float:
+    theta = _nearest_theta(point[0], state.theta_accum)
+    return math.hypot((theta - state.theta_accum) * path.radius, point[1] - state.axial)
+
+
+def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
+    if path.role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}:
+        return False
+    if path.closed or len(path.points) < 2:
+        return False
+    theta0 = path.points[0][0]
+    return all(abs(point[0] - theta0) <= tol for point in path.points[1:])
+
+
+def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Toolpath:
+    if not _can_reverse_for_output(path):
+        return path
+    start_distance = _travel_distance_to_point(path, path.points[0], state)
+    end_distance = _travel_distance_to_point(path, path.points[-1], state)
+    if end_distance + 1e-9 >= start_distance:
+        return path
+    return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
+
+
+def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, output_x_offset: float) -> list[str]:
     if len(path.points) < 2:
         return []
     raw_thetas = [p[0] for p in path.points]
@@ -38,7 +87,7 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> li
 
     lines = [";start of path"]
     t0, x0 = pts[0]
-    lines.append(_format_move("G0", x=x0, y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
+    lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
     state.theta_accum = t0
     state.axial = x0
 
@@ -50,7 +99,7 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig) -> li
         lines.append(
             _format_move(
                 "G1",
-                x=x,
+                x=_emitted_x(x, output_x_offset),
                 y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
                 f=config.feed_mm_per_min,
@@ -84,6 +133,7 @@ def _split_long_axial_segments(
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     config.validate()
     state = GcodeState(radial=config.bed_radius)
+    output_x_offset = _output_x_offset(layers, config)
     out = [
         ";start of slice",
         f";LAYER_HEIGHT:{config.layer_height}",
@@ -105,8 +155,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         state.radial = layer.radius
         for role in ROLE_ORDER:
             for path in layer.paths_by_role.get(role, []):
+                path = _orient_path_for_current_position(path, state)
                 out.append(f";TYPE:{role}")
-                out.extend(emit_toolpath(path, state, config))
+                out.extend(emit_toolpath(path, state, config, output_x_offset))
 
     out.extend(
         [

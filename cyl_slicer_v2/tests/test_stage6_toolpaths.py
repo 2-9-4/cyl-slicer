@@ -117,13 +117,16 @@ class ToolpathTests(unittest.TestCase):
             theta_window=(0.0, 2.0 * math.pi),
             is_full_wrap=True,
         )
-        config = SlicerConfig(layer_height=0.5, bed_radius=10.0, raft_layers=2, nozzle_width=1.0)
+        config = SlicerConfig(layer_height=0.5, bed_radius=10.0, raft_layers=2, nozzle_width=1.0, raft_grid_spacing=2.0)
 
         gap_layers = gap_support_slices([first_model], config)
 
         self.assertTrue(gap_layers[0].is_raft)
         self.assertTrue(gap_layers[1].is_raft)
         self.assertFalse(gap_layers[2].is_raft)
+        self.assertEqual(gap_layers[0].raft_direction, "radial")
+        self.assertEqual(gap_layers[1].raft_direction, "axial")
+        self.assertIsNone(gap_layers[2].raft_direction)
         self.assertTrue(gap_layers[0].support.covers(Point(1.0, 6.0)))
         self.assertFalse(gap_layers[2].support.covers(Point(1.0, 6.0)))
 
@@ -131,7 +134,13 @@ class ToolpathTests(unittest.TestCase):
         self.assertTrue(
             any(abs(path.points[-1][0] - path.points[0][0]) > 2.0 * math.pi * 0.95 for path in support_paths)
         )
+        self.assertFalse(any(abs(path.points[-1][1] - path.points[0][1]) > 10.0 for path in support_paths))
+
+        support_paths = build_layer_toolpaths(gap_layers[1], config).paths_by_role.get("SUPPORT", [])
         self.assertTrue(any(abs(path.points[-1][1] - path.points[0][1]) > 10.0 for path in support_paths))
+        self.assertFalse(
+            any(abs(path.points[-1][0] - path.points[0][0]) > 2.0 * math.pi * 0.95 for path in support_paths)
+        )
 
     def test_gap_support_can_be_disabled(self):
         config = SlicerConfig(
