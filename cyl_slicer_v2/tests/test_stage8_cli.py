@@ -66,6 +66,20 @@ class CliTests(unittest.TestCase):
                 "3",
                 "--raft-grid-spacing",
                 "2.5",
+                "--raft-axial-gap",
+                "1.2",
+                "--support-gap-layers",
+                "2",
+                "--support-interface-layers",
+                "3",
+                "--support-interface-spacing",
+                "0.8",
+                "--support-meander-max-angle-deg",
+                "12.5",
+                "--min-path-length",
+                "0.7",
+                "--retract-mm",
+                "0.9",
                 "--axial-min",
                 "12.5",
             ]
@@ -76,6 +90,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.filament_diameter, 2.85)
         self.assertEqual(args.raft_layers, 3)
         self.assertEqual(args.raft_grid_spacing, 2.5)
+        self.assertEqual(args.raft_axial_gap, 1.2)
+        self.assertEqual(args.support_gap_layers, 2)
+        self.assertEqual(args.support_interface_layers, 3)
+        self.assertEqual(args.support_interface_spacing, 0.8)
+        self.assertEqual(args.support_meander_max_angle_deg, 12.5)
+        self.assertEqual(args.min_path_length, 0.7)
+        self.assertEqual(args.retract_mm, 0.9)
         self.assertEqual(args.axial_min, 12.5)
 
 

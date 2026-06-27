@@ -18,6 +18,8 @@ class LayerSlice:
     is_full_wrap: bool = False
     is_raft: bool = False
     raft_direction: str | None = None
+    support_interface: BaseGeometry | None = None
+    support_interface_direction: str | None = None
 
 
 @dataclass
@@ -42,3 +44,4 @@ class GcodeState:
     axial: float = 0.0
     radial: float = 0.0
     extrusion: float = 0.0
+    retracted: bool = False

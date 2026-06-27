@@ -25,10 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--theta-step-deg", type=float, default=5.0)
     parser.add_argument("--axial-step", type=float, default=1.0)
     parser.add_argument("--axial-min", type=float, default=15.0, help="Minimum emitted X position in mm.")
-    parser.add_argument("--wall-count", type=int, default=2)
+    parser.add_argument("--wall-count", type=int, default=3)
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
+    parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
+    parser.add_argument("--retract-mm", type=float, default=1.0, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
         "--raft-layers",
@@ -43,35 +45,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Raft grid spacing in mm; defaults to nozzle width.",
     )
     parser.add_argument(
+        "--raft-axial-gap",
+        type=float,
+        default=1.0,
+        help="Axial relief gap kept in the bottom raft footprint in mm.",
+    )
+    parser.add_argument(
         "--support-min-island-area",
         type=float,
-        default=0.05,
+        default=3,
         help="Drop support fragments smaller than this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-min-region-area",
         type=float,
-        default=1.0,
+        default=3.0,
         help="Inflate surviving support fragments below this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-bearing-min-area",
         type=float,
-        default=1.0,
+        default=3.0,
         help="Minimum contact area in mm^2 before lower geometry counts as load-bearing.",
     )
     parser.add_argument(
         "--support-merge-gap",
         type=float,
-        default=0.0,
+        default=3.0,
         help="Merge support branches closer than this metric gap in mm.",
+    )
+    parser.add_argument(
+        "--support-gap-layers",
+        type=int,
+        default=1,
+        help="Empty radial layers between top support interface and supported model surface.",
+    )
+    parser.add_argument(
+        "--support-interface-layers",
+        type=int,
+        default=2,
+        help="Dense top support interface layers below the support gap.",
+    )
+    parser.add_argument(
+        "--support-interface-spacing",
+        type=float,
+        default=None,
+        help="Top support interface line spacing in mm; defaults to nozzle width.",
+    )
+    parser.add_argument(
+        "--support-meander-max-angle-deg",
+        type=float,
+        default=15.0,
+        help="Maximum angular width of local support meander groups in degrees.",
     )
     parser.add_argument(
         "--build-cylinder-radius",
         "--bed-radius",
         dest="bed_radius",
         type=float,
-        default=0.0,
+        default=30.0,
         help="Radius of the printer build cylinder; support foundations start from this radius.",
     )
     parser.add_argument(
@@ -145,13 +177,20 @@ def main(argv: list[str] | None = None) -> int:
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
+        min_path_length=args.min_path_length,
+        retract_mm=args.retract_mm,
         support_spacing=args.support_spacing,
         support_min_island_area=args.support_min_island_area,
         support_min_region_area=args.support_min_region_area,
         support_bearing_min_area=args.support_bearing_min_area,
         support_merge_gap=args.support_merge_gap,
+        support_gap_layers=args.support_gap_layers,
+        support_interface_layers=args.support_interface_layers,
+        support_interface_spacing=args.support_interface_spacing,
+        support_meander_max_angle_deg=args.support_meander_max_angle_deg,
         raft_layers=args.raft_layers,
         raft_grid_spacing=args.raft_grid_spacing,
+        raft_axial_gap=args.raft_axial_gap,
         bed_radius=args.bed_radius,
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,

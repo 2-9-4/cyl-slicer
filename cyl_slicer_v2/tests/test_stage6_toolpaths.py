@@ -9,8 +9,8 @@ from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.layers import slice_mesh
-from cyl_slicer_v2.models import LayerSlice
-from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_support_slices
+from cyl_slicer_v2.models import LayerSlice, Toolpath
+from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_support_slices, _postprocess_role_paths
 
 
 class ToolpathTests(unittest.TestCase):
@@ -19,13 +19,18 @@ class ToolpathTests(unittest.TestCase):
         layer = next(layer for layer in slice_mesh(make_fixture("solid_box"), config, max_layers=3) if not layer.occupied.is_empty)
         layer_paths = build_layer_toolpaths(layer, config)
         for role, paths in layer_paths.paths_by_role.items():
-            if role == "SUPPORT":
+            if role in {"SUPPORT", "SUPPORT_INTERFACE"}:
                 source = layer.support
             else:
                 source = layer.occupied.buffer(1e-8)
             for path in paths:
                 for theta, axial in path.points:
-                    self.assertTrue(source.covers(Point(theta, axial)), role)
+                    physical_theta = (
+                        theta % (2.0 * math.pi)
+                        if role in {"SUPPORT", "SUPPORT_INTERFACE"} and theta > 2.0 * math.pi
+                        else theta
+                    )
+                    self.assertTrue(source.covers(Point(physical_theta, axial)), role)
 
     def test_perimeter_count_matches_wall_count_for_wide_box(self):
         config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, wall_count=2)
@@ -71,6 +76,92 @@ class ToolpathTests(unittest.TestCase):
         full = [path for path in paths if abs((path.points[-1][0] - path.points[0][0]) - 2 * math.pi) < 1e-6]
         self.assertTrue(full)
 
+    def test_sparse_support_radial_lines_are_meandered_in_local_angle_groups(self):
+        empty = GeometryCollection()
+        support = box(0.0, 0.0, math.pi / 2.0, 4.0)
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=empty,
+            top_surfaces=empty,
+            bottom_surfaces=empty,
+            needs_support=empty,
+            support=support,
+            theta_window=(0.0, 2.0 * math.pi),
+            is_full_wrap=True,
+        )
+        config = SlicerConfig(support_spacing=1.0)
+
+        paths = build_layer_toolpaths(layer, config).paths_by_role.get("SUPPORT", [])
+
+        self.assertTrue(paths)
+        meanders = [path for path in paths if len(path.points) > 2]
+        self.assertTrue(meanders)
+        radial_segments = [
+            (a, b)
+            for path in meanders
+            for a, b in zip(path.points, path.points[1:])
+            if abs(a[1] - b[1]) < 1e-8 and abs(a[0] - b[0]) > 1e-8
+        ]
+        self.assertTrue(radial_segments)
+        self.assertTrue(all(abs(a[0] - b[0]) <= math.radians(15.0) + 1e-8 for a, b in radial_segments))
+        self.assertTrue(any(b[0] < a[0] for a, b in radial_segments))
+        self.assertTrue(
+            any(
+                abs(a[0] - b[0]) < 1e-8 and abs(a[1] - b[1]) > 0.5
+                for path in meanders
+                for a, b in zip(path.points, path.points[1:])
+            )
+        )
+
+    def test_short_support_lines_are_filtered(self):
+        empty = GeometryCollection()
+        support = box(0.0, 0.0, 0.01, 2.0)
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=empty,
+            top_surfaces=empty,
+            bottom_surfaces=empty,
+            needs_support=empty,
+            support=support,
+        )
+
+        paths = build_layer_toolpaths(layer, SlicerConfig(min_path_length=0.6)).paths_by_role
+
+        self.assertNotIn("SUPPORT", paths)
+
+    def test_straight_lines_contained_in_longer_same_role_lines_are_filtered(self):
+        config = SlicerConfig(min_path_length=0.6)
+        outer = Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 10.0)])
+        inner = Toolpath("SUPPORT", 10.0, [(0.0, 2.0), (0.0, 4.0)])
+
+        self.assertEqual(_postprocess_role_paths([outer, inner], config), [outer])
+
+    def test_support_interface_uses_dedicated_role_and_removes_sparse_overlap(self):
+        empty = GeometryCollection()
+        interface = box(0.0, 0.0, 1.0, 4.0)
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=empty,
+            top_surfaces=empty,
+            bottom_surfaces=empty,
+            needs_support=empty,
+            support=interface,
+            support_interface=interface,
+            support_interface_direction="axial",
+        )
+        config = SlicerConfig(nozzle_width=0.5, support_interface_spacing=0.5)
+
+        paths = build_layer_toolpaths(layer, config).paths_by_role
+
+        self.assertTrue(paths.get("SUPPORT_INTERFACE"))
+        self.assertNotIn("SUPPORT", paths)
+        self.assertTrue(
+            all(abs(path.points[0][0] - path.points[-1][0]) < 1e-8 for path in paths["SUPPORT_INTERFACE"])
+        )
+
     def test_sparse_infill_is_not_generated_inside_solid_infill(self):
         config = SlicerConfig(wall_count=1, nozzle_width=0.4, infill_spacing=1.0)
         occupied = box(0.0, 0.0, 1.0, 10.0)
@@ -103,7 +194,7 @@ class ToolpathTests(unittest.TestCase):
         self.assertTrue(support_layers)
         self.assertTrue(any(layer.paths_by_role.get("SUPPORT") for layer in support_layers))
 
-    def test_first_gap_support_layers_are_continuous_raft(self):
+    def test_first_gap_support_layers_are_raft_with_axial_relief_gap(self):
         empty = GeometryCollection()
         occupied = box(0.0, 0.0, 2.0 * math.pi, 2.0).union(box(0.0, 10.0, 2.0 * math.pi, 12.0))
         first_model = LayerSlice(
@@ -127,7 +218,9 @@ class ToolpathTests(unittest.TestCase):
         self.assertEqual(gap_layers[0].raft_direction, "radial")
         self.assertEqual(gap_layers[1].raft_direction, "axial")
         self.assertIsNone(gap_layers[2].raft_direction)
-        self.assertTrue(gap_layers[0].support.covers(Point(1.0, 6.0)))
+        self.assertFalse(gap_layers[0].support.covers(Point(1.0, 6.0)))
+        self.assertTrue(gap_layers[0].support.covers(Point(1.0, 1.0)))
+        self.assertTrue(gap_layers[0].support.covers(Point(1.0, 11.0)))
         self.assertFalse(gap_layers[2].support.covers(Point(1.0, 6.0)))
 
         support_paths = build_layer_toolpaths(gap_layers[0], config).paths_by_role.get("SUPPORT", [])
@@ -137,7 +230,13 @@ class ToolpathTests(unittest.TestCase):
         self.assertFalse(any(abs(path.points[-1][1] - path.points[0][1]) > 10.0 for path in support_paths))
 
         support_paths = build_layer_toolpaths(gap_layers[1], config).paths_by_role.get("SUPPORT", [])
-        self.assertTrue(any(abs(path.points[-1][1] - path.points[0][1]) > 10.0 for path in support_paths))
+        self.assertTrue(any(abs(path.points[-1][1] - path.points[0][1]) > 4.0 for path in support_paths))
+        self.assertFalse(
+            any(
+                min(path.points[0][1], path.points[-1][1]) < 6.0 < max(path.points[0][1], path.points[-1][1])
+                for path in support_paths
+            )
+        )
         self.assertFalse(
             any(abs(path.points[-1][0] - path.points[0][0]) > 2.0 * math.pi * 0.95 for path in support_paths)
         )

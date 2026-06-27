@@ -18,8 +18,13 @@ class SlicerConfig:
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
     support_merge_gap: float = 0.0
+    support_gap_layers: int = 1
+    support_interface_layers: int = 2
+    support_interface_spacing: float | None = None
+    support_meander_max_angle_deg: float = 15.0
     raft_layers: int = 4
     raft_grid_spacing: float | None = None
+    raft_axial_gap: float = 1.0
     theta_step_deg: float = 5.0
     axial_step: float = 1.0
     guard_columns: int = 2
@@ -32,9 +37,9 @@ class SlicerConfig:
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float | None = None
-    retract_mm: float =1.0
+    retract_mm: float = 1.0
     hotend_temp: int = 215
-    min_path_length: float = 1e-4
+    min_path_length: float = 0.6
     max_axial_segment: float = 1.5
     slice_workers: int = 1
     layer_backend: str = "raster"
@@ -82,10 +87,20 @@ class SlicerConfig:
             raise ValueError("support_bearing_min_area must be non-negative")
         if self.support_merge_gap < 0:
             raise ValueError("support_merge_gap must be non-negative")
+        if self.support_gap_layers < 0:
+            raise ValueError("support_gap_layers must be non-negative")
+        if self.support_interface_layers < 0:
+            raise ValueError("support_interface_layers must be non-negative")
+        if self.support_interface_spacing is not None and self.support_interface_spacing <= 0:
+            raise ValueError("support_interface_spacing must be positive when set")
+        if self.support_meander_max_angle_deg <= 0 or self.support_meander_max_angle_deg > 360:
+            raise ValueError("support_meander_max_angle_deg must be in (0, 360]")
         if self.raft_layers < 0:
             raise ValueError("raft_layers must be non-negative")
         if self.raft_grid_spacing is not None and self.raft_grid_spacing <= 0:
             raise ValueError("raft_grid_spacing must be positive when set")
+        if self.raft_axial_gap < 0:
+            raise ValueError("raft_axial_gap must be non-negative")
         if self.theta_step_deg <= 0 or self.theta_step_deg > 90:
             raise ValueError("theta_step_deg must be in (0, 90]")
         if self.axial_step <= 0:
@@ -98,6 +113,10 @@ class SlicerConfig:
             raise ValueError("bed_radius must be non-negative")
         if self.max_axial_segment <= 0:
             raise ValueError("max_axial_segment must be positive")
+        if self.min_path_length < 0:
+            raise ValueError("min_path_length must be non-negative")
+        if self.retract_mm < 0:
+            raise ValueError("retract_mm must be non-negative")
         if self.slice_workers < 1:
             raise ValueError("slice_workers must be at least 1")
         if self.toolpath_workers < 1:

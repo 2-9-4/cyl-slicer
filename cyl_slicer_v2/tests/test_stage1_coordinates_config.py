@@ -59,7 +59,14 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertEqual(config.bottom_layers, 3)
         self.assertEqual(config.raft_layers, 4)
         self.assertIsNone(config.raft_grid_spacing)
+        self.assertEqual(config.support_gap_layers, 1)
+        self.assertEqual(config.support_interface_layers, 2)
+        self.assertIsNone(config.support_interface_spacing)
+        self.assertEqual(config.support_meander_max_angle_deg, 15.0)
         self.assertEqual(config.axial_min, 15.0)
+        self.assertEqual(config.raft_axial_gap, 1.0)
+        self.assertEqual(config.min_path_length, 0.6)
+        self.assertEqual(config.retract_mm, 1.0)
         expected_extrusion = config.nozzle_width * config.layer_height / (
             math.pi * (config.filament_diameter / 2.0) ** 2
         )
@@ -83,6 +90,20 @@ class CoordinatesAndConfigTests(unittest.TestCase):
             SlicerConfig(raft_layers=-1).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(raft_grid_spacing=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(support_gap_layers=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(support_interface_layers=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(support_interface_spacing=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(support_meander_max_angle_deg=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(raft_axial_gap=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(min_path_length=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(retract_mm=-1).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(axial_min=-1).validate()
         with self.assertRaises(ValueError):

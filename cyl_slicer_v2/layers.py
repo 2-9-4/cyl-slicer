@@ -251,32 +251,70 @@ def _needs_support_from_previous(geom, previous, radius: float, config: SlicerCo
     return _support_regions(_safe_difference(geom, bearing_cover), radius, config)
 
 
+def _merge_support_carry(items, radius: float, config: SlicerConfig):
+    grouped = {}
+    for geom, gap_layers, interface_layers in items:
+        if geom is None or geom.is_empty:
+            continue
+        grouped.setdefault((gap_layers, interface_layers), []).append(geom)
+
+    merged = []
+    for (gap_layers, interface_layers), geoms in grouped.items():
+        geom = _support_regions(_safe_union(geoms), radius, config, promote=False)
+        if not geom.is_empty:
+            merged.append((geom, gap_layers, interface_layers))
+    return merged
+
+
 def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
-    carry = GeometryCollection()
+    carry = []
     for layer in reversed(layers):
-        support_here = GeometryCollection()
-        carried_support = GeometryCollection()
-        if not carry.is_empty:
+        support_pieces = []
+        interface_pieces = []
+        interface_direction = None
+        next_carry = []
+        for carried_geom, gap_layers, interface_layers in carry:
             occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
             if occupied.is_empty:
-                ungrounded = carry
+                ungrounded = carried_geom
             else:
-                contact = _safe_intersection(carry, occupied)
+                contact = _safe_intersection(carried_geom, occupied)
                 grounded = _bearing_regions(contact, layer.radius, config)
-                ungrounded = _safe_difference(carry, grounded)
+                ungrounded = _safe_difference(carried_geom, grounded)
             carried_support = _support_regions(ungrounded, layer.radius, config, promote=False)
-            support_here = carried_support
-            if not occupied.is_empty and not carried_support.is_empty:
-                support_here = _fold_metric_result(_safe_difference(carried_support, occupied))
-                support_here = _support_regions(support_here, layer.radius, config, promote=False)
-        layer.support = support_here
 
-        pieces = []
-        if not carried_support.is_empty:
-            pieces.append(carried_support)
+            printable_support = carried_support
+            if not occupied.is_empty and not carried_support.is_empty:
+                printable_support = _fold_metric_result(_safe_difference(carried_support, occupied))
+                printable_support = _support_regions(printable_support, layer.radius, config, promote=False)
+
+            if gap_layers <= 0 and not printable_support.is_empty:
+                support_pieces.append(printable_support)
+                if interface_layers > 0:
+                    interface_pieces.append(printable_support)
+                    interface_index = config.support_interface_layers - interface_layers
+                    direction = "axial" if interface_index % 2 == 0 else "radial"
+                    if interface_direction is None:
+                        interface_direction = direction
+
+            if not carried_support.is_empty:
+                next_gap = max(0, gap_layers - 1)
+                next_interface = interface_layers if gap_layers > 0 else max(0, interface_layers - 1)
+                next_carry.append((carried_support, next_gap, next_interface))
+
+        layer.support = _safe_union(support_pieces)
+        layer.support_interface = _safe_union(interface_pieces)
+        layer.support_interface_direction = interface_direction
+
         if not layer.needs_support.is_empty:
-            pieces.append(layer.needs_support)
-        carry = _support_regions(_safe_union(pieces), layer.radius, config, promote=False) if pieces else GeometryCollection()
+            next_carry.append(
+                (
+                    layer.needs_support,
+                    config.support_gap_layers,
+                    config.support_interface_layers,
+                )
+            )
+        carry = _merge_support_carry(next_carry, layer.radius, config)
 
 
 def propagate_solid_surfaces(layers: list[LayerSlice], config: SlicerConfig) -> None:

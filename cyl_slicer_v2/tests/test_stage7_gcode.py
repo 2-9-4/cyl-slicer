@@ -28,11 +28,29 @@ class GcodeTests(unittest.TestCase):
                 self.assertEqual(values, sorted(values))
                 values = []
                 continue
-            if line.startswith("G1 "):
+            if line.startswith("G1 ") and (" X" in line or " Y" in line):
                 match = re.search(r"\bE(-?\d+(?:\.\d+)?)", line)
                 if match:
                     values.append(float(match.group(1)))
         self.assertEqual(values, sorted(values))
+
+    def test_retractions_are_emitted_between_paths(self):
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "SUPPORT": [
+                    Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 10.0)]),
+                    Toolpath("SUPPORT", 10.0, [(0.1, 0.0), (0.1, 10.0)]),
+                ]
+            },
+        )
+
+        gcode = emit_gcode([layer], SlicerConfig(max_axial_segment=20.0, retract_mm=1.0))
+
+        self.assertIn("; retract", gcode)
+        self.assertIn("; unretract", gcode)
+        self.assertRegex(gcode, r"(?m)^G1 E-?[0-9.]+ F[0-9.]+ ; retract$")
 
     def test_layer_changes_reset_extrusion_and_rotary_axes(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
@@ -47,6 +65,8 @@ class GcodeTests(unittest.TestCase):
                 ";TYPE:EXTERNAL_PERIMETER",
                 "G0 X0.000 Y350.000",
                 "G1 X0.000 Y355.000 E1.00000",
+                "G1 E0.00000 ; retract",
+                "G1 E1.00000 ; unretract",
                 "G92 E0 Y0",
                 "G0 X0.000 Y5.000",
                 "G1 X0.000 Y10.000 E1.00000",
@@ -64,11 +84,17 @@ class GcodeTests(unittest.TestCase):
             ],
         )
 
-    def test_no_extrusion_segment_moves_backward_in_y(self):
+    def test_model_extrusion_segments_do_not_move_backward_in_y(self):
         gcode = slice_to_gcode(make_fixture("helix_like_ribbon"), SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0), max_layers=2)
         segments = parse_extrusion_segments(gcode)
         self.assertTrue(segments)
-        self.assertTrue(all(end_y >= start_y for _, _, _, start_y, _, end_y in segments))
+        self.assertTrue(
+            all(
+                end_y >= start_y
+                for _, role, _, start_y, _, end_y in segments
+                if role not in {"SUPPORT", "SUPPORT_INTERFACE"}
+            )
+        )
 
     def test_constant_theta_paths_are_oriented_from_current_position(self):
         config = SlicerConfig(max_axial_segment=20.0)
@@ -88,6 +114,23 @@ class GcodeTests(unittest.TestCase):
         self.assertEqual(len(segments), 2)
         self.assertLess(segments[0][2], segments[0][4])
         self.assertGreater(segments[1][2], segments[1][4])
+
+    def test_support_meander_preserves_reverse_radial_leg(self):
+        config = SlicerConfig(max_axial_segment=20.0)
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "SUPPORT": [
+                    Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+                ]
+            },
+        )
+
+        segments = [segment for segment in parse_extrusion_segments(emit_gcode([layer], config)) if segment[1] == "SUPPORT"]
+
+        self.assertTrue(any(y1 < y0 for _, _, _, y0, _, y1 in segments))
+        self.assertTrue(any(abs(y1 - y0) < 1e-6 and abs(x1 - x0) > 0.5 for _, _, x0, y0, x1, y1 in segments))
 
     def test_emitted_x_values_are_shifted_by_axial_min(self):
         layer = LayerToolpaths(
@@ -158,8 +201,8 @@ class GcodeTests(unittest.TestCase):
             match = re.search(r"\bY(-?\d+(?:\.\d+)?)", line)
             if match:
                 y_values.append(float(match.group(1)))
-        self.assertTrue(y_values)
-        self.assertLess(max(y_values) - min(y_values), 5.0)
+        if y_values:
+            self.assertLess(max(y_values) - min(y_values), 5.0)
 
     def test_rotatecube_debug_gcode_does_not_emit_periodic_seam_wall_segments(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"

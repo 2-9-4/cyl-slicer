@@ -145,6 +145,40 @@ class LayerClassificationTests(unittest.TestCase):
         self.assertFalse(layers[1].support.covers(Point(0.05, 0.5)))
         self.assertTrue(layers[0].support.covers(Point(0.05, 0.5)))
 
+    def test_support_gap_and_interface_layers_are_propagated_below_overhang(self):
+        empty = GeometryCollection()
+        needs_support = box(0.0, 0.0, 1.0, 1.0)
+        layers = [
+            LayerSlice(
+                index=i,
+                radius=10.0 + i,
+                occupied=empty,
+                top_surfaces=empty,
+                bottom_surfaces=empty,
+                needs_support=needs_support if i == 4 else empty,
+                support=empty,
+            )
+            for i in range(5)
+        ]
+        config = SlicerConfig(
+            support_gap_layers=1,
+            support_interface_layers=2,
+            support_min_island_area=0.0,
+            support_min_region_area=0.0,
+            support_bearing_min_area=0.0,
+        )
+
+        propagate_support(layers, config)
+
+        self.assertTrue(layers[3].support.is_empty)
+        self.assertFalse(layers[2].support.is_empty)
+        self.assertFalse(layers[2].support_interface.is_empty)
+        self.assertEqual(layers[2].support_interface_direction, "axial")
+        self.assertFalse(layers[1].support_interface.is_empty)
+        self.assertEqual(layers[1].support_interface_direction, "radial")
+        self.assertFalse(layers[0].support.is_empty)
+        self.assertTrue(layers[0].support_interface.is_empty)
+
     def test_cubeandring2_layers_do_not_seed_full_frame_geometry(self):
         mesh_path = Path(__file__).resolve().parent / "fixtures" / "cubeandring2.stl"
         mesh = load_mesh(mesh_path)

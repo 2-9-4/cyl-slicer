@@ -6,7 +6,7 @@ import re
 from .config import SlicerConfig
 from .coordinates import cylindrical_distance, unwrap_path_from_current
 from .models import GcodeState, LayerToolpaths, Toolpath
-from .toolpaths import ROLE_ORDER
+from .toolpaths import MIN_OUTPUT_LENGTH_GUARD, ROLE_ORDER
 
 
 TWO_PI = 2.0 * math.pi
@@ -77,11 +77,48 @@ def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Tool
     return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
 
 
+def _retract(state: GcodeState, config: SlicerConfig) -> list[str]:
+    if config.retract_mm <= 0 or state.retracted:
+        return []
+    state.extrusion -= config.retract_mm
+    state.retracted = True
+    return [_format_move("G1", e=state.extrusion, f=config.travel_mm_per_min) + " ; retract"]
+
+
+def _unretract(state: GcodeState, config: SlicerConfig) -> list[str]:
+    if config.retract_mm <= 0 or not state.retracted:
+        return []
+    state.extrusion += config.retract_mm
+    state.retracted = False
+    return [_format_move("G1", e=state.extrusion, f=config.travel_mm_per_min) + " ; unretract"]
+
+
+def _unwrap_bidirectional_path_from_current(thetas: list[float], current_accum: float) -> list[float]:
+    if not thetas:
+        return []
+    out = [_nearest_theta(thetas[0], current_accum)]
+    previous_raw = thetas[0]
+    for theta in thetas[1:]:
+        raw_delta = theta - previous_raw
+        if abs(raw_delta) <= 1e-9:
+            raw_delta = 0.0
+        out.append(out[-1] + raw_delta)
+        previous_raw = theta
+    return out
+
+
+def _unwrap_toolpath_thetas(path: Toolpath, current_accum: float) -> list[float]:
+    raw_thetas = [point[0] for point in path.points]
+    allows_reverse = path.role in {"SUPPORT", "SUPPORT_INTERFACE"}
+    if allows_reverse and any(b < a - 1e-9 for a, b in zip(raw_thetas, raw_thetas[1:])):
+        return _unwrap_bidirectional_path_from_current(raw_thetas, current_accum)
+    return unwrap_path_from_current(raw_thetas, current_accum)
+
+
 def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, output_x_offset: float) -> list[str]:
     if len(path.points) < 2:
         return []
-    raw_thetas = [p[0] for p in path.points]
-    accum = unwrap_path_from_current(raw_thetas, state.theta_accum)
+    accum = _unwrap_toolpath_thetas(path, state.theta_accum)
     pts = list(zip(accum, [p[1] for p in path.points]))
     pts = _split_long_axial_segments(pts, config.max_axial_segment)
 
@@ -90,12 +127,16 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, outpu
     lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
     state.theta_accum = t0
     state.axial = x0
+    lines.extend(_unretract(state, config))
 
+    extruded = False
+    min_length = config.min_path_length + MIN_OUTPUT_LENGTH_GUARD if config.min_path_length > 0 else 0.0
     for (t_prev, x_prev), (t, x) in zip(pts[:-1], pts[1:]):
         dist = cylindrical_distance((t_prev, x_prev), (t, x), path.radius)
-        if dist <= config.min_path_length:
+        if dist <= min_length:
             continue
         state.extrusion += dist * config.extrusion_per_mm
+        extruded = True
         lines.append(
             _format_move(
                 "G1",
@@ -107,6 +148,8 @@ def emit_toolpath(path: Toolpath, state: GcodeState, config: SlicerConfig, outpu
         )
         state.theta_accum = t
         state.axial = x
+    if extruded:
+        lines.extend(_retract(state, config))
     lines.append(";end of path")
     return lines
 
@@ -218,7 +261,14 @@ def parse_extrusion_segments(gcode: str) -> list[tuple[int, str, float, float, f
         me = E_RE.search(line)
         nx = float(mx.group(1)) + x_offset if mx else x
         ny = float(my.group(1)) + y_offset if my else y
-        if line.startswith("G1 ") and me and x is not None and y is not None and nx is not None and ny is not None:
+        moved_xy = (
+            x is not None
+            and y is not None
+            and nx is not None
+            and ny is not None
+            and (abs(nx - x) > 1e-9 or abs(ny - y) > 1e-9)
+        )
+        if line.startswith("G1 ") and me and moved_xy:
             segments.append((layer, role, x, y, nx, ny))
         x, y = nx, ny
     return segments
