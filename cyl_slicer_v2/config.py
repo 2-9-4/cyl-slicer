@@ -22,6 +22,7 @@ class SlicerConfig:
     support_interface_layers: int = 2
     support_interface_spacing: float | None = None
     support_meander_max_angle_deg: float = 15.0
+    support_cross_spacing: float | None = None
     raft_layers: int = 4
     raft_grid_spacing: float | None = None
     raft_axial_gap: float = 1.0
@@ -95,6 +96,8 @@ class SlicerConfig:
             raise ValueError("support_interface_spacing must be positive when set")
         if self.support_meander_max_angle_deg <= 0 or self.support_meander_max_angle_deg > 360:
             raise ValueError("support_meander_max_angle_deg must be in (0, 360]")
+        if self.support_cross_spacing is not None and self.support_cross_spacing <= 0:
+            raise ValueError("support_cross_spacing must be positive when set")
         if self.raft_layers < 0:
             raise ValueError("raft_layers must be non-negative")
         if self.raft_grid_spacing is not None and self.raft_grid_spacing <= 0:

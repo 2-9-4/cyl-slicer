@@ -162,6 +162,30 @@ class ToolpathTests(unittest.TestCase):
             )
         )
 
+    def test_sparse_support_has_coarse_axial_tie_lines(self):
+        empty = GeometryCollection()
+        support = box(0.0, 0.0, math.pi / 2.0, 4.0)
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=empty,
+            top_surfaces=empty,
+            bottom_surfaces=empty,
+            needs_support=empty,
+            support=support,
+        )
+        config = SlicerConfig(support_spacing=1.0, support_cross_spacing=2.0)
+
+        paths = build_layer_toolpaths(layer, config).paths_by_role.get("SUPPORT", [])
+
+        self.assertTrue(
+            any(
+                abs(a[0] - b[0]) < 1e-8 and abs(a[1] - b[1]) > 3.5
+                for path in paths
+                for a, b in zip(path.points, path.points[1:])
+            )
+        )
+
     def test_short_support_lines_are_filtered(self):
         empty = GeometryCollection()
         support = box(0.0, 0.0, 0.01, 2.0)

@@ -53,25 +53,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--support-min-island-area",
         type=float,
-        default=3,
+        default=10,
         help="Drop support fragments smaller than this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-min-region-area",
         type=float,
-        default=3.0,
+        default=10.0,
         help="Inflate surviving support fragments below this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-bearing-min-area",
         type=float,
-        default=3.0,
+        default=25.0,
         help="Minimum contact area in mm^2 before lower geometry counts as load-bearing.",
     )
     parser.add_argument(
         "--support-merge-gap",
         type=float,
-        default=3.0,
+        default=10.0,
         help="Merge support branches closer than this metric gap in mm.",
     )
     parser.add_argument(
@@ -97,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=15.0,
         help="Maximum angular width of local support meander groups in degrees.",
+    )
+    parser.add_argument(
+        "--support-cross-spacing",
+        type=float,
+        default=None,
+        help="Coarse axial tie spacing for sparse supports in mm; defaults to 4x support spacing.",
     )
     parser.add_argument(
         "--build-cylinder-radius",
@@ -188,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         support_interface_layers=args.support_interface_layers,
         support_interface_spacing=args.support_interface_spacing,
         support_meander_max_angle_deg=args.support_meander_max_angle_deg,
+        support_cross_spacing=args.support_cross_spacing,
         raft_layers=args.raft_layers,
         raft_grid_spacing=args.raft_grid_spacing,
         raft_axial_gap=args.raft_axial_gap,

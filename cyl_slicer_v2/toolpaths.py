@@ -607,9 +607,13 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
                 )
             )
         else:
-            paths["SUPPORT"].extend(
-                meandered_radial_grid_paths(support, "SUPPORT", radius, support_spacing, config)
-            )
+            radial_support = meandered_radial_grid_paths(support, "SUPPORT", radius, support_spacing, config)
+            paths["SUPPORT"].extend(radial_support)
+            if radial_support:
+                cross_spacing = config.support_cross_spacing or support_spacing * 4.0
+                paths["SUPPORT"].extend(
+                    line_grid_paths(support, "SUPPORT", radius, cross_spacing, config, direction="axial")
+                )
 
     paths = {
         role: processed

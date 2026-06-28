@@ -63,6 +63,7 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertEqual(config.support_interface_layers, 2)
         self.assertIsNone(config.support_interface_spacing)
         self.assertEqual(config.support_meander_max_angle_deg, 15.0)
+        self.assertIsNone(config.support_cross_spacing)
         self.assertEqual(config.axial_min, 15.0)
         self.assertEqual(config.raft_axial_gap, 1.0)
         self.assertEqual(config.min_path_length, 0.6)
@@ -98,6 +99,8 @@ class CoordinatesAndConfigTests(unittest.TestCase):
             SlicerConfig(support_interface_spacing=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(support_meander_max_angle_deg=0).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(support_cross_spacing=0).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(raft_axial_gap=-1).validate()
         with self.assertRaises(ValueError):

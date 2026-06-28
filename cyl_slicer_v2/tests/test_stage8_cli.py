@@ -76,6 +76,8 @@ class CliTests(unittest.TestCase):
                 "0.8",
                 "--support-meander-max-angle-deg",
                 "12.5",
+                "--support-cross-spacing",
+                "6.0",
                 "--min-path-length",
                 "0.7",
                 "--retract-mm",
@@ -95,6 +97,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.support_interface_layers, 3)
         self.assertEqual(args.support_interface_spacing, 0.8)
         self.assertEqual(args.support_meander_max_angle_deg, 12.5)
+        self.assertEqual(args.support_cross_spacing, 6.0)
         self.assertEqual(args.min_path_length, 0.7)
         self.assertEqual(args.retract_mm, 0.9)
         self.assertEqual(args.axial_min, 12.5)
