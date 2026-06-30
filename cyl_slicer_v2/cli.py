@@ -31,6 +31,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
     parser.add_argument("--retract-mm", type=float, default=1.0, help="Filament retraction distance in mm between paths.")
+    parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
+    parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
+    parser.add_argument(
+        "--no-z-hop-perimeter-crossing",
+        action="store_false",
+        dest="z_hop_on_perimeter_crossing",
+        help="Disable Z-hop for travel moves that cross layer perimeters.",
+    )
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument(
         "--raft-layers",
@@ -185,6 +193,9 @@ def main(argv: list[str] | None = None) -> int:
         infill_spacing=args.infill_spacing,
         min_path_length=args.min_path_length,
         retract_mm=args.retract_mm,
+        z_hop_height=args.z_hop_height,
+        z_hop_min_travel=args.z_hop_min_travel,
+        z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
         support_spacing=args.support_spacing,
         support_min_island_area=args.support_min_island_area,
         support_min_region_area=args.support_min_region_area,

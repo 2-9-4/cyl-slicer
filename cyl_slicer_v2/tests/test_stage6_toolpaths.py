@@ -234,6 +234,31 @@ class ToolpathTests(unittest.TestCase):
             all(abs(path.points[0][0] - path.points[-1][0]) < 1e-8 for path in paths["SUPPORT_INTERFACE"])
         )
 
+    def test_rotatecube_debug_layers_87_to_95_do_not_emit_floating_support(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        config = SlicerConfig(
+            layer_backend="intersection",
+            intersection_refine_factor=0,
+            layer_height=0.2,
+            wall_count=3,
+            support_min_island_area=10.0,
+            support_min_region_area=10.0,
+            support_bearing_min_area=25.0,
+            support_merge_gap=10.0,
+            bed_radius=30.0,
+            slice_workers=4,
+            toolpath_workers=4,
+        )
+        layers = slice_mesh(load_mesh(mesh_path), config, max_layers=100)
+        paths_by_index = {layer.layer_index: layer.paths_by_role for layer in build_toolpaths(layers, config)}
+
+        for layer_index in range(87, 96):
+            with self.subTest(layer=layer_index):
+                self.assertNotIn("SUPPORT", paths_by_index[layer_index])
+                self.assertNotIn("SUPPORT_INTERFACE", paths_by_index[layer_index])
+
     def test_sparse_infill_is_not_generated_inside_solid_infill(self):
         config = SlicerConfig(wall_count=1, nozzle_width=0.4, infill_spacing=1.0)
         occupied = box(0.0, 0.0, 1.0, 10.0)

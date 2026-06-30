@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import re
+
+from shapely.geometry import LineString, Point
+from shapely.geometry.base import BaseGeometry
+from shapely.strtree import STRtree
 
 from .config import SlicerConfig
 from .coordinates import cylindrical_distance, unwrap_path_from_current
@@ -11,6 +16,13 @@ from .toolpaths import MIN_OUTPUT_LENGTH_GUARD, ROLE_ORDER
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
+
+
+@dataclass(frozen=True)
+class PerimeterIndex:
+    segments: list[LineString]
+    tree: STRtree | None
+    period: float
 
 
 def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z: float | None = None, e: float | None = None, f: float | None = None) -> str:
@@ -36,6 +48,10 @@ def _emitted_x(axial: float, output_x_offset: float) -> float:
     return axial + output_x_offset
 
 
+def _emitted_z(radial: float, config: SlicerConfig) -> float:
+    return radial - config.bed_radius
+
+
 def _output_x_offset(layers: list[LayerToolpaths], config: SlicerConfig) -> float:
     axial_values = [
         point[1]
@@ -57,6 +73,115 @@ def _nearest_theta(theta: float, reference: float) -> float:
 def _travel_distance_to_point(path: Toolpath, point: tuple[float, float], state: GcodeState) -> float:
     theta = _nearest_theta(point[0], state.theta_accum)
     return math.hypot((theta - state.theta_accum) * path.radius, point[1] - state.axial)
+
+
+def _metric_point(theta: float, axial: float, radius: float) -> tuple[float, float]:
+    return theta * radius, axial
+
+
+def _path_metric_segments(path: Toolpath) -> list[LineString]:
+    if len(path.points) < 2:
+        return []
+    thetas = _unwrap_toolpath_thetas(path, path.points[0][0])
+    pts = [_metric_point(theta, axial, path.radius) for theta, (_, axial) in zip(thetas, path.points)]
+    return [
+        LineString([a, b])
+        for a, b in zip(pts[:-1], pts[1:])
+        if math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-8
+    ]
+
+
+def _layer_perimeter_index(layer: LayerToolpaths) -> PerimeterIndex | None:
+    segments = []
+    for role in ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"):
+        for path in layer.paths_by_role.get(role, []):
+            segments.extend(_path_metric_segments(path))
+    if not segments:
+        return None
+    radius = next(
+        path.radius
+        for role in ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER")
+        for path in layer.paths_by_role.get(role, [])
+        if len(path.points) >= 2
+    )
+    return PerimeterIndex(segments, STRtree(segments), TWO_PI * radius)
+
+
+def _query_perimeter_index(index: PerimeterIndex, geom: LineString):
+    if index.tree is None:
+        yield from index.segments
+        return
+    for item in index.tree.query(geom):
+        try:
+            yield index.segments[int(item)]
+        except (TypeError, ValueError, IndexError):
+            yield item
+
+
+def _intersection_is_away_from_endpoints(
+    geom: BaseGeometry,
+    start: Point,
+    end: Point,
+    tol: float = 1e-6,
+) -> bool:
+    if geom.is_empty:
+        return False
+    if isinstance(geom, Point):
+        return geom.distance(start) > tol and geom.distance(end) > tol
+    if hasattr(geom, "geoms"):
+        return any(_intersection_is_away_from_endpoints(part, start, end, tol) for part in geom.geoms)
+    return geom.length > tol
+
+
+def _travel_crosses_perimeter(
+    path: Toolpath,
+    point: tuple[float, float],
+    state: GcodeState,
+    perimeter_index: PerimeterIndex,
+) -> bool:
+    if not perimeter_index.segments:
+        return False
+    target_theta = _nearest_theta(point[0], state.theta_accum)
+    start_xy = _metric_point(state.theta_accum, state.axial, path.radius)
+    end_xy = _metric_point(target_theta, point[1], path.radius)
+    if math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1]) <= 1e-8:
+        return False
+
+    travel = LineString([start_xy, end_xy])
+    travel_min_x, _, travel_max_x, _ = travel.bounds
+    period = perimeter_index.period
+    shift_min = math.floor((travel_min_x - period) / period) - 1
+    shift_max = math.ceil(travel_max_x / period) + 1
+    for shift in range(shift_min, shift_max + 1):
+        shifted_travel = LineString([(x - shift * period, y) for x, y in travel.coords])
+        shifted_start = Point(shifted_travel.coords[0])
+        shifted_end = Point(shifted_travel.coords[-1])
+        for segment in _query_perimeter_index(perimeter_index, shifted_travel):
+            inter = shifted_travel.intersection(segment)
+            if _intersection_is_away_from_endpoints(inter, shifted_start, shifted_end):
+                return True
+    return False
+
+
+def _should_z_hop_to_path(
+    path: Toolpath,
+    state: GcodeState,
+    config: SlicerConfig,
+    perimeter_index: PerimeterIndex | None,
+) -> bool:
+    if config.z_hop_height <= 0 or len(path.points) < 1:
+        return False
+    target = path.points[0]
+    travel_distance = _travel_distance_to_point(path, target, state)
+    if travel_distance <= 1e-8:
+        return False
+    if travel_distance >= config.z_hop_min_travel:
+        return True
+    return (
+        config.z_hop_on_perimeter_crossing
+        and perimeter_index is not None
+        and _travel_crosses_perimeter(path, target, state, perimeter_index)
+    )
 
 
 def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
@@ -189,6 +314,7 @@ def emit_toolpath(
     output_x_offset: float,
     *,
     retract_after: bool = True,
+    perimeter_index: PerimeterIndex | None = None,
 ) -> list[str]:
     if len(path.points) < 2:
         return []
@@ -198,9 +324,16 @@ def emit_toolpath(
 
     lines = [";start of path"]
     t0, x0 = pts[0]
+    z_hop = _should_z_hop_to_path(path, state, config, perimeter_index)
+    if z_hop:
+        state.radial = path.radius + config.z_hop_height
+        lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z hop")
     lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
     state.theta_accum = t0
     state.axial = x0
+    if z_hop:
+        state.radial = path.radius
+        lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z unhop")
     lines.extend(_unretract(state, config))
 
     extruded = False
@@ -264,12 +397,16 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     for layer in layers:
         out.append(f";LAYER:{layer.layer_index}")
         out.append(f";Z:{layer.radius:.4f}")
-        radial_lift = layer.radius - config.bed_radius
-        out.append(_format_move("G0", z=radial_lift, f=config.travel_mm_per_min))
+        out.append(_format_move("G0", z=_emitted_z(layer.radius, config), f=config.travel_mm_per_min))
         out.append("G92 E0 Y0 ; reset E/Y accumulators for layer")
         state.extrusion = 0.0
         state.theta_origin = state.theta_accum
         state.radial = layer.radius
+        perimeter_index = (
+            _layer_perimeter_index(layer)
+            if config.z_hop_height > 0 and config.z_hop_on_perimeter_crossing
+            else None
+        )
         for role in ROLE_ORDER:
             role_paths = _ordered_paths_for_current_position(layer.paths_by_role.get(role, []), state)
             for index, path in enumerate(role_paths):
@@ -277,7 +414,16 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                 next_path = role_paths[index + 1] if index + 1 < len(role_paths) else None
                 retract_after = _should_retract_after_path(path, next_path, state, config)
                 out.append(f";TYPE:{role}")
-                out.extend(emit_toolpath(path, state, config, output_x_offset, retract_after=retract_after))
+                out.extend(
+                    emit_toolpath(
+                        path,
+                        state,
+                        config,
+                        output_x_offset,
+                        retract_after=retract_after,
+                        perimeter_index=perimeter_index,
+                    )
+                )
 
     out.extend(
         [

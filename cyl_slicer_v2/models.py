@@ -20,6 +20,7 @@ class LayerSlice:
     raft_direction: str | None = None
     support_interface: BaseGeometry | None = None
     support_interface_direction: str | None = None
+    support_interface_target: BaseGeometry | None = None
 
 
 @dataclass

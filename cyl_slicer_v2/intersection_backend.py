@@ -619,22 +619,50 @@ def _looks_like_degenerate_full_span(
     return _full_span_disagrees_with_mesh(mesh, radius, geom)
 
 
+def _degenerate_radius_offsets(config: SlicerConfig) -> tuple[float, ...]:
+    unit = max(min(config.layer_height, config.nozzle_width), 1e-6)
+    offsets: list[float] = []
+    for scale in (1e-5, 1e-4, 1e-3, 5e-3, 1e-2, 2.5e-2):
+        delta = unit * scale
+        offsets.extend((delta, -delta))
+
+    deduped = []
+    seen = set()
+    for offset in offsets:
+        key = round(offset, 12)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(offset)
+    return tuple(deduped)
+
+
 def sample_intersection_layer(
     mesh: trimesh.Trimesh,
     radius: float,
     config: SlicerConfig,
     z_bounds: tuple[float, float] | None = None,
 ):
-    geom, window, full = _sample_intersection_layer_once(mesh, radius, config, z_bounds)
-    if not _looks_like_degenerate_full_span(mesh, radius, geom, full, config):
-        return geom, window, full
+    first_error = None
+    try:
+        geom, window, full = _sample_intersection_layer_once(mesh, radius, config, z_bounds)
+    except shapely.errors.GEOSException as exc:
+        first_error = exc
+        geom, window, full = GeometryCollection(), (0.0, TWO_PI), False
+    else:
+        if not _looks_like_degenerate_full_span(mesh, radius, geom, full, config):
+            return geom, window, full
 
-    epsilon = max(1e-6, min(config.layer_height, config.nozzle_width) * 1e-5)
-    for delta in (epsilon, -epsilon, epsilon * 10.0, -epsilon * 10.0, epsilon * 100.0, -epsilon * 100.0):
-        candidate = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
+    for delta in _degenerate_radius_offsets(config):
+        try:
+            candidate = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
+        except shapely.errors.GEOSException:
+            continue
         if not _looks_like_degenerate_full_span(mesh, radius + delta, candidate[0], candidate[2], config):
             return candidate
 
+    if first_error is not None:
+        raise first_error
     return geom, window, full
 
 

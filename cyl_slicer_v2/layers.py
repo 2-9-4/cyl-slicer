@@ -236,11 +236,19 @@ def _support_regions(geom, radius: float, config: SlicerConfig, *, promote: bool
     )
 
 
-def _needs_support_from_previous(geom, previous, radius: float, config: SlicerConfig):
+def _support_interface_regions(geom, radius: float, config: SlicerConfig):
+    return _metric_region_filter(
+        geom,
+        radius,
+        min_area_mm2=config.support_min_island_area,
+    )
+
+
+def _unsupported_from_previous(geom, previous, radius: float, config: SlicerConfig):
     if geom.is_empty:
         return GeometryCollection()
     if previous.is_empty:
-        return _support_regions(geom, radius, config)
+        return _clean(geom)
     previous_cover = _metric_buffer(
         _periodic_union(previous, turns=1),
         radius,
@@ -248,21 +256,29 @@ def _needs_support_from_previous(geom, previous, radius: float, config: SlicerCo
     )
     covered = _safe_intersection(geom, previous_cover)
     bearing_cover = _bearing_regions(covered, radius, config)
-    return _support_regions(_safe_difference(geom, bearing_cover), radius, config)
+    return _safe_difference(geom, bearing_cover)
+
+
+def _needs_support_from_previous(geom, previous, radius: float, config: SlicerConfig):
+    return _support_regions(_unsupported_from_previous(geom, previous, radius, config), radius, config)
 
 
 def _merge_support_carry(items, radius: float, config: SlicerConfig):
     grouped = {}
-    for geom, gap_layers, interface_layers in items:
+    for geom, interface_target, gap_layers, interface_layers in items:
         if geom is None or geom.is_empty:
             continue
-        grouped.setdefault((gap_layers, interface_layers), []).append(geom)
+        grouped.setdefault((gap_layers, interface_layers), []).append((geom, interface_target))
 
     merged = []
-    for (gap_layers, interface_layers), geoms in grouped.items():
+    for (gap_layers, interface_layers), items in grouped.items():
+        geoms = [geom for geom, _ in items]
         geom = _support_regions(_safe_union(geoms), radius, config, promote=False)
         if not geom.is_empty:
-            merged.append((geom, gap_layers, interface_layers))
+            interface_target = _safe_union(
+                target for _, target in items if target is not None and not target.is_empty
+            )
+            merged.append((geom, interface_target, gap_layers, interface_layers))
     return merged
 
 
@@ -273,7 +289,7 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
         interface_pieces = []
         interface_direction = None
         next_carry = []
-        for carried_geom, gap_layers, interface_layers in carry:
+        for carried_geom, interface_target, gap_layers, interface_layers in carry:
             occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
             if occupied.is_empty:
                 ungrounded = carried_geom
@@ -289,9 +305,18 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 printable_support = _support_regions(printable_support, layer.radius, config, promote=False)
 
             if gap_layers <= 0 and not printable_support.is_empty:
+                printable_contact = _safe_intersection(printable_support, interface_target)
+                printable_contact = _support_interface_regions(printable_contact, layer.radius, config)
+                if printable_contact.is_empty:
+                    if not carried_support.is_empty:
+                        next_gap = max(0, gap_layers - 1)
+                        next_interface = interface_layers if gap_layers > 0 else max(0, interface_layers - 1)
+                        next_carry.append((carried_support, interface_target, next_gap, next_interface))
+                    continue
+
                 support_pieces.append(printable_support)
                 if interface_layers > 0:
-                    interface_pieces.append(printable_support)
+                    interface_pieces.append(printable_contact)
                     interface_index = config.support_interface_layers - interface_layers
                     direction = "axial" if interface_index % 2 == 0 else "radial"
                     if interface_direction is None:
@@ -300,16 +325,22 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
             if not carried_support.is_empty:
                 next_gap = max(0, gap_layers - 1)
                 next_interface = interface_layers if gap_layers > 0 else max(0, interface_layers - 1)
-                next_carry.append((carried_support, next_gap, next_interface))
+                next_carry.append((carried_support, interface_target, next_gap, next_interface))
 
         layer.support = _safe_union(support_pieces)
         layer.support_interface = _safe_union(interface_pieces)
         layer.support_interface_direction = interface_direction
 
         if not layer.needs_support.is_empty:
+            interface_target = (
+                layer.support_interface_target
+                if layer.support_interface_target is not None and not layer.support_interface_target.is_empty
+                else layer.needs_support
+            )
             next_carry.append(
                 (
                     layer.needs_support,
+                    interface_target,
                     config.support_gap_layers,
                     config.support_interface_layers,
                 )
@@ -439,7 +470,9 @@ def slice_mesh(
         nxt = occupied[i + 1] if i + 1 < len(occupied) else GeometryCollection()
         top = _clean(geom.difference(nxt)) if not geom.is_empty else GeometryCollection()
         bottom = _clean(geom.difference(prev)) if not geom.is_empty else GeometryCollection()
-        needs = _needs_support_from_previous(geom, prev, radii[i], config) if i > 0 else GeometryCollection()
+        unsupported = _unsupported_from_previous(geom, prev, radii[i], config) if i > 0 else GeometryCollection()
+        needs = _support_regions(unsupported, radii[i], config) if i > 0 else GeometryCollection()
+        interface_target = _support_interface_regions(unsupported, radii[i], config) if i > 0 else GeometryCollection()
         layers.append(
             LayerSlice(
                 index=i,
@@ -451,6 +484,7 @@ def slice_mesh(
                 support=GeometryCollection(),
                 theta_window=windows[i],
                 is_full_wrap=full_flags[i],
+                support_interface_target=interface_target,
             )
         )
 

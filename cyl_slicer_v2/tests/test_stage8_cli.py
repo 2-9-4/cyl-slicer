@@ -82,6 +82,11 @@ class CliTests(unittest.TestCase):
                 "0.7",
                 "--retract-mm",
                 "0.9",
+                "--z-hop-height",
+                "0.6",
+                "--z-hop-min-travel",
+                "3.5",
+                "--no-z-hop-perimeter-crossing",
                 "--axial-min",
                 "12.5",
             ]
@@ -100,6 +105,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.support_cross_spacing, 6.0)
         self.assertEqual(args.min_path_length, 0.7)
         self.assertEqual(args.retract_mm, 0.9)
+        self.assertEqual(args.z_hop_height, 0.6)
+        self.assertEqual(args.z_hop_min_travel, 3.5)
+        self.assertFalse(args.z_hop_on_perimeter_crossing)
         self.assertEqual(args.axial_min, 12.5)
 
 

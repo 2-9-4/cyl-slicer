@@ -256,6 +256,32 @@ class IntersectionBackendTests(unittest.TestCase):
         self.assertLess(float(np.mean(seam_expected & ~seam_actual)), 0.03)
         self.assertLess(float(np.mean(seam_expected != seam_actual)), 0.05)
 
+    def test_rotatecube_debug_layer_34_at_fine_height_rejects_degenerate_full_span(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        mesh = load_mesh(mesh_path)
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.2, slice_workers=1, intersection_refine_factor=0)
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + config.layer_height * 0.5 + 34 * config.layer_height
+        geom, _, full = sample_intersection_layer(mesh, radius, config)
+        frame_area = 2.0 * np.pi * (mesh.bounds[1, 2] - mesh.bounds[0, 2])
+
+        theta_values = np.linspace(0.0, 2.0 * np.pi, 100, endpoint=False) + np.pi / 100.0
+        axial_values = np.linspace(mesh.bounds[0, 2], mesh.bounds[1, 2], 100)
+        tt, zz = np.meshgrid(theta_values, axial_values, indexing="ij")
+        expected = mesh.contains(cylindrical_to_cartesian(tt.ravel(), zz.ravel(), radius))
+        actual = (
+            np.array([geom.covers(Point(theta, axial)) for theta, axial in zip(tt.ravel(), zz.ravel())])
+            if not geom.is_empty
+            else np.zeros_like(expected)
+        )
+
+        self.assertFalse(full)
+        self.assertLess(geom.area, frame_area * 0.55)
+        self.assertLess(float(np.mean(~expected & actual)), 0.025)
+        self.assertLess(float(np.mean(expected != actual)), 0.03)
+
     def test_rotatecube_export_layer_33_does_not_fill_axial_margin(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2export.stl"
         if not mesh_path.exists():
@@ -276,6 +302,19 @@ class IntersectionBackendTests(unittest.TestCase):
         self.assertFalse(full)
         self.assertGreaterEqual(geom.bounds[1], z_min - 1e-6)
         self.assertLessEqual(geom.bounds[3], z_max + 1e-6)
+
+    def test_rotatecube_export_layer_44_handles_periodic_normalization(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2export.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        mesh = load_mesh(mesh_path)
+        config = SlicerConfig(layer_backend="intersection", intersection_refine_factor=0, layer_height=0.2)
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + config.layer_height * 0.5 + 44 * config.layer_height
+        geom, _, _ = sample_intersection_layer(mesh, radius, config)
+
+        self.assertFalse(geom.is_empty)
+        self.assertTrue(geom.is_valid)
 
     def test_rotatecube_debug_intersection_volume_stays_close_with_smooth_topology_voting(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"

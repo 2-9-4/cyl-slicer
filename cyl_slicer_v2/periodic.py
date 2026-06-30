@@ -17,10 +17,38 @@ def translate_theta(geom: BaseGeometry, delta: float) -> BaseGeometry:
     return affinity.translate(geom, xoff=delta)
 
 
+def _safe_union(geoms) -> BaseGeometry:
+    parts = [part for part in geoms if part is not None and not part.is_empty]
+    if not parts:
+        return GeometryCollection()
+    if len(parts) == 1:
+        return parts[0]
+    try:
+        return unary_union(parts)
+    except shapely.errors.GEOSException:
+        repaired = [shapely.make_valid(part) for part in parts]
+        repaired = [part for part in repaired if not part.is_empty]
+        if not repaired:
+            return GeometryCollection()
+        return shapely.union_all(repaired, grid_size=1e-8)
+
+
+def _safe_intersection(a: BaseGeometry, b: BaseGeometry) -> BaseGeometry:
+    if a.is_empty or b.is_empty:
+        return GeometryCollection()
+    try:
+        out = a.intersection(b)
+    except shapely.errors.GEOSException:
+        out = shapely.intersection(shapely.make_valid(a), shapely.make_valid(b), grid_size=1e-8)
+    if not out.is_valid:
+        out = shapely.make_valid(out)
+    return out
+
+
 def periodic_copies(geom: BaseGeometry, turns: int = 1) -> BaseGeometry:
     if geom.is_empty:
         return geom
-    return unary_union([translate_theta(geom, k * TWO_PI) for k in range(-turns, turns + 1)])
+    return _safe_union(translate_theta(geom, k * TWO_PI) for k in range(-turns, turns + 1))
 
 
 def is_full_wrap(geom: BaseGeometry, samples: int = 96) -> bool:
@@ -64,9 +92,7 @@ def normalize_periodic(
     full = cut is None
     lower = 0.0 if full else float(cut)
     upper = lower + TWO_PI
-    clipped = base.intersection(box(lower, z_min, upper, z_max))
-    if not clipped.is_valid:
-        clipped = shapely.make_valid(clipped)
+    clipped = _safe_intersection(base, box(lower, z_min, upper, z_max))
     return clipped, (lower, upper), full
 
 
@@ -78,7 +104,7 @@ def fold_to_canonical(geom: BaseGeometry, z_min: float, z_max: float) -> BaseGeo
     max_k = math.ceil((geom.bounds[2] + TWO_PI) / TWO_PI)
     clip = box(0.0, z_min, TWO_PI, z_max)
     for k in range(min_k, max_k + 1):
-        part = translate_theta(geom, -k * TWO_PI).intersection(clip)
+        part = _safe_intersection(translate_theta(geom, -k * TWO_PI), clip)
         if not part.is_empty:
             pieces.append(part)
-    return unary_union(pieces) if pieces else GeometryCollection()
+    return _safe_union(pieces) if pieces else GeometryCollection()

@@ -39,6 +39,9 @@ class SlicerConfig:
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float | None = None
     retract_mm: float = 1.0
+    z_hop_height: float = 0.4
+    z_hop_min_travel: float = 5.0
+    z_hop_on_perimeter_crossing: bool = True
     hotend_temp: int = 215
     min_path_length: float = 0.6
     max_axial_segment: float = 1.5
@@ -120,6 +123,10 @@ class SlicerConfig:
             raise ValueError("min_path_length must be non-negative")
         if self.retract_mm < 0:
             raise ValueError("retract_mm must be non-negative")
+        if self.z_hop_height < 0:
+            raise ValueError("z_hop_height must be non-negative")
+        if self.z_hop_min_travel < 0:
+            raise ValueError("z_hop_min_travel must be non-negative")
         if self.slice_workers < 1:
             raise ValueError("slice_workers must be at least 1")
         if self.toolpath_workers < 1:

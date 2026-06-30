@@ -68,6 +68,9 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertEqual(config.raft_axial_gap, 1.0)
         self.assertEqual(config.min_path_length, 0.6)
         self.assertEqual(config.retract_mm, 1.0)
+        self.assertEqual(config.z_hop_height, 0.4)
+        self.assertEqual(config.z_hop_min_travel, 5.0)
+        self.assertTrue(config.z_hop_on_perimeter_crossing)
         expected_extrusion = config.nozzle_width * config.layer_height / (
             math.pi * (config.filament_diameter / 2.0) ** 2
         )
@@ -107,6 +110,10 @@ class CoordinatesAndConfigTests(unittest.TestCase):
             SlicerConfig(min_path_length=-1).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(retract_mm=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(z_hop_height=-1).validate()
+        with self.assertRaises(ValueError):
+            SlicerConfig(z_hop_min_travel=-1).validate()
         with self.assertRaises(ValueError):
             SlicerConfig(axial_min=-1).validate()
         with self.assertRaises(ValueError):
