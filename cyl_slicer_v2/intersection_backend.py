@@ -625,6 +625,9 @@ def _degenerate_radius_offsets(config: SlicerConfig) -> tuple[float, ...]:
     for scale in (1e-5, 1e-4, 1e-3, 5e-3, 1e-2, 2.5e-2):
         delta = unit * scale
         offsets.extend((delta, -delta))
+    for scale in (5e-2, 1e-1):
+        delta = config.layer_height * scale
+        offsets.extend((delta, -delta))
 
     deduped = []
     seen = set()

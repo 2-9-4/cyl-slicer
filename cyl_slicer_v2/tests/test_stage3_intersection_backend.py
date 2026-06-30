@@ -316,6 +316,30 @@ class IntersectionBackendTests(unittest.TestCase):
         self.assertFalse(geom.is_empty)
         self.assertTrue(geom.is_valid)
 
+    def test_rotatecube_export_layer_7_at_coarse_height_rejects_degenerate_edge_fill(self):
+        mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2export.stl"
+        if not mesh_path.exists():
+            self.skipTest(f"{mesh_path} not present")
+        mesh = load_mesh(mesh_path)
+        config = SlicerConfig(layer_backend="intersection", intersection_refine_factor=0, layer_height=1.0, bed_radius=30.0)
+        r_min, _ = radial_bounds(mesh)
+        radius = r_min + config.layer_height * 0.5 + 7 * config.layer_height
+        geom, _, full = sample_intersection_layer(mesh, radius, config)
+
+        theta_values = np.linspace(0.0, 2.0 * np.pi, 100, endpoint=False) + np.pi / 100.0
+        axial_values = np.linspace(mesh.bounds[0, 2], mesh.bounds[1, 2], 100)
+        tt, zz = np.meshgrid(theta_values, axial_values, indexing="ij")
+        expected = mesh.contains(cylindrical_to_cartesian(tt.ravel(), zz.ravel(), radius))
+        actual = (
+            np.array([geom.covers(Point(theta, axial)) for theta, axial in zip(tt.ravel(), zz.ravel())])
+            if not geom.is_empty
+            else np.zeros_like(expected)
+        )
+
+        self.assertFalse(full)
+        self.assertLess(float(np.mean(~expected & actual)), 0.01)
+        self.assertLess(float(np.mean(expected != actual)), 0.02)
+
     def test_rotatecube_debug_intersection_volume_stays_close_with_smooth_topology_voting(self):
         mesh_path = Path(__file__).resolve().parents[2].parent / "rotatecube2-debugging.stl"
         if not mesh_path.exists():
