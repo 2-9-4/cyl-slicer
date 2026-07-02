@@ -24,6 +24,8 @@ ROLE_ORDER = [
 ]
 
 _WORKER_CONFIG: SlicerConfig | None = None
+PERIMETER_ROLES = frozenset({"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"})
+MIN_GEOMETRY_LENGTH = 1e-8
 MIN_OUTPUT_LENGTH_GUARD = 1e-3
 
 
@@ -31,6 +33,12 @@ def _min_printable_length(config: SlicerConfig) -> float:
     if config.min_path_length <= 0:
         return 0.0
     return config.min_path_length + MIN_OUTPUT_LENGTH_GUARD
+
+
+def _min_path_length_for_role(role: str, config: SlicerConfig) -> float:
+    if role in PERIMETER_ROLES:
+        return MIN_GEOMETRY_LENGTH
+    return _min_printable_length(config)
 
 
 def _to_metric(geom, radius: float):
@@ -240,6 +248,17 @@ def _ring_to_edge_paths(
 def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed: bool, config: SlicerConfig) -> Toolpath | None:
     if len(pts) < 2:
         return None
+    if role in PERIMETER_ROLES:
+        cleaned = []
+        for pt in pts:
+            if not cleaned or not _points_close(cleaned[-1], pt):
+                cleaned.append(pt)
+        if len(cleaned) < 2:
+            return None
+        if not any(cylindrical_distance(a, b, radius) > MIN_GEOMETRY_LENGTH for a, b in zip(cleaned, cleaned[1:])):
+            return None
+        return Toolpath(role=role, radius=radius, points=cleaned, closed=closed)
+
     min_length = _min_printable_length(config)
     cleaned = [pts[0]]
     for pt in pts[1:]:
@@ -387,7 +406,7 @@ def _points_close(a: tuple[float, float], b: tuple[float, float], tol: float = 1
 
 
 def _can_reverse_join(path: Toolpath) -> bool:
-    return path.role not in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}
+    return path.role not in PERIMETER_ROLES
 
 
 def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
@@ -419,8 +438,11 @@ def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
 
 
 def _postprocess_role_paths(paths: list[Toolpath], config: SlicerConfig) -> list[Toolpath]:
-    kept = [path for path in paths if _path_length(path) >= _min_printable_length(config)]
-    return _remove_contained_straight_paths(_join_touching_paths(kept))
+    kept = [path for path in paths if _path_length(path) >= _min_path_length_for_role(path.role, config)]
+    joined = _join_touching_paths(kept)
+    if paths and paths[0].role in PERIMETER_ROLES:
+        return joined
+    return _remove_contained_straight_paths(joined)
 
 
 def _radial_line_specs(geom, radius: float, spacing: float, config: SlicerConfig) -> list[tuple[float, float, float]]:

@@ -11,11 +11,12 @@ from shapely.strtree import STRtree
 from .config import SlicerConfig
 from .coordinates import cylindrical_distance, unwrap_path_from_current
 from .models import GcodeState, LayerToolpaths, Toolpath
-from .toolpaths import MIN_OUTPUT_LENGTH_GUARD, ROLE_ORDER
+from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_ROLES, ROLE_ORDER
 
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
+BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE"})
 
 
 @dataclass(frozen=True)
@@ -185,7 +186,7 @@ def _should_z_hop_to_path(
 
 
 def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
-    if path.role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}:
+    if path.role in PERIMETER_ROLES:
         return False
     if path.closed or len(path.points) < 2:
         return False
@@ -296,15 +297,18 @@ def _unwrap_bidirectional_path_from_current(thetas: list[float], current_accum: 
 
 def _unwrap_toolpath_thetas(path: Toolpath, current_accum: float) -> list[float]:
     raw_thetas = [point[0] for point in path.points]
-    allows_reverse = path.role in {
-        "EXTERNAL_PERIMETER",
-        "INTERNAL_PERIMETER",
-        "SUPPORT",
-        "SUPPORT_INTERFACE",
-    }
+    allows_reverse = path.role in BIDIRECTIONAL_OUTPUT_ROLES
     if allows_reverse and any(b < a - 1e-9 for a, b in zip(raw_thetas, raw_thetas[1:])):
         return _unwrap_bidirectional_path_from_current(raw_thetas, current_accum)
     return unwrap_path_from_current(raw_thetas, current_accum)
+
+
+def _min_emitted_segment_length(path: Toolpath, config: SlicerConfig) -> float:
+    if path.role in PERIMETER_ROLES:
+        return MIN_GEOMETRY_LENGTH
+    if config.min_path_length <= 0:
+        return 0.0
+    return config.min_path_length + MIN_OUTPUT_LENGTH_GUARD
 
 
 def emit_toolpath(
@@ -337,7 +341,7 @@ def emit_toolpath(
     lines.extend(_unretract(state, config))
 
     extruded = False
-    min_length = config.min_path_length + MIN_OUTPUT_LENGTH_GUARD if config.min_path_length > 0 else 0.0
+    min_length = _min_emitted_segment_length(path, config)
     for (t_prev, x_prev), (t, x) in zip(pts[:-1], pts[1:]):
         dist = cylindrical_distance((t_prev, x_prev), (t, x), path.radius)
         if dist <= min_length:

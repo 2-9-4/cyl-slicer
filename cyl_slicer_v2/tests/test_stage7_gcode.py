@@ -227,6 +227,26 @@ class GcodeTests(unittest.TestCase):
         self.assertTrue(segments)
         self.assertEqual(segments[0][2], 0.0)
 
+    def test_short_perimeter_segments_are_emitted(self):
+        config = SlicerConfig(axial_min=0.0, min_path_length=0.6, max_axial_segment=20.0, retract_mm=0.0)
+        layer = LayerToolpaths(
+            layer_index=0,
+            radius=10.0,
+            paths_by_role={
+                "EXTERNAL_PERIMETER": [
+                    Toolpath("EXTERNAL_PERIMETER", 10.0, [(0.0, 0.0), (0.01, 0.0)]),
+                ],
+                "SUPPORT": [
+                    Toolpath("SUPPORT", 10.0, [(0.1, 0.0), (0.11, 0.0)]),
+                ],
+            },
+        )
+
+        segments = parse_extrusion_segments(emit_gcode([layer], config))
+
+        self.assertTrue(any(segment[1] == "EXTERNAL_PERIMETER" for segment in segments))
+        self.assertFalse(any(segment[1] == "SUPPORT" for segment in segments))
+
     def test_support_meander_preserves_reverse_radial_leg(self):
         config = SlicerConfig(max_axial_segment=20.0)
         layer = LayerToolpaths(

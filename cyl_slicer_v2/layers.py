@@ -254,6 +254,10 @@ def _unsupported_from_previous(geom, previous, radius: float, config: SlicerConf
         radius,
         config.nozzle_width * 0.5,
     )
+    uncovered = _safe_difference(geom, previous_cover)
+    if _metric_area(uncovered, radius) < max(config.support_min_island_area, 1e-9):
+        return GeometryCollection()
+
     covered = _safe_intersection(geom, previous_cover)
     bearing_cover = _bearing_regions(covered, radius, config)
     return _safe_difference(geom, bearing_cover)

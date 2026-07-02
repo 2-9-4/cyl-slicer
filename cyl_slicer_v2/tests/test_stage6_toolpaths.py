@@ -87,6 +87,28 @@ class ToolpathTests(unittest.TestCase):
         self.assertEqual(len(paths), 2)
         self.assertTrue(all(len(path.points) > 100 for path in paths))
 
+    def test_perimeters_keep_tiny_triangle_corners_below_min_path_length(self):
+        occupied = Polygon([(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.0)])
+        layer = LayerSlice(
+            index=0,
+            radius=10.0,
+            occupied=occupied,
+            top_surfaces=GeometryCollection(),
+            bottom_surfaces=GeometryCollection(),
+            needs_support=GeometryCollection(),
+            support=GeometryCollection(),
+        )
+
+        paths = build_layer_toolpaths(layer, SlicerConfig(wall_count=1, min_path_length=0.6)).paths_by_role.get(
+            "EXTERNAL_PERIMETER",
+            [],
+        )
+
+        self.assertTrue(paths)
+        points = {(round(theta, 4), round(axial, 4)) for path in paths for theta, axial in path.points}
+        self.assertIn((0.01, 0.0), points)
+        self.assertIn((0.01, 0.01), points)
+
     def test_infill_spacing_is_reasonable(self):
         config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, infill_spacing=2.0)
         layer = next(layer for layer in slice_mesh(make_fixture("tube"), config, max_layers=3) if not layer.occupied.is_empty)
@@ -255,6 +277,32 @@ class ToolpathTests(unittest.TestCase):
         paths_by_index = {layer.layer_index: layer.paths_by_role for layer in build_toolpaths(layers, config)}
 
         for layer_index in range(87, 96):
+            with self.subTest(layer=layer_index):
+                self.assertNotIn("SUPPORT", paths_by_index[layer_index])
+                self.assertNotIn("SUPPORT_INTERFACE", paths_by_index[layer_index])
+
+    def test_cubeandring2_emits_real_support_without_floating_midlayer_support(self):
+        mesh_path = Path(__file__).resolve().parents[2] / "cubeandring2.stl"
+        config = SlicerConfig(
+            layer_backend="intersection",
+            intersection_refine_factor=0,
+            layer_height=0.2,
+            wall_count=3,
+            support_min_island_area=10.0,
+            support_min_region_area=10.0,
+            support_bearing_min_area=25.0,
+            support_merge_gap=10.0,
+            bed_radius=30.0,
+            slice_workers=4,
+            toolpath_workers=4,
+        )
+        layers = slice_mesh(load_mesh(mesh_path), config, max_layers=73)
+        paths_by_index = {layer.layer_index: layer.paths_by_role for layer in build_toolpaths(layers, config)}
+
+        self.assertTrue(
+            any(paths_by_index[layer_index].get("SUPPORT") for layer_index in range(7, 14))
+        )
+        for layer_index in range(62, 73):
             with self.subTest(layer=layer_index):
                 self.assertNotIn("SUPPORT", paths_by_index[layer_index])
                 self.assertNotIn("SUPPORT_INTERFACE", paths_by_index[layer_index])
