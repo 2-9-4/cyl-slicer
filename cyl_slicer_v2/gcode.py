@@ -406,13 +406,22 @@ def _should_retract_after_path(
     return True
 
 
-def _ordered_layer_paths(layer: LayerToolpaths, state: GcodeState) -> list[Toolpath]:
+def _ordered_layer_paths(
+    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None
+) -> list[Toolpath]:
+    # Keep the existing default order for callers of this geometry helper;
+    # the outer/inner swap happens *within each island*, not across islands.
+    roles = list(ROLE_ORDER)
+    if config is not None and config.wall_order == "inner-first":
+        external = roles.index("EXTERNAL_PERIMETER")
+        internal = roles.index("INTERNAL_PERIMETER")
+        roles[external], roles[internal] = roles[internal], roles[external]
     ordered = []
     shadow = state
     remaining = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
     while remaining:
         def entry_distance(group):
-            first_role = next((role for role in ROLE_ORDER if group.get(role)), None)
+            first_role = next((role for role in roles if group.get(role)), None)
             if first_role is None:
                 return math.inf
             candidates = [_orient_path_for_current_position(path, shadow) for path in group[first_role]]
@@ -421,7 +430,7 @@ def _ordered_layer_paths(layer: LayerToolpaths, state: GcodeState) -> list[Toolp
         nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i]))
                    if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
         group = remaining.pop(nearest)
-        for role in ROLE_ORDER:
+        for role in roles:
             for path in _ordered_paths_for_current_position(group.get(role, []), shadow):
                 path = _orient_path_for_current_position(path, shadow)
                 ordered.append(path)
@@ -562,6 +571,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";LINE_WIDTH:{config.nozzle_width}",
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
+        f";WALL_ORDER:{config.wall_order}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
@@ -612,7 +622,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             else None
         )
         travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
-        paths = _ordered_layer_paths(layer, state)
+        paths = _ordered_layer_paths(layer, state, layer_config)
         for index, path in enumerate(paths):
             path = _orient_path_for_current_position(path, state)
             next_path = paths[index + 1] if index + 1 < len(paths) else None

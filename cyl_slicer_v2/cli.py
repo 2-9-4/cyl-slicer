@@ -50,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--axial-step", type=float, default=1.0)
     parser.add_argument("--axial-min", type=float, default=15.0, help="Minimum emitted X position in mm.")
     parser.add_argument("--wall-count", type=int, default=None)
+    parser.add_argument("--wall-order", choices=("outer-first", "inner-first"), default="outer-first",
+                        help="Per-island printing order; inner-first prints supporting walls before visible shell.")
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
@@ -241,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         axial_step=args.axial_step,
         axial_min=args.axial_min,
         wall_count=_profile_value(args, "wall_count"),
+        wall_order=args.wall_order,
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,

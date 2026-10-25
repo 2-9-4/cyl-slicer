@@ -20,6 +20,16 @@ not evidence that the historic h0.5/w0.4 configuration is printable.
 For a 0.4 mm nozzle, use `--nozzle-diameter 0.4 --layer-height 0.2` with a
 separately calibrated line width.
 
+## Perimeter wall order
+
+The default `--wall-order outer-first` preserves the historical dimensional
+outline order. For overhangs where inside walls should support the outer shell,
+`--wall-order inner-first` prints every island’s internal perimeters before
+its external perimeter, then its infill. This is per-island ordering: the
+slicer still completes each island before traveling to another. A one-wall
+model behaves identically under either setting. This does not change wall
+geometry, extrusion flow, winding, or the selected seam.
+
 ## Run
 
 ```bash
