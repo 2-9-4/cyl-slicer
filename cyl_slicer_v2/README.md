@@ -1,24 +1,44 @@
 # Cylindrical Slicer V2
 
-This is a self-contained raster-based prototype. It does not import or mutate
+This is a self-contained cylindrical slicing pipeline (triangle/cylinder intersection by default). It does not import or mutate
 the legacy `slicer.py`/`togcode.py` pipeline.
 
-## Machine and default profiles
+## Quality defaults
 
-The CLI retains the original `legacy-cli` defaults to avoid silently changing
-existing prints: three walls, 30 mm build radius, and strong support filtering
-and merging. `--profile library` instead selects the smaller support thresholds,
-two walls, and zero build radius of bare `SlicerConfig()`. Explicit arguments
-override either profile.
+`.venv/bin/python -m cyl_slicer_v2.cli part.stl --out part.gcode` now uses
+the same quality-first defaults as `SlicerConfig()`. No quality flags are
+required. These replace the old development/CLI defaults, so **reslice all old
+G-code**; do not assume output from this version matches earlier jobs.
 
-`--nozzle-diameter` specifies the physical nozzle orifice, while
-`--line-width` specifies the deposited bead width. They are independent.
-Supplying a nozzle diameter validates that layer height does not exceed the
-physical orifice. Without a specified nozzle, hardware is marked `unknown`
-in G-code and the old settings remain available for compatibility; this is
-not evidence that the historic h0.5/w0.4 configuration is printable.
-For a 0.4 mm nozzle, use `--nozzle-diameter 0.4 --layer-height 0.2` with a
-separately calibrated line width.
+The default machine is a **30 mm radius mandrel, 0.4 mm physical nozzle,
+1.75 mm PLA filament** at a 195°C setpoint. Geometry uses the
+**triangle/cylinder intersection** backend with a 0.01 mm curve-error budget,
+0.16 mm radial layers, 0.42 mm deposited line width and the rounded-bead
+area/spacing model. Walls: four, outer-first. Top/bottom shells: five each.
+Sparse grid: alternating directions at crosshatch-equivalent 1.5 mm spacing;
+solid: alternating direction; exposed top skin: monotonic. Small features
+are retained down to 0.1 mm and fine supports down to 0.25 mm². Support
+interface: three layers at 0.4 mm pitch and one-layer radial gap.
+
+Printing targets 2700 mm/min (45 mm/s) physical print speed and
+9000 mm/min (150 mm/s) surface travel, 8 s minimum estimated deposition time
+per layer with 300 mm/min (5 mm/s) speed floor, full fan starting 1 mm above
+mandrel with a further 1 mm fan ramp, 1.4 mm retraction at 20 mm/s. Actual
+firmware acceleration and extrusion throughput may prevent reaching targets.
+
+Use `--profile legacy-cli` to reproduce previous **CLI** defaults (0.5 mm
+layers, rectangular flow, raster backend, 3 walls, etc.).
+`--profile library` remains an alias for the new quality profile.
+Explicit options override either profile; use `--no-monotonic-top-skin` to
+disable the default-on skin behavior. Python can directly override fields:
+`SlicerConfig(layer_backend="raster", monotonic_top_skin=False)`.
+
+**Safety/calibration:** defaults represent the user's printer profile, not a
+universal PLA recipe. Verify bed radius, nozzle, material, temperatures,
+feed/acceleration limits, retraction and fan wiring before running new G-code.
+Pressure advance (M900), strict intersection recovery, and fixed-position
+seams remain opt-in because they require firmware calibration or depend on
+the model. Support flow multipliers remain unity pending printed coupons.
 
 ## Perimeter wall order
 

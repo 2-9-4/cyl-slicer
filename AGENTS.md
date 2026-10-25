@@ -1,5 +1,12 @@
 # Slicer development
 
+- Treat SlicerConfig() as the canonical, quality-first default machine profile.
+  The CLI must resolve unspecified settings from it; don't recreate
+  divergent or outdated defaults in argparse. Keep explicit CLI overrides,
+  quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Prefer quality-improving algorithms as defaults when they preserve geometry
+  and do not require calibration. Keep firmware commands, machine-specific
+  tuning and potentially topology-changing experimental recovery opt-in.
 - Work on the v2 slicer in `cyl_slicer_v2/` by default. The root-level
   `slicer.py` and `togcode.py` are legacy; do not change or use them to solve
   slicer issues unless the user explicitly requests legacy work.
@@ -16,8 +23,8 @@
   alone. A role/type change is not by itself a reason to retract.
 - Finish each model island's walls and infill before moving to another island.
   Join periodic seam components for ordering; keep support components separate.
-  Enter closed perimeters at their nearest contour point, preserving winding and
-  deposited length. Keep intentional zero-distance calibration bands intact.
+  Enter closed perimeters using the configured seam policy (nearest by default),
+  preserving winding and deposited length. Keep intentional zero-distance calibration bands intact.
 - Keep Marlin's native Y position bounded as well as emitted Y values. The target
   firmware enables `POWER_LOSS_RECOVERY`: use `M400`, `G92.9 Y<wrapped phase>`,
   then `G92 Y0` (or `G92 E0 Y0` at layer changes). Keep angular phase so resets

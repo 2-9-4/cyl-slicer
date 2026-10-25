@@ -15,34 +15,72 @@ from .occupancy_backends import build_occupancy_backend
 from .toolpaths import build_toolpaths
 
 
+# Snapshot of the pre-quality CLI defaults for reproduction of old slices.
+# New production defaults live in SlicerConfig, so Python and CLI agree.
 CLI_PROFILE_OVERRIDES = {
+    "layer_backend": "raster",
+    "layer_height": 0.5,
+    "nozzle_width": 0.4,
+    "nozzle_diameter": None,
+    "bead_model": "rectangular",
     "wall_count": 3,
+    "top_layers": 3,
+    "bottom_layers": 3,
+    "infill_spacing": 2.0,
+    "sparse_infill_pattern": "both",
+    "solid_infill_pattern": "axial",
+    "monotonic_top_skin": False,
+    "min_path_length": 0.6,
+    "intersection_curve_error_mm": 0.025,
     "bed_radius": 30.0,
     "support_min_island_area": 10.0,
     "support_min_region_area": 10.0,
     "support_bearing_min_area": 25.0,
     "support_merge_gap": 10.0,
+    "support_interface_layers": 2,
+    "support_interface_spacing": None,
+    "feed_mm_per_min": 1800.0,
+    "travel_mm_per_min": 3000.0,
+    "cooling_min_layer_time_s": 0.0,
+    "cooling_min_print_speed_mm_per_min": 300.0,
+    "fan_speed": 255,
+    "fan_start_height": 2.0,
+    "fan_ramp_height_mm": 0.0,
+    "hotend_temp": 215,
+    "material_profile": "unprofiled",
+    "retract_speed_mm_per_min": 1800.0,
+    "retract_mm": 1.0,
+}
+_CLI_ALIASES = {
+    "nozzle_width": "line_width",
+    "feed_mm_per_min": "print_feed",
+    "travel_mm_per_min": "travel_feed",
+    "retract_speed_mm_per_min": "retract_speed",
 }
 
 
 def _profile_value(args, key: str):
-    specified = getattr(args, key)
+    # A default of None in argparse distinguishes explicit flags from the
+    # active profile. Physical retraction speed is configured in mm/min but
+    # the CLI exposes mm/s.
+    option = _CLI_ALIASES.get(key, key)
+    specified = getattr(args, option)
     if specified is not None:
-        return specified
+        return specified * 60.0 if key == "retract_speed_mm_per_min" else specified
     if args.profile == "legacy-cli" and key in CLI_PROFILE_OVERRIDES:
         return CLI_PROFILE_OVERRIDES[key]
     return getattr(SlicerConfig(), key)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Raster-based cylindrical slicer v2")
+    parser = argparse.ArgumentParser(description="Cylindrical slicer v2 (quality profile by default)")
     parser.add_argument("input", nargs="?", help="STL/mesh input path")
     parser.add_argument("--fixture", choices=sorted(FIXTURES), help="Use a generated fixture mesh")
     parser.add_argument("--out", default="output_v2.gcode", help="G-code output path")
     parser.add_argument("--max-layers", type=int, default=None)
-    parser.add_argument("--profile", choices=("legacy-cli", "library"), default="legacy-cli",
-                        help="Use original printer-oriented defaults or bare Python SlicerConfig defaults.")
-    parser.add_argument("--layer-height", type=float, default=0.5)
+    parser.add_argument("--profile", choices=("quality", "legacy-cli", "library"), default="quality",
+                        help="Quality (default, same as SlicerConfig); library is its alias; legacy-cli reproduces previous CLI defaults.")
+    parser.add_argument("--layer-height", type=float, default=None)
     parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
     parser.add_argument("--nozzle-diameter", type=float, default=None,
                         help="Physical nozzle orifice diameter in mm; independent of line width.")
@@ -58,47 +96,48 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Cylinder angular phase target for aligned seams and corner tie-breaking.")
     parser.add_argument("--seam-exclude-deg", type=float, nargs=2, default=None, metavar=("START", "END"),
                         help="Exclude closed-loop starts in this angular window (wraps through zero if START>END).")
-    parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
-    parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
-    parser.add_argument("--infill-spacing", type=float, default=2.0)
-    parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default="both",
+    parser.add_argument("--top-layers", type=int, default=None, help="Number of solid shells on the outer surface.")
+    parser.add_argument("--bottom-layers", type=int, default=None, help="Number of solid shells on the inner surface.")
+    parser.add_argument("--infill-spacing", type=float, default=None)
+    parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default=None,
                         help="Legacy crosshatched grid on every layer or one alternating grid axis per layer.")
-    parser.add_argument("--solid-infill-pattern", choices=("axial", "alternate"), default="axial",
+    parser.add_argument("--solid-infill-pattern", choices=("axial", "alternate"), default=None,
                         help="Legacy axial solid lines or alternate radial/axial lines by layer.")
-    parser.add_argument("--monotonic-top-skin", action="store_true",
-                        help="Use independent, single-direction exposed top-surface passes, preserving buried solid fill.")
-    parser.add_argument("--line-width", type=float, default=0.4,
+    parser.add_argument("--monotonic-top-skin", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="One-way exposed top-surface passes (enabled in quality profile).")
+    parser.add_argument("--line-width", type=float, default=None,
                         help="Nominal deposited bead width in mm (not physical nozzle diameter).")
-    parser.add_argument("--bead-model", choices=("rectangular", "rounded"), default="rectangular",
+    parser.add_argument("--bead-model", choices=("rectangular", "rounded"), default=None,
                         help="Coupled extrusion/spacing model; rounded requires layer height <= line width.")
     parser.add_argument("--infill-wall-overlap-fraction", type=float, default=0.15,
                         help="Fraction of bead width infill may extend into the inner wall footprint.")
-    parser.add_argument("--min-path-length", type=float, default=0.6,
+    parser.add_argument("--min-path-length", type=float, default=None,
                         help="Reject entire unprintably short features, not corners within a path.")
     add_calibration_arguments(parser)
-    parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
-    parser.add_argument("--hotend-temp", type=int, default=215)
+    parser.add_argument("--retract-speed", type=float, default=None, help="Retraction speed in mm/s.")
+    parser.add_argument("--hotend-temp", type=int, default=None)
     parser.add_argument("--material-profile", choices=("unprofiled", "pla", "petg", "abs", "tpu"),
-                        default="unprofiled", help="Material identity metadata, not an assumed pressure-advance K.")
+                        default=None, help="Material identity metadata, not an assumed pressure-advance K.")
     parser.add_argument("--marlin-linear-advance", action="store_true",
                         help="Explicitly declare flashed firmware supports Marlin LIN_ADVANCE M900.")
     parser.add_argument("--linear-advance-k", type=float, default=None,
                         help="Calibrated Marlin K, 0..10; requires --marlin-linear-advance.")
-    parser.add_argument("--print-feed", type=float, default=1800.0,
+    parser.add_argument("--print-feed", type=float, default=None,
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
-    parser.add_argument("--travel-feed", type=float, default=3000.0,
+    parser.add_argument("--travel-feed", type=float, default=None,
                         help="Target physical XY travel mm/min; radial Z moves retain native mm/min.")
-    parser.add_argument("--fan-speed", type=int, default=255,
-                        help="Part-cooling PWM from 0 (off) to 255 (full); default 255.")
-    parser.add_argument("--fan-start-height", type=float, default=2.0,
-                        help="Radial Z height above build cylinder at which cooling starts (mm); default 2.")
-    parser.add_argument("--fan-ramp-height-mm", type=float, default=0.0,
+    parser.add_argument("--fan-speed", type=int, default=None,
+                        help="Part-cooling PWM 0–255; 255 in quality profile.")
+    parser.add_argument("--fan-start-height", type=float, default=None,
+                        help="Radial Z height above the build cylinder where cooling starts (quality: 1 mm).")
+    parser.add_argument("--fan-ramp-height-mm", type=float, default=None,
                         help="Ramp fan PWM from 0 to --fan-speed over this radial height; 0 is an immediate step.")
-    parser.add_argument("--cooling-min-layer-time-s", type=float, default=0.0,
+    parser.add_argument("--cooling-min-layer-time-s", type=float, default=None,
                         help="Conservatively slow extrusions to this minimum estimated printing time per layer; 0 disables.")
-    parser.add_argument("--cooling-min-print-speed", type=float, default=300.0,
+    parser.add_argument("--cooling-min-print-speed", type=float, default=None,
                         help="Physical mm/min floor on cooling slowdown (default 300); never adds dwell.")
-    parser.add_argument("--retract-mm", type=float, default=1.0, help="Filament retraction distance in mm between paths.")
+    parser.add_argument("--retract-mm", type=float, default=None, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
     parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
     parser.add_argument(
@@ -167,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--support-interface-layers",
         type=int,
-        default=2,
+        default=None,
         help="Dense top support interface layers below the support gap.",
     )
     parser.add_argument(
@@ -194,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="bed_radius",
         type=float,
         default=None,
-        help="Build-cylinder radius: 30 mm for legacy-cli, zero for library profile.",
+        help="Build cylinder radius (quality/legacy-cli: 30 mm).",
     )
     parser.add_argument(
         "--no-gap-support",
@@ -217,13 +256,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--layer-backend",
         choices=("raster", "intersection"),
-        default="raster",
+        default=None,
         help="Layer geometry backend: raster occupancy sampling or narrow triangle/cylinder intersection.",
     )
     parser.add_argument(
         "--intersection-curve-error-mm",
         type=float,
-        default=0.025,
+        default=None,
         help="Maximum physical mm deviation of sampled face/cylinder curves from chord.",
     )
     parser.add_argument("--intersection-strict-recovery", action="store_true",
@@ -268,9 +307,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("provide an input mesh path or --fixture")
 
     config = SlicerConfig(
-        layer_height=args.layer_height,
+        layer_height=_profile_value(args, "layer_height"),
         filament_diameter=args.filament_diameter,
-        nozzle_diameter=args.nozzle_diameter,
+        nozzle_diameter=_profile_value(args, "nozzle_diameter"),
         theta_step_deg=args.theta_step_deg,
         axial_step=args.axial_step,
         axial_min=args.axial_min,
@@ -279,30 +318,30 @@ def main(argv: list[str] | None = None) -> int:
         seam_policy=args.seam_policy,
         seam_angle_deg=args.seam_angle_deg,
         seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),
-        top_layers=args.top_layers,
-        bottom_layers=args.bottom_layers,
-        infill_spacing=args.infill_spacing,
-        sparse_infill_pattern=args.sparse_infill_pattern,
-        solid_infill_pattern=args.solid_infill_pattern,
-        monotonic_top_skin=args.monotonic_top_skin,
-        nozzle_width=args.line_width,
-        bead_model=args.bead_model,
+        top_layers=_profile_value(args, "top_layers"),
+        bottom_layers=_profile_value(args, "bottom_layers"),
+        infill_spacing=_profile_value(args, "infill_spacing"),
+        sparse_infill_pattern=_profile_value(args, "sparse_infill_pattern"),
+        solid_infill_pattern=_profile_value(args, "solid_infill_pattern"),
+        monotonic_top_skin=_profile_value(args, "monotonic_top_skin"),
+        nozzle_width=_profile_value(args, "nozzle_width"),
+        bead_model=_profile_value(args, "bead_model"),
         infill_wall_overlap_fraction=args.infill_wall_overlap_fraction,
-        min_path_length=args.min_path_length,
-        retract_mm=args.retract_mm,
-        retract_speed_mm_per_min=args.retract_speed * 60,
+        min_path_length=_profile_value(args, "min_path_length"),
+        retract_mm=_profile_value(args, "retract_mm"),
+        retract_speed_mm_per_min=_profile_value(args, "retract_speed_mm_per_min"),
         retraction_sweep=sweep,
-        hotend_temp=args.hotend_temp,
-        feed_mm_per_min=args.print_feed,
-        material_profile=args.material_profile,
+        hotend_temp=_profile_value(args, "hotend_temp"),
+        feed_mm_per_min=_profile_value(args, "feed_mm_per_min"),
+        material_profile=_profile_value(args, "material_profile"),
         linear_advance_k=args.linear_advance_k,
         linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),
-        travel_mm_per_min=args.travel_feed,
-        fan_speed=args.fan_speed,
-        fan_start_height=args.fan_start_height,
-        fan_ramp_height_mm=args.fan_ramp_height_mm,
-        cooling_min_layer_time_s=args.cooling_min_layer_time_s,
-        cooling_min_print_speed_mm_per_min=args.cooling_min_print_speed,
+        travel_mm_per_min=_profile_value(args, "travel_mm_per_min"),
+        fan_speed=_profile_value(args, "fan_speed"),
+        fan_start_height=_profile_value(args, "fan_start_height"),
+        fan_ramp_height_mm=_profile_value(args, "fan_ramp_height_mm"),
+        cooling_min_layer_time_s=_profile_value(args, "cooling_min_layer_time_s"),
+        cooling_min_print_speed_mm_per_min=_profile_value(args, "cooling_min_print_speed_mm_per_min"),
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
@@ -315,9 +354,9 @@ def main(argv: list[str] | None = None) -> int:
         support_min_region_area=_profile_value(args, "support_min_region_area"),
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),
         support_merge_gap=_profile_value(args, "support_merge_gap"),
-        support_gap_layers=args.support_gap_layers,
-        support_interface_layers=args.support_interface_layers,
-        support_interface_spacing=args.support_interface_spacing,
+        support_gap_layers=_profile_value(args, "support_gap_layers"),
+        support_interface_layers=_profile_value(args, "support_interface_layers"),
+        support_interface_spacing=_profile_value(args, "support_interface_spacing"),
         support_meander_max_angle_deg=args.support_meander_max_angle_deg,
         support_cross_spacing=args.support_cross_spacing,
         raft_layers=args.raft_layers,
@@ -327,9 +366,9 @@ def main(argv: list[str] | None = None) -> int:
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,
         toolpath_workers=args.toolpath_workers if args.toolpath_workers is not None else args.slice_workers,
-        layer_backend=args.layer_backend,
+        layer_backend=_profile_value(args, "layer_backend"),
         intersection_refine_factor=args.intersection_refine_factor,
-        intersection_curve_error_mm=args.intersection_curve_error_mm,
+        intersection_curve_error_mm=_profile_value(args, "intersection_curve_error_mm"),
         intersection_strict_recovery=args.intersection_strict_recovery,
     )
     try:
@@ -337,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     backend = None
-    if args.layer_backend == "raster":
+    if config.layer_backend == "raster":
         backend = timed(
             "occupancy backend",
             lambda: build_occupancy_backend(
