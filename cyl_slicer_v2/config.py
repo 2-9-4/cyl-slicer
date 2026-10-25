@@ -16,6 +16,7 @@ class SlicerConfig:
     bead_model: str = "rectangular"
     filament_diameter: float = 1.75
     wall_count: int = 2
+    wall_order: str = "outer-first"  # Inside-out for overhangs if selected.
     top_layers: int = 3
     bottom_layers: int = 3
     infill_spacing: float = 2.0
@@ -128,6 +129,8 @@ class SlicerConfig:
             raise ValueError("extrusion_per_mm must be finite and positive")
         if self.wall_count < 1:
             raise ValueError("wall_count must be at least 1")
+        if self.wall_order not in {"outer-first", "inner-first"}:
+            raise ValueError("wall_order must be 'outer-first' or 'inner-first'")
         if self.top_layers < 1:
             raise ValueError("top_layers must be at least 1")
         if self.bottom_layers < 1:
