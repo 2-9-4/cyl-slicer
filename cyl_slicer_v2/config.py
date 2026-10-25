@@ -20,6 +20,8 @@ class SlicerConfig:
     top_layers: int = 3
     bottom_layers: int = 3
     infill_spacing: float = 2.0
+    sparse_infill_pattern: str = "both"  # optional alternating single-grid layer.
+    solid_infill_pattern: str = "axial"  # optional alternating exposed fill angle.
     # Fraction of line width that solid/sparse infill may enter the inner
     # perimeter bead; cross-section still uses the rectangular w*h model.
     infill_wall_overlap_fraction: float = 0.15
@@ -143,6 +145,10 @@ class SlicerConfig:
             raise ValueError("bottom_layers must be at least 1")
         if self.infill_spacing <= 0:
             raise ValueError("infill_spacing must be positive")
+        if self.sparse_infill_pattern not in {"both", "alternate"}:
+            raise ValueError("sparse_infill_pattern must be 'both' or 'alternate'")
+        if self.solid_infill_pattern not in {"axial", "alternate"}:
+            raise ValueError("solid_infill_pattern must be 'axial' or 'alternate'")
         if not math.isfinite(self.infill_wall_overlap_fraction) or not 0 <= self.infill_wall_overlap_fraction <= 0.5:
             raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
         if self.support_spacing <= 0:
