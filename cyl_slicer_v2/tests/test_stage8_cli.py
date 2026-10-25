@@ -33,6 +33,7 @@ class CliTests(unittest.TestCase):
                 sys.executable,
                 "-m",
                 "cyl_slicer_v2.cli",
+                "--profile", "legacy-cli",  # historical geometry smoke fixtures
                 *args,
                 "--out",
                 str(out),
