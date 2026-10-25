@@ -715,29 +715,42 @@ def sample_intersection_layer(
             continue
         try:
             candidate = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
-            opposite = _sample_intersection_layer_once(mesh, radius - delta, config, z_bounds)
         except shapely.errors.GEOSException:
             continue
         if _looks_like_degenerate_full_span(mesh, radius + delta, candidate[0], candidate[2], config):
             continue
-        if _looks_like_degenerate_full_span(mesh, radius - delta, opposite[0], opposite[2], config):
+
+        # A true radial tangent can change topology at the requested radius.
+        # Sampling the opposite side may therefore disagree even when the
+        # chosen one-sided geometry is physically meaningful. In ordinary
+        # mode preserve that legacy behavior, but explicitly WARN of the
+        # unverified substitution. In strict mode require two-sided consensus.
+        compatible, deviation = False, math.inf
+        try:
+            opposite = _sample_intersection_layer_once(mesh, radius - delta, config, z_bounds)
+        except shapely.errors.GEOSException:
+            pass
+        else:
+            if not _looks_like_degenerate_full_span(mesh, radius - delta, opposite[0], opposite[2], config):
+                compatible, deviation = _recovery_compatible(
+                    candidate, opposite, radius, config.intersection_curve_error_mm
+                )
+        if not compatible and config.intersection_strict_recovery:
             continue
-        compatible, deviation = _recovery_compatible(
-            candidate, opposite, radius, config.intersection_curve_error_mm
-        )
-        if not compatible:
-            continue
+        status = ("two-sided verified" if compatible
+                  else "ONE-SIDED, topology or dimensional disagreement unverified")
         warnings.warn(
             f"Intersection layer R={radius:.6f} mm recovered from R={radius + delta:.6f} mm "
-            f"(radial shift={delta:+.6g} mm, two-sided boundary deviation={deviation:.6g} mm)",
+            f"(radial shift={delta:+.6g} mm, {status}, "
+            f"boundary deviation={deviation:.6g} mm)",
             RuntimeWarning,
             stacklevel=2,
         )
         return candidate
 
-    # Never silently return a layer already flagged as geometrically false.
-    # If there is no consensus within the error budget, fail closed rather
-    # than generating filament paths for potentially incorrect topology.
+    # Never silently return geometry already flagged as degenerate.
+    # Both modes require a valid, bounded shifted sample; strict mode also
+    # requires two-sided topological/dimensional consensus.
     if first_error is not None:
         raise RuntimeError(
             f"Intersection layer R={radius:.6f} mm failed bounded two-sided recovery"
