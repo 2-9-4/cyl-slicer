@@ -123,6 +123,6 @@ class RoundedBeadFlowTests(unittest.TestCase):
         })
         gcode = emit_gcode([layer], c)
         import re
-        e = re.findall(r"(?m)^G1 X[^\\n]*? E([0-9.]+)", gcode)
+        e = re.findall(r"(?m)^G1 X[^\n]*? E([0-9.]+)", gcode)
         self.assertTrue(e)
         self.assertAlmostEqual(float(e[-1]), c.extrusion_per_mm, delta=0.00001)
