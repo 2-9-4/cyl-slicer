@@ -109,7 +109,7 @@ class SafeIslandRoutingTests(unittest.TestCase):
             GcodeState(theta_accum=.2,axial=5,radial=10.08),
             SlicerConfig(route_travel_inside_island=False),0,retract_after=False,
             travel_region=self.region)
-        self.assertIn(";ROUTED_TRAVEL:",routed)
+        self.assertTrue(any(s.startswith(";ROUTED_TRAVEL:") for s in routed))
         self.assertGreater(len([s for s in routed if s.startswith("G0 X")]),1)
         self.assertEqual([s for s in straight if s.startswith("G1 X")],
                          [s for s in routed if s.startswith("G1 X")])
