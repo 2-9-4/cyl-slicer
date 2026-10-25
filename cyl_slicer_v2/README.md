@@ -75,6 +75,14 @@ at the nearer endpoint, so they alternate positive and negative Y with a short
 axial travel between rows. Reversed moves retain their intended angular span,
 including across the periodic seam.
 
+Short transfers between neighboring fill passes stay primed when the entire
+travel lies inside the layer's model or support footprint. The local distance
+allowance is the larger pass spacing plus half a nozzle width. This also applies
+across infill type changes; ending a type does not itself force retraction.
+Longer travels and travel through gaps retain the ordinary retraction rule,
+and layer ends still retract. Periodic copies of the footprint allow the same
+decision across the rotary seam.
+
 V2 targets the printer's Marlin 2.0.7 firmware with `POWER_LOSS_RECOVERY` enabled.
 At startup and each layer, `M400`, `G92.9 Y<wrapped phase>`, and `G92 E0 Y0`
 rebase the native rotary position by whole turns and reset logical Y without

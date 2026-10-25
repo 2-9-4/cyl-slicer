@@ -10,6 +10,10 @@
   when changing path planning or G-code output.
 - Geometry sampling resolution must not force redundant G-code blocks on a
   straight move. Short travels along a perimeter are not perimeter crossings.
+- Adjacent fill passes should stay primed for short travel contained in the
+  model/support footprint. Check the whole connection, including across the seam;
+  don't suppress retraction across holes or separate islands based on distance
+  alone. A role/type change is not by itself a reason to retract.
 - Keep Marlin's native Y position bounded as well as emitted Y values. The target
   firmware enables `POWER_LOSS_RECOVERY`: use `M400`, `G92.9 Y<wrapped phase>`,
   then `G92 Y0` (or `G92 E0 Y0` at layer changes). Keep angular phase so resets

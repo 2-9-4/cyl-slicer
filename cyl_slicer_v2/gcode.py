@@ -11,6 +11,7 @@ from shapely.strtree import STRtree
 from .config import SlicerConfig
 from .coordinates import coalesce_collinear_points, cylindrical_distance, unwrap_path_from_current
 from .models import GcodeState, LayerToolpaths, Toolpath
+from .periodic import periodic_copies
 from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_ROLES, ROLE_ORDER
 
 
@@ -316,6 +317,7 @@ def _should_retract_after_path(
     next_path: Toolpath | None,
     state: GcodeState,
     config: SlicerConfig,
+    travel_region: BaseGeometry | None = None,
 ) -> bool:
     if config.retract_mm <= 0:
         return False
@@ -325,7 +327,38 @@ def _should_retract_after_path(
     end_state = _shadow_after_path(path, state)
     next_path = _orient_path_for_current_position(next_path, end_state)
     travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
-    return travel_distance >= config.nozzle_width * 2.0
+    if travel_distance < config.nozzle_width * 2.0:
+        return False
+    fill_spacing = {
+        "SOLID_INFILL": config.nozzle_width,
+        "INFILL_RADIAL": config.infill_spacing,
+        "INFILL_AXIAL": config.infill_spacing,
+        "SUPPORT": config.support_spacing,
+        "SUPPORT_INTERFACE": config.support_interface_spacing or config.nozzle_width,
+    }
+    if path.role in fill_spacing and next_path.role in fill_spacing and travel_region is not None:
+        local_distance = max(fill_spacing[path.role], fill_spacing[next_path.role]) + config.nozzle_width * 0.5
+        if travel_distance <= local_distance + 1e-8:
+            theta = end_state.theta_accum % TWO_PI
+            target_theta = _nearest_theta(next_path.points[0][0], theta)
+            travel = LineString([(theta, end_state.axial), (target_theta, next_path.points[0][1])])
+            # Only omit retraction when the entire connection stays in material.
+            # The tiny residual allowance handles floating-point boundary drift,
+            # including paths touching the periodic seam, without bridging holes.
+            if travel_region.covers(travel) or travel.difference(travel_region).length <= 1e-8:
+                return False
+    return True
+
+
+def _ordered_layer_paths(layer: LayerToolpaths, state: GcodeState) -> list[Toolpath]:
+    ordered = []
+    shadow = state
+    for role in ROLE_ORDER:
+        for path in _ordered_paths_for_current_position(layer.paths_by_role.get(role, []), shadow):
+            path = _orient_path_for_current_position(path, shadow)
+            ordered.append(path)
+            shadow = _shadow_after_path(path, shadow)
+    return ordered
 
 
 def _retract(state: GcodeState, config: SlicerConfig) -> list[str]:
@@ -478,23 +511,23 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             if layer_config.z_hop_height > 0 and layer_config.z_hop_on_perimeter_crossing
             else None
         )
-        for role in ROLE_ORDER:
-            role_paths = _ordered_paths_for_current_position(layer.paths_by_role.get(role, []), state)
-            for index, path in enumerate(role_paths):
-                path = _orient_path_for_current_position(path, state)
-                next_path = role_paths[index + 1] if index + 1 < len(role_paths) else None
-                retract_after = _should_retract_after_path(path, next_path, state, layer_config)
-                out.append(f";TYPE:{role}")
-                out.extend(
-                    emit_toolpath(
-                        path,
-                        state,
-                        layer_config,
-                        output_x_offset,
-                        retract_after=retract_after,
-                        perimeter_index=perimeter_index,
-                    )
+        travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
+        paths = _ordered_layer_paths(layer, state)
+        for index, path in enumerate(paths):
+            path = _orient_path_for_current_position(path, state)
+            next_path = paths[index + 1] if index + 1 < len(paths) else None
+            retract_after = _should_retract_after_path(path, next_path, state, layer_config, travel_region)
+            out.append(f";TYPE:{path.role}")
+            out.extend(
+                emit_toolpath(
+                    path,
+                    state,
+                    layer_config,
+                    output_x_offset,
+                    retract_after=retract_after,
+                    perimeter_index=perimeter_index,
                 )
+            )
 
     if layers:
         # Z is radial lift above the mandrel. Park relative to the last emitted

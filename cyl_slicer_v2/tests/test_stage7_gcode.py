@@ -6,7 +6,7 @@ import re
 import unittest
 from unittest.mock import patch
 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
 from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
@@ -372,6 +372,65 @@ class GcodeTests(unittest.TestCase):
             self.assertLess((previous[5] - previous[3]) * (current[5] - current[3]), 0.0)
             self.assertAlmostEqual(current[3], previous[5])
             self.assertAlmostEqual(abs(current[2] - previous[4]), 2.0)
+        shell = code.split(";LAYER:3\n")[1].split(";LAYER:4\n")[0]
+        radial = [part.split(";TYPE:")[0] for part in shell.split(";TYPE:INFILL_RADIAL")[1:]]
+        self.assertTrue(all("; retract" not in part for part in radial[:-1]))
+        self.assertTrue(all("; unretract" not in part for part in radial[1:]))
+
+    def test_neighboring_infill_passes_in_material_do_not_retract(self):
+        for role in ("INFILL_RADIAL", "INFILL_AXIAL", "SUPPORT"):
+            for limit in (1024, 0):
+                with self.subTest(role=role, ordering_limit=limit), patch("cyl_slicer_v2.gcode.PATH_ORDER_OPTIMIZE_LIMIT", limit):
+                    spacing = 1.5 if role == "SUPPORT" else 2.0
+                    if role == "INFILL_RADIAL":
+                        paths = [Toolpath(role, 30.0, [(0, x), (1, x)]) for x in (0, spacing, 2 * spacing)]
+                        region = box(0, 0, 1, 2 * spacing)
+                    else:
+                        paths = [Toolpath(role, 30.0, [(t, 0), (t, 6)]) for t in (0, spacing / 30, 2 * spacing / 30)]
+                        region = box(0, 0, 2 * spacing / 30, 6)
+                    layer = LayerToolpaths(0, 30.0, {role: paths}, travel_region=region)
+                    code = emit_gcode([layer], SlicerConfig())
+                    self.assertEqual(code.count("; retract"), 1, "Only retract at layer end")
+                    self.assertNotIn("; unretract", code)
+
+    def test_short_infill_travels_across_gaps_or_holes_still_retract(self):
+        paths = [Toolpath("INFILL_RADIAL", 30.0, [(0, x), (1, x)]) for x in (0, 2)]
+        regions = [
+            box(-0.1, -0.1, 1.1, 0.1).union(box(-0.1, 1.9, 1.1, 2.1)),
+            box(-0.1, -0.1, 1.1, 2.1).difference(box(0.9, 0.4, 1.05, 1.6)),
+        ]
+        for region in regions:
+            with self.subTest(region=region.geom_type):
+                layer = LayerToolpaths(0, 30.0, {"INFILL_RADIAL": paths}, travel_region=region)
+                code = emit_gcode([layer], SlicerConfig())
+                self.assertEqual(code.count("; retract"), 2)
+                self.assertEqual(code.count("; unretract"), 1)
+
+    def test_long_infill_travel_inside_material_still_retracts(self):
+        paths = [Toolpath("INFILL_RADIAL", 30.0, [(0, x), (1, x)]) for x in (0, 6)]
+        layer = LayerToolpaths(0, 30.0, {"INFILL_RADIAL": paths}, travel_region=box(0, 0, 1, 6))
+        code = emit_gcode([layer], SlicerConfig())
+        self.assertEqual(code.count("; retract"), 2)
+        self.assertEqual(code.count("; unretract"), 1)
+
+    def test_infill_role_change_does_not_force_retraction(self):
+        layer = LayerToolpaths(0, 30.0, {
+            "INFILL_RADIAL": [Toolpath("INFILL_RADIAL", 30.0, [(0, 0), (1, 0)])],
+            "INFILL_AXIAL": [Toolpath("INFILL_AXIAL", 30.0, [(1, 0), (1, 5)])],
+        }, travel_region=box(0, 0, 1, 5))
+        code = emit_gcode([layer], SlicerConfig())
+        self.assertEqual(code.count("; retract"), 1)
+        self.assertNotIn("; unretract", code)
+
+    def test_neighboring_infill_across_periodic_seam_does_not_retract(self):
+        turn = 2 * math.pi
+        layer = LayerToolpaths(0, 30.0, {"INFILL_AXIAL": [
+            Toolpath("INFILL_AXIAL", 30.0, [(turn - 0.02, 0), (turn - 0.02, 5)]),
+            Toolpath("INFILL_AXIAL", 30.0, [(0.02, 0), (0.02, 5)]),
+        ]}, travel_region=box(turn - 0.04, 0, turn, 5).union(box(0, 0, 0.04, 5)))
+        code = emit_gcode([layer], SlicerConfig(infill_spacing=1.2))
+        self.assertEqual(code.count("; retract"), 1)
+        self.assertNotIn("; unretract", code)
 
     def test_paths_within_role_are_ordered_from_current_position(self):
         config = SlicerConfig(axial_min=0.0, max_axial_segment=20.0)

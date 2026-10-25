@@ -642,7 +642,11 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         for role, role_paths in paths.items()
         if (processed := _postprocess_role_paths(role_paths, config))
     }
-    return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths)
+    travel_region = (
+        model if layer.support.is_empty else layer.support if model.is_empty
+        else unary_union([model, layer.support])
+    )
+    return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths, travel_region=travel_region)
 
 
 def _init_toolpath_worker(config: SlicerConfig) -> None:

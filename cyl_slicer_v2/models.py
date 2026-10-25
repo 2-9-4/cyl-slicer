@@ -36,6 +36,7 @@ class LayerToolpaths:
     layer_index: int
     radius: float
     paths_by_role: dict[str, list[Toolpath]] = field(default_factory=dict)
+    travel_region: BaseGeometry | None = None
 
 
 @dataclass
