@@ -18,8 +18,10 @@ class IntersectionRecoveryGuardTests(unittest.TestCase):
         self.positive = (box(0, 0, 1, 1), (0, 1), False)
         self.negative = (box(0, 0.001, 1, 1.001), (0, 1), False)
 
-    def _test_recovery(self, opposite=None, offsets=(0.001, -0.001)):
+    def _test_recovery(self, opposite=None, offsets=(0.001, -0.001), strict=False):
         opposite = self.negative if opposite is None else opposite
+        self.config = SlicerConfig(layer_height=0.2, intersection_curve_error_mm=0.025,
+                                   intersection_strict_recovery=strict)
 
         def sample(_mesh, radius, _config, _z_bounds):
             if abs(radius - 30) < 1e-12:
@@ -44,16 +46,25 @@ class IntersectionRecoveryGuardTests(unittest.TestCase):
         self.assertEqual(len(caught), 1)
         self.assertIn("radial shift=+0.001", str(caught[0].message))
         self.assertIn("boundary deviation=", str(caught[0].message))
+        self.assertIn("two-sided verified", str(caught[0].message))
 
     def test_topology_change_between_sides_is_rejected(self):
         hole = self.positive[0].difference(box(.2, .2, .5, .5))
         with self.assertRaisesRegex(RuntimeError, "degenerate"):
-            self._test_recovery(opposite=(hole, (0, 1), False))
+            self._test_recovery(opposite=(hole, (0, 1), False), strict=True)
 
     def test_large_boundary_shift_rejected_even_with_same_topology(self):
         moved = (box(0, .5, 1, 1.5), (0, 1), False)
         with self.assertRaises(RuntimeError):
-            self._test_recovery(opposite=moved)
+            self._test_recovery(opposite=moved, strict=True)
+
+    def test_non_strict_recovery_warns_on_topological_transition(self):
+        hole = self.positive[0].difference(box(.2, .2, .5, .5))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = self._test_recovery(opposite=(hole, (0, 1), False))
+        self.assertTrue(result[0].equals(self.positive[0]))
+        self.assertTrue(any("ONE-SIDED" in str(w.message) for w in caught))
 
     def test_recovery_cannot_exceed_layer_or_curve_error_budget(self):
         with self.assertRaises(RuntimeError):
