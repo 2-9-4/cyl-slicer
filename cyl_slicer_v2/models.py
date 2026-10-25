@@ -38,6 +38,17 @@ class LayerToolpaths:
     paths_by_role: dict[str, list[Toolpath]] = field(default_factory=dict)
     travel_region: BaseGeometry | None = None
     island_paths: list[dict[str, list[Toolpath]]] = field(default_factory=list)
+    # radius above is the geometric slice SAMPLE plane, never the nozzle Z.
+    # A physical deposited slab occupies [sample - thickness/2,
+    # sample + thickness/2]; default calculation uses config.layer_height.
+    nozzle_radius: float | None = None
+    deposited_thickness: float | None = None
+
+    def deposition_radius(self, configured_layer_height: float) -> float:
+        if self.nozzle_radius is not None:
+            return self.nozzle_radius
+        height = self.deposited_thickness if self.deposited_thickness is not None else configured_layer_height
+        return self.radius + height * 0.5
 
 
 @dataclass

@@ -63,13 +63,13 @@ class GcodeTests(unittest.TestCase):
                               wall_count=3, feed_mm_per_min=4500, travel_mm_per_min=9000, hotend_temp=195,
                               retraction_sweep=RetractionSweep("retract-mm", (0, 1, 2, 3, 4)))
         code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=30)
+        shell23 = code.split(";LAYER:23\n")[1].split(";LAYER:24\n")[0]
         shell24 = code.split(";LAYER:24\n")[1].split(";LAYER:25\n")[0]
-        shell25 = code.split(";LAYER:25\n")[1].split(";LAYER:26\n")[0]
-        self.assertIn("value=0 unit=mm height=4.9000", shell24)
-        self.assertNotIn("; retract", shell24)
-        self.assertIn("value=1 unit=mm height=5.1000", shell25)
-        self.assertEqual(shell25.count("; retract"), 4, "Three island transfers and the layer end")
-        islands = shell25.split(";TYPE:EXTERNAL_PERIMETER")[1:]
+        self.assertIn("value=0 unit=mm height=4.8000", shell23)
+        self.assertNotIn("; retract", shell23)
+        self.assertIn("value=1 unit=mm height=5.0000", shell24)
+        self.assertEqual(shell24.count("; retract"), 4, "Three island transfers and the layer end")
+        islands = shell24.split(";TYPE:EXTERNAL_PERIMETER")[1:]
         self.assertEqual(len(islands), 4)
         for island in islands:
             self.assertEqual(island.count(";TYPE:INTERNAL_PERIMETER"), 2)
@@ -93,7 +93,7 @@ class GcodeTests(unittest.TestCase):
 
     def test_part_cooling_starts_at_nominal_radial_height_once(self):
         layers = [LayerToolpaths(i-2, radius) for i, radius in enumerate(
-            (30.0, 31.9, 32.0, 32.2))]
+            (30.0, 31.7, 31.75, 32.0))]
         code = emit_gcode(layers, SlicerConfig(bed_radius=30.0, z_hop_height=5.0))
         self.assertLess(code.index("M106 S0 ; part cooling off for adhesion"), code.index("M109"))
         self.assertEqual(code.count("M106 S255 ; part cooling on"), 1)
@@ -120,7 +120,7 @@ class GcodeTests(unittest.TestCase):
                 config = SlicerConfig(bed_radius=30.0)
                 layers = [LayerToolpaths(0, 30.2), LayerToolpaths(1, final_radius)]
                 code = emit_gcode(layers, config)
-                expected = f"G0 Z{final_radius - 30.0 + 10.0:.4f} F600.0 ; end lift"
+                expected = f"G0 Z{final_radius - 30.0 + config.layer_height / 2 + 10.0:.4f} F600.0 ; end lift"
                 self.assertIn(expected, code)
                 self.assertLess(code.index("G90 ; absolute positioning for end lift"),
                                 code.index(expected))

@@ -61,7 +61,12 @@ The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters, shifted so the minimum emitted X is `--axial-min`
 - `Y`: rotary degrees since the most recent Y reset (normally each layer)
-- `Z`: radial lift from `bed_radius`
+- `Z`: radial nozzle clearance from `bed_radius`, at the OUTER surface
+  of each deposited slab (first layer: Z = configured layer height for a
+  sample at bed radius + half a layer). A slice's internal radius is its
+  midpoint sample plane; `;SAMPLE_RADIUS` and `;DEPOSITED_THICKNESS` describe
+  these distinct quantities in the output. Explicit machine Z calibration is
+  independent of geometric slab sampling.
 - comments: `;LAYER`, `;Z`, `;TYPE`
 
 Straight moves are emitted as single extrusion blocks, including axial and rotary

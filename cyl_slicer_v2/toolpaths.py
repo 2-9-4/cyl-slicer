@@ -701,8 +701,12 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     model_paths = {role: items for role, items in paths.items() if role not in support_roles}
     support_paths = {role: items for role, items in paths.items() if role in support_roles}
     islands = _island_path_groups(model_paths, model) + _island_path_groups(support_paths, layer.support)
+    # Slicing/intersection geometry remains at the slab midpoint. Nozzle Z
+    # must be at its OUTER deposited surface, not at the sampled midpoint.
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths,
-                          travel_region=travel_region, island_paths=islands)
+                          travel_region=travel_region, island_paths=islands,
+                          nozzle_radius=radius + config.layer_height * 0.5,
+                          deposited_thickness=config.layer_height)
 
 
 def _init_toolpath_worker(config: SlicerConfig) -> None:
