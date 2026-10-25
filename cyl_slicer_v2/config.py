@@ -127,6 +127,10 @@ class SlicerConfig:
             raise ValueError("max_axial_segment must be positive")
         if self.min_path_length < 0:
             raise ValueError("min_path_length must be non-negative")
+        if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
+            raise ValueError("feed_mm_per_min must be finite and positive")
+        if not math.isfinite(self.travel_mm_per_min) or self.travel_mm_per_min <= 0:
+            raise ValueError("travel_mm_per_min must be finite and positive")
         if not math.isfinite(self.retract_speed_mm_per_min) or self.retract_speed_mm_per_min <= 0:
             raise ValueError("retract_speed_mm_per_min must be finite and positive")
         if not math.isfinite(self.retract_mm) or self.retract_mm < 0:

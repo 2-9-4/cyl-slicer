@@ -113,6 +113,13 @@ solid infill lines) does not count as crossing it. Use `--z-hop-min-travel`,
 
 ## Retraction calibration
 
+`--print-feed` and `--travel-feed` expose the commanded G-code F values (defaults
+1800 and 3000). Travel includes radial Z hops; end parking stays at F600. These
+are the existing feed settings, with no new radius-based scaling. X is millimeters
+and Y is degrees, so F does not guarantee a particular physical nozzle speed on
+rotary or mixed moves. Firmware acceleration and axis limits also constrain speed.
+For stringing experiments, try faster travel while holding print feed fixed.
+
 Part cooling uses standard Marlin `M106` commands: off at startup, full speed
 once nominal radial Z reaches 2 mm above the mandrel, and off at shutdown.
 Set `--fan-speed 0` to disable cooling, or choose PWM 0–255. Set

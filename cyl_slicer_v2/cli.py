@@ -34,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_calibration_arguments(parser)
     parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
     parser.add_argument("--hotend-temp", type=int, default=215)
+    parser.add_argument("--print-feed", type=float, default=1800.0,
+                        help="Commanded G1 printing feed F (default 1800); mixed axial/rotary units.")
+    parser.add_argument("--travel-feed", type=float, default=3000.0,
+                        help="Commanded G0 travel feed F (default 3000), including Z hops; mixed axial/rotary units.")
     parser.add_argument("--fan-speed", type=int, default=255,
                         help="Part-cooling PWM from 0 (off) to 255 (full); default 255.")
     parser.add_argument("--fan-start-height", type=float, default=2.0,
@@ -206,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
         retract_speed_mm_per_min=args.retract_speed * 60,
         retraction_sweep=sweep,
         hotend_temp=args.hotend_temp,
+        feed_mm_per_min=args.print_feed,
+        travel_mm_per_min=args.travel_feed,
         fan_speed=args.fan_speed,
         fan_start_height=args.fan_start_height,
         z_hop_height=args.z_hop_height,

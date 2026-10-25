@@ -479,6 +479,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";RETRACT_MM:{config.retract_mm:g}",
         f";RETRACT_SPEED_MM_PER_S:{config.retract_speed_mm_per_min / 60:g}",
         f";HOTEND_TEMP:{config.hotend_temp}",
+        f";PRINT_FEED:{config.feed_mm_per_min:g}",
+        f";TRAVEL_FEED:{config.travel_mm_per_min:g}",
         f";FAN_SPEED:{config.fan_speed}",
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
         "G90 ; absolute positioning",

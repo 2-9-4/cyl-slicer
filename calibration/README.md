@@ -72,6 +72,44 @@ cooling first, changing only that variable before comparing temperatures.
 New v2 output ends with a 10 mm radial Z lift at 600 mm/min and waits for the
 move to finish before disabling motors. Existing files need to be re-sliced.
 
+## Lower temperature and faster travel
+
+If cooling is running but stringing remains severe, compare these short tests in
+order. Use 200 C only if it is within the PLA spool's permitted range. Keep the
+printing feed fixed while increasing non-printing travel; a weak fan is a reason
+to avoid simultaneously shortening layer cooling time by printing faster.
+
+| File | Temperature | Travel F | Purpose |
+| --- | --- | --- | --- |
+| `ooze_210c_travel3000.gcode` | 210 C | 3000 | Short control |
+| `ooze_200c_travel3000.gcode` | 200 C | 3000 | Change only temperature |
+| `ooze_200c_travel4500.gcode` | 200 C | 4500 | Then increase travel by 1.5x |
+
+Each file has 35 shells (about 7 mm radial height), fixed 4 mm retraction at
+30 mm/s, print F1800, full part cooling after the 2 mm base, and a 10 mm end lift.
+The files use the current slicer's same path planner and geometry settings, so
+the first two differ only in temperature, and the last two only in travel feed.
+They are generated artifacts; re-create them with the current slicer as needed.
+
+For example, generate the lower-temperature, faster-travel test with:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli calibration/retraction_posts.stl \
+  --out calibration/ooze_200c_travel4500.gcode \
+  --layer-backend intersection --build-cylinder-radius 30 --layer-height 0.2 \
+  --max-layers 35 --retract-mm 4 --retract-speed 30 --hotend-temp 200 \
+  --fan-speed 255 --fan-start-height 2 --print-feed 1800 --travel-feed 4500
+```
+
+The new feed flags are commanded G-code F values, matching the existing v2 feed
+settings; defaults remain print F1800 and travel F3000. X uses mm and Y uses
+degrees, so these are not guaranteed physical nozzle mm/min for rotary or mixed
+moves. Firmware axis speeds and acceleration can limit the achieved speed.
+Travel feed also applies to radial layer moves and Z-hop; retraction speed and
+the end lift's F600 are independent. If the faster test shows no improvement,
+compare actual travel times before increasing the feed again. If all tests are
+equally bad, check known-dry PLA and actual filament/tube motion during retraction.
+
 ## Slice with the legacy slicer
 
 Run from the repository root:

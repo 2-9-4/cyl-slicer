@@ -12,6 +12,12 @@ from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 
 
 class CalibrationTests(unittest.TestCase):
+    def test_feed_settings_must_be_finite_and_positive(self):
+        for field in ("feed_mm_per_min", "travel_mm_per_min"):
+            for value in (0, -1, float("nan"), float("inf")):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    SlicerConfig(**{field: value}).validate()
+
     def test_band_boundaries_base_and_final_hold(self):
         sweep = RetractionSweep("retract-mm", (0, 2, 4))
         for height, expected in [(0.2, None), (1.8, None), (2, 0),

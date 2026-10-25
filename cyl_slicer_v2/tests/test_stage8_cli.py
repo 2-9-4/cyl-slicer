@@ -10,6 +10,19 @@ from cyl_slicer_v2.cli import build_parser
 
 
 class CliTests(unittest.TestCase):
+    def test_cli_exposes_independent_print_and_travel_feed(self):
+        gcode = self.run_cli("--fixture", "solid_box", "--layer-backend", "intersection",
+                             "--build-cylinder-radius", "17.5", "--print-feed", "1800",
+                             "--travel-feed", "4500", "--retract-speed", "30")
+        self.assertIn(";PRINT_FEED:1800", gcode)
+        self.assertIn(";TRAVEL_FEED:4500", gcode)
+        travels = [line for line in gcode.splitlines() if line.startswith("G0 ") and " X" in line]
+        printing = [line for line in gcode.splitlines() if line.startswith("G1 ") and " X" in line]
+        self.assertTrue(travels)
+        self.assertTrue(printing)
+        self.assertTrue(all(" F4500.0" in line for line in travels))
+        self.assertTrue(all(" F1800.0" in line for line in printing))
+
     def run_cli(self, *args: str) -> str:
         root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp:
