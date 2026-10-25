@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import re
 
@@ -215,6 +215,8 @@ def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
         radial=state.radial,
         extrusion=state.extrusion,
         retracted=state.retracted,
+        retracted_mm=state.retracted_mm,
+        retracted_speed_mm_per_min=state.retracted_speed_mm_per_min,
     )
 
 
@@ -231,6 +233,8 @@ def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState
         radial=state.radial,
         extrusion=state.extrusion,
         retracted=state.retracted,
+        retracted_mm=state.retracted_mm,
+        retracted_speed_mm_per_min=state.retracted_speed_mm_per_min,
     )
     while remaining:
         best_index = 0
@@ -270,15 +274,18 @@ def _retract(state: GcodeState, config: SlicerConfig) -> list[str]:
         return []
     state.extrusion -= config.retract_mm
     state.retracted = True
-    return [_format_move("G1", e=state.extrusion, f=config.travel_mm_per_min) + " ; retract"]
+    state.retracted_mm = config.retract_mm
+    state.retracted_speed_mm_per_min = config.retract_speed_mm_per_min
+    return [_format_move("G1", e=state.extrusion, f=config.retract_speed_mm_per_min) + " ; retract"]
 
 
 def _unretract(state: GcodeState, config: SlicerConfig) -> list[str]:
-    if config.retract_mm <= 0 or not state.retracted:
+    if not state.retracted:
         return []
-    state.extrusion += config.retract_mm
+    state.extrusion += state.retracted_mm
     state.retracted = False
-    return [_format_move("G1", e=state.extrusion, f=config.travel_mm_per_min) + " ; unretract"]
+    state.retracted_mm = 0.0
+    return [_format_move("G1", e=state.extrusion, f=state.retracted_speed_mm_per_min) + " ; unretract"]
 
 
 def _unwrap_bidirectional_path_from_current(thetas: list[float], current_accum: float) -> list[float]:
@@ -392,23 +399,34 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         ";start of slice",
         f";LAYER_HEIGHT:{config.layer_height}",
         f";LINE_WIDTH:{config.nozzle_width}",
+        f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
+        f";RETRACT_MM:{config.retract_mm:g}",
+        f";RETRACT_SPEED_MM_PER_S:{config.retract_speed_mm_per_min / 60:g}",
+        f";HOTEND_TEMP:{config.hotend_temp}",
         "M82 ; absolute extrusion mode",
         "G92 E0 Y0",
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
     ]
+    if config.retraction_sweep:
+        out.append(config.retraction_sweep.header().rstrip())
 
     for layer in layers:
+        height = layer.radius - config.bed_radius
+        overrides = config.retraction_sweep.overrides(height) if config.retraction_sweep else {}
+        layer_config = replace(config, **overrides) if overrides else config
         out.append(f";LAYER:{layer.layer_index}")
         out.append(f";Z:{layer.radius:.4f}")
-        out.append(_format_move("G0", z=_emitted_z(layer.radius, config), f=config.travel_mm_per_min))
+        if config.retraction_sweep:
+            out.append(config.retraction_sweep.comment(height).rstrip())
+        out.append(_format_move("G0", z=_emitted_z(layer.radius, layer_config), f=layer_config.travel_mm_per_min))
         out.append("G92 E0 Y0 ; reset E/Y accumulators for layer")
         state.extrusion = 0.0
         state.theta_origin = state.theta_accum
         state.radial = layer.radius
         perimeter_index = (
             _layer_perimeter_index(layer)
-            if config.z_hop_height > 0 and config.z_hop_on_perimeter_crossing
+            if layer_config.z_hop_height > 0 and layer_config.z_hop_on_perimeter_crossing
             else None
         )
         for role in ROLE_ORDER:
@@ -416,13 +434,13 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             for index, path in enumerate(role_paths):
                 path = _orient_path_for_current_position(path, state)
                 next_path = role_paths[index + 1] if index + 1 < len(role_paths) else None
-                retract_after = _should_retract_after_path(path, next_path, state, config)
+                retract_after = _should_retract_after_path(path, next_path, state, layer_config)
                 out.append(f";TYPE:{role}")
                 out.extend(
                     emit_toolpath(
                         path,
                         state,
-                        config,
+                        layer_config,
                         output_x_offset,
                         retract_after=retract_after,
                         perimeter_index=perimeter_index,

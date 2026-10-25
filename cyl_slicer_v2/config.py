@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
+from .calibration import RetractionSweep
+
 
 @dataclass(frozen=True)
 class SlicerConfig:
@@ -38,6 +40,8 @@ class SlicerConfig:
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float | None = None
+    retraction_sweep: RetractionSweep | None = None
+    retract_speed_mm_per_min: float = 1800.0
     retract_mm: float = 1.0
     z_hop_height: float = 0.4
     z_hop_min_travel: float = 5.0
@@ -121,7 +125,9 @@ class SlicerConfig:
             raise ValueError("max_axial_segment must be positive")
         if self.min_path_length < 0:
             raise ValueError("min_path_length must be non-negative")
-        if self.retract_mm < 0:
+        if not math.isfinite(self.retract_speed_mm_per_min) or self.retract_speed_mm_per_min <= 0:
+            raise ValueError("retract_speed_mm_per_min must be finite and positive")
+        if not math.isfinite(self.retract_mm) or self.retract_mm < 0:
             raise ValueError("retract_mm must be non-negative")
         if self.z_hop_height < 0:
             raise ValueError("z_hop_height must be non-negative")

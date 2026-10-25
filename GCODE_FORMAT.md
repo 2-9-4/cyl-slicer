@@ -46,6 +46,12 @@ G1 E{current_e:.5f} F{retract_speed:.1f}  ; unretract
 ;end of path
 ```
 
+Calibration mode adds `;CALIBRATION:` comments after each model layer's radius
+marker. Band selection uses nominal radius minus build-cylinder radius, ignoring
+temporary Z-hop. Distance values are mm of filament; speed values in the comments
+are mm/s, converted to mm/min in E-only G-code. See
+[the calibration guide](calibration/README.md).
+
 ## Layer/Type Markers
 
 Standard comments for layer identification:

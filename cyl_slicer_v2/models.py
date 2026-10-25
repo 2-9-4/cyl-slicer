@@ -46,3 +46,5 @@ class GcodeState:
     radial: float = 0.0
     extrusion: float = 0.0
     retracted: bool = False
+    retracted_mm: float = 0.0
+    retracted_speed_mm_per_min: float = 1800.0

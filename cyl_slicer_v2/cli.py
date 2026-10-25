@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import time
 
+from .calibration import add_calibration_arguments, sweep_from_args
 from .config import SlicerConfig
 from .fixtures import FIXTURES, make_fixture
 from .gcode import emit_gcode
@@ -30,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
+    add_calibration_arguments(parser)
+    parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
+    parser.add_argument("--hotend-temp", type=int, default=215)
     parser.add_argument("--retract-mm", type=float, default=1.0, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
     parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
@@ -164,7 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     total_start = time.perf_counter()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    sweep = sweep_from_args(args, parser)
 
     timings: list[tuple[str, float]] = []
 
@@ -193,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
         infill_spacing=args.infill_spacing,
         min_path_length=args.min_path_length,
         retract_mm=args.retract_mm,
+        retract_speed_mm_per_min=args.retract_speed * 60,
+        retraction_sweep=sweep,
+        hotend_temp=args.hotend_temp,
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,

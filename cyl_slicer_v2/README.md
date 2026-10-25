@@ -64,6 +64,14 @@ The emitted G-code preserves the current viewer convention:
 - `Z`: radial lift from `bed_radius`
 - comments: `;LAYER`, `;Z`, `;TYPE`
 
+## Retraction calibration
+
+Both slicers support stepped retraction distance or speed sweeps over radial
+height above the mandrel. See [the calibration guide](../calibration/README.md)
+for the OpenSCAD coupon, commands, band mapping, and scoring procedure.
+`--retract-speed` is in mm/s and defaults to 30; v2 no longer reuses travel
+feedrate for E-only retraction moves. `--hotend-temp` sets a fixed temperature.
+
 ## Verify
 
 ```bash

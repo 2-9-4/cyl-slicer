@@ -2,6 +2,7 @@ import sys
 import os
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
 import argparse
+from cyl_slicer_v2.calibration import add_calibration_arguments, sweep_from_args
 
 def parse_layer_spec(spec):
     """Parse comma-separated layer ids/ranges like '0,5,10-12'."""
@@ -60,7 +61,17 @@ def parse_args():
             "Layers above this are ignored, so this layer becomes the outer/top limit."
         ),
     )
+    parser.add_argument("--out", default="output.gcode")
+    parser.add_argument("--retract-mm", type=float, default=2.0)
+    parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
+    parser.add_argument("--hotend-temp", type=int, default=215)
+    add_calibration_arguments(parser)
     parsed = parser.parse_args()
+    parsed.retraction_sweep = sweep_from_args(parsed, parser)
+    if not (0 <= parsed.retract_mm < float("inf")):
+        parser.error("--retract-mm must be finite and non-negative")
+    if not (0 < parsed.retract_speed < float("inf")):
+        parser.error("--retract-speed must be finite and positive")
     if parsed.max_layer is not None and parsed.max_layer < 0:
         parser.error("--max-layer must be >= 0")
     return parsed
@@ -3684,6 +3695,9 @@ slicing_params["extrusion_per_mm"] = (
     slicing_params["nozzle_size"] * slicing_params["layer_height"]
     / (np.pi * (printer_params["filament_diameter"] / 2) ** 2)
 )
+slicing_params["retract_mm"] = args.retract_mm
+slicing_params["retract_speed_mm_per_min"] = args.retract_speed * 60
+printer_params["hotend_temp"] = args.hotend_temp
 max_model_layer = args.max_layer
 mesh = trimesh.load_mesh(args.mesh)
 print(f"Loaded mesh: {len(mesh.faces)} faces, watertight={mesh.is_watertight}")
@@ -4557,7 +4571,13 @@ G0 X{_min_x:.3f} Y0.000 F{slicing_params['travel_mm_per_min']:.1f} ; move to pri
 G1 Y360.000 E{_prime_e:.5f} F{_first_feed:.1f} ; prime rotation (one full circle)
 G92 E0 ; reset extruder after prime
 """
-with open("output.gcode","w") as f:
+with open(args.out,"w") as f:
+    f.write(f";BUILD_CYLINDER_RADIUS:{_bed_r:g}\n")
+    f.write(f";RETRACT_MM:{args.retract_mm:g}\n")
+    f.write(f";RETRACT_SPEED_MM_PER_S:{args.retract_speed:g}\n")
+    f.write(f";HOTEND_TEMP:{args.hotend_temp}\n")
+    if args.retraction_sweep:
+        f.write(args.retraction_sweep.header())
     f.write(_start_gcode)
 
 # Write gap support layers (printed before the model, from bed outward).
@@ -4599,7 +4619,7 @@ for gap_layer_idx, gap_layer in enumerate(gap_support_layers):
         # spacing setting instead of fragmenting into hundreds of short paths.
         support_infill = do_support_infill(gap_sup, slicing_params, r, direction="body_radial")
     gap_layer["support_infill"] = support_infill
-    with open("output.gcode", "a") as f:
+    with open(args.out, "a") as f:
         f.write(f";LAYER:{layer_num}\n")
         f.write(f";Z:{r:.4f}\n")
         f.write(f"G0 Z{r - _bed_r:.4f}\n")
@@ -4981,13 +5001,17 @@ for _model_idx, i in enumerate(_sorted_model_keys):
     # Temporarily scale speeds for the first model layer
     _speed_factor = slicing_params["first_layer_speed_factor"] if i == 0 else 1.0
     _layer_params = slicing_params.copy()
+    if args.retraction_sweep:
+        _layer_params.update(args.retraction_sweep.overrides(current_r - _bed_r))
     _layer_params["feed_mm_per_min"]   *= _speed_factor
     _layer_params["travel_mm_per_min"] *= _speed_factor
 
     debug_emitted_segments = []
-    with open("output.gcode","a") as f:
+    with open(args.out,"a") as f:
         f.write(f";LAYER:{i}\n")
         f.write(f";Z:{current_r}\n")
+        if args.retraction_sweep:
+            f.write(args.retraction_sweep.comment(current_r - _bed_r))
         if i == slicing_params["fan_start_layer"]:
             f.write("M106 S255 ; part cooling fan on\n")
         f.write(f"G0 Z{current_r - _bed_r:.4f}\n")
@@ -5205,7 +5229,7 @@ for _model_idx, i in enumerate(_sorted_model_keys):
 # set_axes_equal(ax)
     # plt.clf()
 
-with open("output.gcode", "a") as f:
+with open(args.out, "a") as f:
     f.write(
         "\nM104 S0 ; hotend off\n"
         "M106 S0 ; fan off\n"
@@ -5215,7 +5239,7 @@ with open("output.gcode", "a") as f:
         "M84 ; disable steppers\n"
         ";end of slice\n"
     )
-print(f"\nDone. Wrote {real_layer_count} model layer(s) to output.gcode.")
+print(f"\nDone. Wrote {real_layer_count} model layer(s) to {args.out}.")
 
 if plot_3d and ax_3d:
     ax_3d.set_xlabel('X')
