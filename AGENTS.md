@@ -24,3 +24,6 @@
   don't accumulate fractional-step drift. Ordinary `G92 Y0` alone only shifts its
   workspace. Preserve the Marlin float32/planner regression tests and bidirectional
   infill when changing rotary coordinates.
+
+
+test with ```PYTHONPATH=. .venv/bin/python3 -m pytest -n auto --timeout=30```

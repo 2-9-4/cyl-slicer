@@ -45,6 +45,23 @@ def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z
     return " ".join(parts)
 
 
+def _surface_feed_for_marlin(
+    dx_mm: float, dtheta_radians: float, radius_mm: float, physical_feed_mm_per_min: float
+) -> float:
+    """Convert physical surface speed to Marlin's mixed X(mm)/Y(degrees) F.
+
+    Marlin computes the planar planner distance from its X and Y coordinate
+    numbers, which are not both millimetres for this cylindrical machine.
+    The motion duration is L_planner / F, so scale F by the ratio of planner
+    to physical length. Z-only motions and E-only retracts remain in mm/min.
+    """
+    physical_length = math.hypot(dx_mm, radius_mm * dtheta_radians)
+    if physical_length <= 1e-12:
+        return physical_feed_mm_per_min
+    planner_length = math.hypot(dx_mm, math.degrees(dtheta_radians))
+    return physical_feed_mm_per_min * planner_length / physical_length
+
+
 def _emitted_y_degrees(theta: float, state: GcodeState) -> float:
     return math.degrees(theta - state.theta_origin)
 
@@ -483,7 +500,12 @@ def emit_toolpath(
     if z_hop:
         state.radial = path.radius + config.z_hop_height
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z hop")
-    lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=config.travel_mm_per_min))
+    # XY travel uses Marlin's mixed-unit planner metric too. Radial hop
+    # motions are separate Z-only commands and retain their native mm/min.
+    travel_feed = _surface_feed_for_marlin(
+        x0 - state.axial, t0 - state.theta_accum, path.radius, config.travel_mm_per_min
+    )
+    lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=travel_feed))
     state.theta_accum = t0
     state.axial = x0
     if z_hop:
@@ -506,7 +528,9 @@ def emit_toolpath(
                 x=_emitted_x(x, output_x_offset),
                 y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
-                f=config.feed_mm_per_min,
+                f=_surface_feed_for_marlin(
+                    x - state.axial, t - state.theta_accum, path.radius, config.feed_mm_per_min
+                ),
             )
         )
         state.theta_accum = t
@@ -530,8 +554,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";RETRACT_MM:{config.retract_mm:g}",
         f";RETRACT_SPEED_MM_PER_S:{config.retract_speed_mm_per_min / 60:g}",
         f";HOTEND_TEMP:{config.hotend_temp}",
-        f";PRINT_FEED:{config.feed_mm_per_min:g}",
-        f";TRAVEL_FEED:{config.travel_mm_per_min:g}",
+        f";PRINT_FEED:{config.feed_mm_per_min:g}",  # requested physical surface mm/min
+        f";TRAVEL_FEED:{config.travel_mm_per_min:g}",  # requested physical surface mm/min for XY travel
         f";FAN_SPEED:{config.fan_speed}",
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
         "G90 ; absolute positioning",
