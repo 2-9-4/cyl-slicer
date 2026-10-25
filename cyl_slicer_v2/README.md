@@ -66,9 +66,12 @@ The emitted G-code preserves the current viewer convention:
 
 Straight moves are emitted as single extrusion blocks, including axial and rotary
 moves. Redundant collinear mesh vertices are removed with a numerical tolerance
-of 1e-8 mm; corners, reversals, and rotary winding are preserved. The internal
-`max_axial_segment` setting controls intersection curve sampling only, rather than
-limiting G-code block length.
+of 1e-8 mm; corners, reversals, and rotary winding are preserved. Intersection
+face/cylinder curves are sampled to a physical unwrapped chord-error budget:
+`--intersection-curve-error-mm` (default 0.025 mm), with
+`max_axial_segment` an additional curved-face sample cap. Exact straight
+surface paths do not need intermediate curve samples. These are sampling
+controls, not a G-code block-length limit.
 
 Sparse radial infill can print in either rotary direction. Adjacent passes start
 at the nearer endpoint, so they alternate positive and negative Y with a short
