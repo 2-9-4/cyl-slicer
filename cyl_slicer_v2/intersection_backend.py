@@ -712,6 +712,36 @@ def sample_intersection_layer(
     max_shift = 0.1 * config.layer_height
     if config.intersection_strict_recovery:
         max_shift = min(max_shift, config.intersection_curve_error_mm)
+    # The full-span detector relies partly on mesh.contains(). At exact
+    # surfaces or thin/tangent slices this test may disagree with a perfectly
+    # stable intersection geometry. Independently compare the ORIGINAL slice
+    # against both nearby planes before attempting to replace it. This is not
+    # a radius substitution, so retaining the original avoids dimensional
+    # drift from a false-positive degeneracy alarm.
+    if first_error is None and not config.intersection_strict_recovery:
+        original = (geom, window, full)
+        for delta in _degenerate_radius_offsets(config):
+            if abs(delta) > max_shift + 1e-12:
+                continue
+            try:
+                plus = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
+                minus = _sample_intersection_layer_once(mesh, radius - delta, config, z_bounds)
+            except shapely.errors.GEOSException:
+                continue
+            ok_pm, _ = _recovery_compatible(plus, minus, radius, config.intersection_curve_error_mm)
+            ok_plus, err_plus = _recovery_compatible(original, plus, radius, config.intersection_curve_error_mm)
+            ok_minus, err_minus = _recovery_compatible(original, minus, radius, config.intersection_curve_error_mm)
+            if ok_pm and ok_plus and ok_minus:
+                warnings.warn(
+                    f"Intersection layer R={radius:.6f} mm kept original geometry: "
+                    f"full-span occupancy detector disagrees, but two-sided "
+                    f"topology/boundary stability holds (max deviation="
+                    f"{max(err_plus, err_minus):.6g} mm, shift={delta:+.6g} mm)",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return original
+
     for delta in _degenerate_radius_offsets(config):
         if abs(delta) > max_shift + 1e-12:
             continue
