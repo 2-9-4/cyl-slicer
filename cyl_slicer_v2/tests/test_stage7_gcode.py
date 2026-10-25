@@ -19,6 +19,49 @@ from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
 class GcodeTests(unittest.TestCase):
+    def test_part_cooling_starts_at_nominal_radial_height_once(self):
+        layers = [LayerToolpaths(i-2, radius) for i, radius in enumerate(
+            (30.0, 31.9, 32.0, 32.2))]
+        code = emit_gcode(layers, SlicerConfig(bed_radius=30.0, z_hop_height=5.0))
+        self.assertLess(code.index("M106 S0 ; part cooling off for adhesion"), code.index("M109"))
+        self.assertEqual(code.count("M106 S255 ; part cooling on"), 1)
+        self.assertLess(code.index(";LAYER:0"), code.index("M106 S255"))
+        self.assertLess(code.index("M106 S255"), code.index(";LAYER:1"))
+        self.assertLess(code.index("M400"), code.index("M106 S0 ; fan off"))
+
+    def test_part_cooling_can_be_disabled_or_set_to_partial_from_first_shell(self):
+        layers = [LayerToolpaths(0, 30.2)]
+        disabled = emit_gcode(layers, SlicerConfig(bed_radius=30, fan_speed=0, fan_start_height=0))
+        self.assertNotIn("; part cooling on", disabled)
+        partial = emit_gcode(layers, SlicerConfig(bed_radius=30, fan_speed=128, fan_start_height=0))
+        self.assertIn("M106 S128 ; part cooling on", partial)
+
+    def test_part_cooling_rejects_invalid_settings(self):
+        for kwargs in ({"fan_speed": -1}, {"fan_speed": 256}, {"fan_speed": 0.5},
+                       {"fan_start_height": -1}, {"fan_start_height": float("nan")}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                SlicerConfig(**kwargs).validate()
+
+    def test_end_lift_adds_ten_mm_to_final_radial_height_before_shutdown(self):
+        for final_radius in (32.0, 46.9, 75.0):
+            with self.subTest(final_radius=final_radius):
+                config = SlicerConfig(bed_radius=30.0)
+                layers = [LayerToolpaths(0, 30.2), LayerToolpaths(1, final_radius)]
+                code = emit_gcode(layers, config)
+                expected = f"G0 Z{final_radius - 30.0 + 10.0:.4f} F600.0 ; end lift"
+                self.assertIn(expected, code)
+                self.assertLess(code.index("G90 ; absolute positioning for end lift"),
+                                code.index(expected))
+                self.assertLess(code.index(expected), code.index("M400"))
+                self.assertLess(code.index("M400"), code.index("M104 S0"))
+                self.assertLess(code.index("M400"), code.index("M84"))
+
+    def test_empty_slice_does_not_move_to_an_assumed_park_height(self):
+        code = emit_gcode([], SlicerConfig(bed_radius=30.0))
+        self.assertNotIn("G0 Z", code)
+        self.assertIn("M104 S0", code)
+        self.assertIn("M84", code)
+
     def test_gcode_contains_layers_and_types(self):
         gcode = slice_to_gcode(make_fixture("tube"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
         self.assertIn(";LAYER:0", gcode)

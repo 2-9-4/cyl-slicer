@@ -54,6 +54,24 @@ each experiment. Do not add wiping/coasting/extra prime while isolating retracti
 If all bands look equally bad, revisit filament, temperature, tube play, and
 whether the generated travels actually retract before increasing the range.
 
+For severe stringing across the entire 0–4 mm sweep at 210 C, compare two short
+fixed-setting coupons at 210 C and 200 C (if both are within the spool's range).
+Use `--retract-mm 4 --retract-speed 30 --max-layers 35`, keep the other slicing
+options, and omit all `--calibration...` arguments. This prints about 7 mm of
+radial height including the 2 mm base. Change only `--hotend-temp` between the
+two files. If lowering temperature does not help, check tube seating during
+retraction and compare with known-dry PLA before extending the distance range.
+Also verify part cooling physically: send `M106 S255` with the printer idle to
+start the normal Marlin part fan; `M107` stops it. The old v2 test files did not
+include a fan-on command. New v2 output explicitly starts with the fan off, enables
+full cooling at radial Z=2 mm (after this coupon's base), and switches it off at
+shutdown. Override with `--fan-speed 0..255` and `--fan-start-height MM`.
+If the previous print ran without cooling, repeat the original 210 C sweep with
+cooling first, changing only that variable before comparing temperatures.
+
+New v2 output ends with a 10 mm radial Z lift at 600 mm/min and waits for the
+move to finish before disabling motors. Existing files need to be re-sliced.
+
 ## Slice with the legacy slicer
 
 Run from the repository root:

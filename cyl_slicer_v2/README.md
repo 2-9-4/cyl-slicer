@@ -77,6 +77,16 @@ solid infill lines) does not count as crossing it. Use `--z-hop-min-travel`,
 
 ## Retraction calibration
 
+Part cooling uses standard Marlin `M106` commands: off at startup, full speed
+once nominal radial Z reaches 2 mm above the mandrel, and off at shutdown.
+Set `--fan-speed 0` to disable cooling, or choose PWM 0–255. Set
+`--fan-start-height` to change the starting radial height; Z-hop does not trigger
+cooling. For PLA, check that `M106 S255` actually starts the part fan on your printer.
+
+At the end of a non-empty print, v2 raises radial Z by 10 mm from the final
+position at 600 mm/min. It waits for the lift to finish (`M400`) before shutting
+down the heater, fan, and motors. Re-slice existing G-code to include this lift.
+
 Both slicers support stepped retraction distance or speed sweeps over radial
 height above the mandrel. See [the calibration guide](../calibration/README.md)
 for the OpenSCAD coupon, commands, band mapping, and scoring procedure.

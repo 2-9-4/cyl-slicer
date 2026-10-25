@@ -394,14 +394,18 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";RETRACT_MM:{config.retract_mm:g}",
         f";RETRACT_SPEED_MM_PER_S:{config.retract_speed_mm_per_min / 60:g}",
         f";HOTEND_TEMP:{config.hotend_temp}",
+        f";FAN_SPEED:{config.fan_speed}",
+        f";FAN_START_HEIGHT:{config.fan_start_height:g}",
         "M82 ; absolute extrusion mode",
         "G92 E0 Y0",
+        "M106 S0 ; part cooling off for adhesion",
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
     ]
     if config.retraction_sweep:
         out.append(config.retraction_sweep.header().rstrip())
 
+    fan_started = False
     for layer in layers:
         height = layer.radius - config.bed_radius
         overrides = config.retraction_sweep.overrides(height) if config.retraction_sweep else {}
@@ -410,6 +414,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";Z:{layer.radius:.4f}")
         if config.retraction_sweep:
             out.append(config.retraction_sweep.comment(height).rstrip())
+        if not fan_started and config.fan_speed > 0 and height >= config.fan_start_height - 1e-8:
+            out.append(f"M106 S{config.fan_speed} ; part cooling on")
+            fan_started = True
         out.append(_format_move("G0", z=_emitted_z(layer.radius, layer_config), f=layer_config.travel_mm_per_min))
         out.append("G92 E0 Y0 ; reset E/Y accumulators for layer")
         state.extrusion = 0.0
@@ -437,6 +444,18 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                         perimeter_index=perimeter_index,
                     )
                 )
+
+    if layers:
+        # Z is radial lift above the mandrel. Park relative to the last emitted
+        # radius, not at a fixed Z that could drive the nozzle into a tall print.
+        out.extend(
+            [
+                "G90 ; absolute positioning for end lift",
+                _format_move("G0", z=_emitted_z(state.radial, config) + 10.0, f=600.0)
+                + " ; end lift 10 mm radially away from print",
+                "M400 ; wait for end lift before disabling steppers",
+            ]
+        )
 
     out.extend(
         [

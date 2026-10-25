@@ -47,6 +47,8 @@ class SlicerConfig:
     z_hop_min_travel: float = 5.0
     z_hop_on_perimeter_crossing: bool = True
     hotend_temp: int = 215
+    fan_speed: int = 255
+    fan_start_height: float = 2.0
     min_path_length: float = 0.6
     max_axial_segment: float = 1.5  # Intersection curve sampling only; not a G-code block limit.
     slice_workers: int = 1
@@ -129,6 +131,10 @@ class SlicerConfig:
             raise ValueError("retract_speed_mm_per_min must be finite and positive")
         if not math.isfinite(self.retract_mm) or self.retract_mm < 0:
             raise ValueError("retract_mm must be non-negative")
+        if not isinstance(self.fan_speed, int) or not 0 <= self.fan_speed <= 255:
+            raise ValueError("fan_speed must be an integer from 0 to 255")
+        if not math.isfinite(self.fan_start_height) or self.fan_start_height < 0:
+            raise ValueError("fan_start_height must be finite and non-negative")
         if self.z_hop_height < 0:
             raise ValueError("z_hop_height must be non-negative")
         if self.z_hop_min_travel < 0:
