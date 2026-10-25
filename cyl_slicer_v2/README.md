@@ -67,6 +67,21 @@ Zero retains the previous binary fan step. This is a radial-height profile,
 fan overrides, acceleration-aware timing and actual filament temperature
 are still open validation/improvement items.
 
+## Alternating infill (opt in)
+
+The original sparse pattern crosshatches radial and axial passes **on every
+layer**. `--sparse-infill-pattern alternate` deposits radial-only paths on
+even model layers and axial-only on odd layers, reducing same-layer grid
+crossings without assuming support that is not present. User-selected
+`--infill-spacing` continues to control physical pitch.
+
+`--solid-infill-pattern alternate` rotates dense skin/infill lines between
+axial (even) and radial (odd) shells, retaining the unified bead-width/pitch
+calibration. Default `axial` preserves current output. These settings operate
+at the geometric toolpath generation stage, so periodic winding, wall order,
+retraction and firmware speed correction are unchanged. Monotonic top-skin
+ordering/seam tuning remains a separate task (#12/#13).
+
 ## Run
 
 ```bash
