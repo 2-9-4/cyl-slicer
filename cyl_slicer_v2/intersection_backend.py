@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor
 import itertools
 import math
+import warnings
 
 import numpy as np
 import shapely
@@ -668,6 +669,27 @@ def _degenerate_radius_offsets(config: SlicerConfig) -> tuple[float, ...]:
     return tuple(deduped)
 
 
+def _recovery_compatible(a, b, radius: float, error_mm: float) -> tuple[bool, float]:
+    """Require the two sides of the requested radius to agree geometrically.
+
+    The center sample is already known to be degenerate and cannot act as a
+    valid comparison geometry. Sampling on both sides bounds the uncertainty
+    of substituting a nearby radius. Topology (islands + holes) must match and
+    physical, unwrapped boundary deviation must fit the slice error budget.
+    """
+    ga, gb = a[0], b[0]
+    if ga.is_empty or gb.is_empty or bool(a[2]) != bool(b[2]):
+        return False, math.inf
+    pa, pb = _polygon_parts(ga), _polygon_parts(gb)
+    signature = lambda parts: (len(parts), sum(len(poly.interiors) for poly in parts))
+    if signature(pa) != signature(pb):
+        return False, math.inf
+    ma = shapely.transform(ga.boundary, lambda xy: xy * [radius, 1.0])
+    mb = shapely.transform(gb.boundary, lambda xy: xy * [radius, 1.0])
+    deviation = float(ma.hausdorff_distance(mb))
+    return math.isfinite(deviation) and deviation <= 2.0 * error_mm, deviation
+
+
 def sample_intersection_layer(
     mesh: trimesh.Trimesh,
     radius: float,
@@ -684,17 +706,46 @@ def sample_intersection_layer(
         if not _looks_like_degenerate_full_span(mesh, radius, geom, full, config):
             return geom, window, full
 
+    # Restrict radius substitution by both sampling precision and deposited
+    # slab thickness. A 10%-layer offset is not automatically acceptable if
+    # the geometry can vary sharply over that radial distance.
+    max_shift = min(config.intersection_curve_error_mm, 0.1 * config.layer_height)
     for delta in _degenerate_radius_offsets(config):
+        if abs(delta) > max_shift + 1e-12:
+            continue
         try:
             candidate = _sample_intersection_layer_once(mesh, radius + delta, config, z_bounds)
+            opposite = _sample_intersection_layer_once(mesh, radius - delta, config, z_bounds)
         except shapely.errors.GEOSException:
             continue
-        if not _looks_like_degenerate_full_span(mesh, radius + delta, candidate[0], candidate[2], config):
-            return candidate
+        if _looks_like_degenerate_full_span(mesh, radius + delta, candidate[0], candidate[2], config):
+            continue
+        if _looks_like_degenerate_full_span(mesh, radius - delta, opposite[0], opposite[2], config):
+            continue
+        compatible, deviation = _recovery_compatible(
+            candidate, opposite, radius, config.intersection_curve_error_mm
+        )
+        if not compatible:
+            continue
+        warnings.warn(
+            f"Intersection layer R={radius:.6f} mm recovered from R={radius + delta:.6f} mm "
+            f"(radial shift={delta:+.6g} mm, two-sided boundary deviation={deviation:.6g} mm)",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return candidate
 
+    # Never silently return a layer already flagged as geometrically false.
+    # If there is no consensus within the error budget, fail closed rather
+    # than generating filament paths for potentially incorrect topology.
     if first_error is not None:
-        raise first_error
-    return geom, window, full
+        raise RuntimeError(
+            f"Intersection layer R={radius:.6f} mm failed bounded two-sided recovery"
+        ) from first_error
+    raise RuntimeError(
+        f"Intersection layer R={radius:.6f} mm appears degenerate and no nearby "
+        f"geometry agrees within {config.intersection_curve_error_mm:g} mm"
+    )
 
 
 def _init_worker(mesh: trimesh.Trimesh, config: SlicerConfig, z_bounds: tuple[float, float]) -> None:
