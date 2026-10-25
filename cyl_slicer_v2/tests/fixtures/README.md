@@ -1,6 +1,8 @@
 # Regression geometry
 
 - `cubeandring2.stl`: the existing intersection/layer-classification fixture.
+- `cubeandring2_cutout.stl`: the ring and rotated cubes with the through cutout
+  from `cubeandring2.scad`, saved for the first-layer regression at 0.16 mm.
 - `cubeandring2_cubes.stl`: the rotated-cubes model without the ring base, saved
   from the repository version used by the intersection and support regressions.
   These layer-specific expectations must not depend on edits to the working

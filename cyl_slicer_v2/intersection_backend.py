@@ -347,6 +347,75 @@ def _loops_from_directed_edges(points: np.ndarray, edges: list[tuple[int, int]])
     return loops
 
 
+def _split_radial_crossing_faces(
+    vertices: np.ndarray, faces: np.ndarray, radius: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split faces that a vertex-only cylinder crossing test cannot resolve.
+
+    An edge can enter and leave the cylinder with both endpoints outside.
+    A triangle can even contain the whole cylinder in its XY projection.
+    Fan these faces from their nearest point to the axis, splitting boundary
+    edges at their radial minima. Every resulting edge is radially monotone,
+    so each inside/outside transition has exactly one cylinder crossing.
+    """
+    triangles = vertices[faces]
+    delta = np.roll(triangles, -1, axis=1) - triangles
+    lengths_sq = np.sum(delta[:, :, :2] ** 2, axis=2)
+    fractions = np.clip(np.divide(
+        -np.sum(triangles[:, :, :2] * delta[:, :, :2], axis=2),
+        lengths_sq, out=np.zeros_like(lengths_sq), where=lengths_sq > 0,
+    ), 0.0, 1.0)
+    nearest = triangles + fractions[:, :, None] * delta
+    nearest_sq = np.sum(nearest[:, :, :2] ** 2, axis=2)
+    vertex_sq = np.sum(triangles[:, :, :2] ** 2, axis=2)
+    outside = vertex_sq >= radius * radius
+    double_crossing = np.any(
+        outside & np.roll(outside, -1, axis=1) & (nearest_sq < radius * radius), axis=1,
+    )
+    xy = triangles[:, :, :2]
+    cross = xy[:, :, 0] * np.roll(xy[:, :, 1], -1, axis=1) - xy[:, :, 1] * np.roll(xy[:, :, 0], -1, axis=1)
+    normals = np.cross(delta[:, 0], -delta[:, 2])
+    contains_axis = (
+        (np.all(cross >= 0, axis=1) | np.all(cross <= 0, axis=1))
+        & (np.abs(normals[:, 2]) > 32 * np.finfo(float).eps * np.max(lengths_sq, axis=1))
+    )
+    split = double_crossing | (np.all(outside, axis=1) & contains_axis)
+    if not np.any(split):
+        return vertices, faces
+
+    new_vertices = list(vertices)
+    new_faces = list(faces[~split])
+    for index in np.flatnonzero(split):
+        boundary = []
+        minimum_edge = int(np.argmin(nearest_sq[index]))
+        center = None
+        for edge in range(3):
+            start = int(faces[index, edge])
+            boundary.append(start)
+            fraction = fractions[index, edge]
+            if 0.0 < fraction < 1.0:
+                minimum = len(new_vertices)
+                new_vertices.append(nearest[index, edge])
+                boundary.append(minimum)
+            else:
+                minimum = int(faces[index, edge if fraction == 0 else (edge + 1) % 3])
+            if edge == minimum_edge:
+                center = minimum
+
+        if contains_axis[index]:
+            normal = normals[index]
+            axial = float(np.dot(normal, triangles[index, 0]) / normal[2])
+            center = len(new_vertices)
+            new_vertices.append(np.array([0.0, 0.0, axial]))
+        assert center is not None
+        for start, end in zip(boundary, boundary[1:] + boundary[:1]):
+            a = new_vertices[start] - new_vertices[center]
+            b = new_vertices[end] - new_vertices[center]
+            if np.linalg.norm(np.cross(a, b)) > 1e-12:
+                new_faces.append((center, start, end))
+    return np.asarray(new_vertices), np.asarray(new_faces)
+
+
 def cylindrical_intersection_segments(
     mesh: trimesh.Trimesh,
     radius: float,
@@ -363,6 +432,7 @@ def cylindrical_intersection_segments(
         raise ValueError("max_curve_error_mm must be finite and positive")
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
+    vertices, faces = _split_radial_crossing_faces(vertices, faces, radius)
     vertex_radii = np.hypot(vertices[:, 0], vertices[:, 1])
     points: list[np.ndarray] = []
     edge_cache: dict[tuple[int, int], int] = {}

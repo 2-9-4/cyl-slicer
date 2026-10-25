@@ -174,7 +174,13 @@ def _merged_axial_intervals(geom, tol: float = 1e-8) -> list[tuple[float, float]
 
 def _raft_footprint_with_axial_gap(footprint, config: SlicerConfig):
     theta_min, z_min, theta_max, z_max = footprint.bounds
-    raft = _clean_polygonal(box(theta_min, z_min, theta_max, z_max))
+    # Bridge axial gaps for adhesion, but retain angular gaps between islands
+    # (including a cutout crossing the periodic seam). A single bounding box
+    # turns a split ring footprint into a full turn of deposited material.
+    raft = _clean_polygonal(unary_union([
+        box(poly.bounds[0], z_min, poly.bounds[2], z_max)
+        for poly in _polygon_parts(footprint)
+    ]))
     gap = config.raft_axial_gap
     if gap <= 0 or z_max - z_min <= gap:
         return raft

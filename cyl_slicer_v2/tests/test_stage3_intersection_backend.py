@@ -77,6 +77,47 @@ class IntersectionBackendTests(unittest.TestCase):
         self.assertFalse(geom.is_empty)
         self.assertFalse(full)
 
+    def test_box_intersection_below_every_vertex_radius_preserves_first_slab(self):
+        mesh = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+        mesh.apply_translation((30.0, 0.0, 0.0))
+        radius = 25.1
+        self.assertGreater(float(np.hypot(*mesh.vertices[:, :2].T).min()), radius)
+
+        geom, _, full = sample_intersection_layer(mesh, radius, SlicerConfig())
+
+        self.assertFalse(full)
+        self.assertAlmostEqual(geom.area, 20.0 * math.acos(25.0 / radius), places=7)
+        self.assertTrue(geom.covers(Point(2 * math.pi + 0.05, 0.0)))
+        self.assertFalse(geom.covers(Point(2 * math.pi + 0.15, 0.0)))
+
+    def test_triangle_containing_cylinder_without_edge_crossings_keeps_closed_loop(self):
+        mesh = trimesh.Trimesh(
+            vertices=[(-4, -3, 2), (4, -3, 2), (0, 5, 2)],
+            faces=[[0, 1, 2]], process=False,
+        )
+        points, edges = cylindrical_intersection_segments(mesh, 1.0)
+
+        self.assertGreaterEqual(len(edges), 3)
+        self.assertTrue(np.allclose(np.hypot(*points[:, :2].T), 1.0))
+        self.assertTrue(np.allclose(points[:, 2], 2.0))
+        self.assertEqual(sorted(start for start, _ in edges), sorted(end for _, end in edges))
+
+    def test_cubeandring2_cutout_survives_first_intersection_layers(self):
+        mesh = load_mesh(Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cutout.stl")
+        config = SlicerConfig(
+            layer_backend="intersection", layer_height=0.16, nozzle_width=0.42,
+            bed_radius=30.0, intersection_curve_error_mm=0.01,
+        )
+        for radius in layer_radii(mesh, config)[:3]:
+            with self.subTest(radius=radius):
+                geom, _, full = sample_intersection_layer(mesh, radius, config)
+                self.assertFalse(geom.is_empty)
+                self.assertFalse(full)
+                # The SCAD removes x>0, 0<y<10 through the whole axial extent.
+                cutout = LineString([(0.1, -9.0), (0.1, 9.0)])
+                self.assertTrue(geom.disjoint(cutout))
+                self.assertTrue(geom.covers(Point(3 * math.pi / 30.0, 0.0)))
+
     def test_intersection_slice_mesh_smoke(self):
         layers = slice_mesh(
             make_fixture("solid_box"),
@@ -150,8 +191,12 @@ class IntersectionBackendTests(unittest.TestCase):
             else np.zeros_like(expected)
         )
 
-        self.assertLess(layer.occupied.area, frame_area * 0.25)
+        # Faces with all vertices outside the cylinder still contribute real
+        # material here. Check against mesh occupancy in both directions rather
+        # than requiring an area cap that discarded those intersections.
+        self.assertLess(abs(layer.occupied.area / frame_area - float(np.mean(expected))), 0.04)
         self.assertLess(float(np.mean(~expected & actual)), 0.025)
+        self.assertLess(float(np.mean(expected & ~actual)), 0.04)
 
     def test_cubeandring2_intersection_layers_do_not_drop_or_fill_frames(self):
         mesh = load_mesh(Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cubes.stl")

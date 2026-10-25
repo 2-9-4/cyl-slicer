@@ -460,6 +460,41 @@ class ToolpathTests(unittest.TestCase):
             any(abs(path.points[-1][0] - path.points[0][0]) > 2.0 * math.pi * 0.95 for path in support_paths)
         )
 
+    def test_raft_retains_angular_cutout_in_split_footprint(self):
+        empty = GeometryCollection()
+        turn = 2 * math.pi
+        occupied = box(0, 0, 1, 4).union(box(1.4, 0, turn, 4))
+        layer = LayerSlice(0, 12, occupied, empty, empty, empty, empty,
+                           theta_window=(0, turn))
+        config = SlicerConfig(layer_height=0.5, bed_radius=10, raft_layers=2)
+        cutout = box(1.05, -1, 1.35, 5)
+
+        for raft in gap_support_slices([layer], config)[:2]:
+            self.assertTrue(raft.support.disjoint(cutout))
+            paths = build_layer_toolpaths(raft, config).paths_by_role["SUPPORT"]
+            self.assertTrue(paths)
+            for path in paths:
+                self.assertTrue(LineString(path.points).disjoint(cutout))
+
+    def test_cubeandring2_cutout_survives_raft_and_gap_support(self):
+        mesh = load_mesh(Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cutout.stl")
+        config = SlicerConfig(
+            layer_backend="intersection", layer_height=0.16, bed_radius=30,
+            nozzle_width=0.42, bead_model="rounded", wall_count=4,
+            intersection_curve_error_mm=0.01, min_path_length=0.1,
+        )
+        layers = slice_mesh(mesh, config, max_layers=3)
+        gap_layers = gap_support_slices(layers, config)
+        self.assertTrue(gap_layers)
+        cutout = box(0.02, -9, 0.2, 9)
+        for gap_layer in (gap_layers[0], gap_layers[1], gap_layers[-1]):
+            with self.subTest(layer=gap_layer.index):
+                self.assertTrue(gap_layer.support.disjoint(cutout))
+                paths = build_layer_toolpaths(gap_layer, config).paths_by_role["SUPPORT"]
+                self.assertTrue(paths)
+                for path in paths:
+                    self.assertTrue(LineString(path.points).disjoint(cutout))
+
     def test_gap_support_can_be_disabled(self):
         config = SlicerConfig(
             theta_step_deg=15,
