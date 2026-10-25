@@ -70,6 +70,11 @@ of 1e-8 mm; corners, reversals, and rotary winding are preserved. The internal
 `max_axial_segment` setting controls intersection curve sampling only, rather than
 limiting G-code block length.
 
+Sparse radial infill can print in either rotary direction. Adjacent passes start
+at the nearer endpoint, so they alternate positive and negative Y with a short
+axial travel between rows. Reversed moves retain their intended angular span,
+including across the periodic seam.
+
 Z-hop defaults to 0.4 mm for travels of at least 5 mm or shorter travels crossing
 a perimeter. Traveling along a perimeter (such as the 0.4 mm step between adjacent
 solid infill lines) does not count as crossing it. Use `--z-hop-min-travel`,

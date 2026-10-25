@@ -4,6 +4,7 @@ from pathlib import Path
 import math
 import re
 import unittest
+from unittest.mock import patch
 
 from shapely.geometry import LineString
 from shapely.ops import unary_union
@@ -278,7 +279,7 @@ class GcodeTests(unittest.TestCase):
             ],
         )
 
-    def test_model_extrusion_segments_do_not_move_backward_in_y(self):
+    def test_forward_only_roles_do_not_move_backward_in_y(self):
         gcode = slice_to_gcode(make_fixture("helix_like_ribbon"), SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0), max_layers=2)
         segments = parse_extrusion_segments(gcode)
         self.assertTrue(segments)
@@ -292,6 +293,7 @@ class GcodeTests(unittest.TestCase):
                     "INTERNAL_PERIMETER",
                     "SUPPORT",
                     "SUPPORT_INTERFACE",
+                    "INFILL_RADIAL",
                 }
             )
         )
@@ -314,6 +316,61 @@ class GcodeTests(unittest.TestCase):
         self.assertEqual(len(segments), 2)
         self.assertLess(segments[0][2], segments[0][4])
         self.assertGreater(segments[1][2], segments[1][4])
+
+    def test_radial_infill_snakes_with_short_travels_and_correct_extrusion(self):
+        paths = [Toolpath("INFILL_RADIAL", 30.0, [(0.0, x), (1.0, x)]) for x in (0.0, 0.4, 0.8, 1.2)]
+        layer = LayerToolpaths(0, 30.0, {"INFILL_RADIAL": paths})
+        # Also exercise the fallback used when there are too many paths to sort.
+        for limit in (1024, 0):
+            with self.subTest(ordering_limit=limit), patch("cyl_slicer_v2.gcode.PATH_ORDER_OPTIMIZE_LIMIT", limit):
+                code = emit_gcode([layer], SlicerConfig(axial_min=0.0, extrusion_per_mm=0.1))
+                segments = parse_extrusion_segments(code)
+                self.assertEqual(len(segments), 4)
+                for index, (_, _, x0, y0, x1, y1) in enumerate(segments):
+                    self.assertAlmostEqual(x0, index * 0.4)
+                    self.assertEqual(x0, x1)
+                    self.assertAlmostEqual(y1 - y0, math.degrees(1.0) * (-1) ** index, places=3)
+                    if index:
+                        self.assertAlmostEqual(y0, segments[index - 1][5])
+                self.assertNotIn("; z hop", code)
+                self.assertEqual(code.count("; retract"), 1)
+                self.assertNotIn("; unretract", code)
+                moves = [line for line in code.splitlines() if line.startswith("G1 X")]
+                self.assertAlmostEqual(float(re.search(r"\bE([0-9.]+)", moves[-1])[1]), 12.0)
+
+    def test_reversed_radial_infill_preserves_seam_crossings_and_winding(self):
+        for start, end in ((math.radians(350), math.radians(370)), (0.0, 4.5)):
+            with self.subTest(start=start, end=end):
+                layer = LayerToolpaths(0, 30.0, {"INFILL_RADIAL": [
+                    Toolpath("INFILL_RADIAL", 30.0, [(start, 0.0), (end, 0.0)]),
+                    Toolpath("INFILL_RADIAL", 30.0, [(start, 0.4), (end, 0.4)]),
+                ]})
+                code = emit_gcode([layer], SlicerConfig(extrusion_per_mm=0.1, retract_mm=0.0))
+                segments = parse_extrusion_segments(code)
+                self.assertEqual(len(segments), 2)
+                self.assertAlmostEqual(segments[0][5] - segments[0][3], math.degrees(end - start), places=3)
+                self.assertAlmostEqual(segments[1][5] - segments[1][3], -math.degrees(end - start), places=3)
+                deposited = float(re.findall(r"\bE([0-9.]+)", code)[-1])
+                self.assertAlmostEqual(deposited, 2 * (end - start) * 30 * 0.1, places=5)
+
+        reverse_turn = Toolpath("INFILL_RADIAL", 30.0, [(2 * math.pi, 0.0), (0.0, 0.0)])
+        code = emit_gcode([LayerToolpaths(0, 30.0, {"INFILL_RADIAL": [reverse_turn]})],
+                          SlicerConfig(retract_mm=0.0, extrusion_per_mm=0.1))
+        segment, = parse_extrusion_segments(code)
+        self.assertAlmostEqual(segment[5] - segment[3], -360.0)
+        self.assertAlmostEqual(float(re.findall(r"\bE([0-9.]+)", code)[-1]), 6 * math.pi, places=5)
+
+    def test_retraction_coupon_layer_three_radial_infill_snakes(self):
+        root = Path(__file__).resolve().parents[2]
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.2, bed_radius=30.0, wall_count=3)
+        # Leave enough later shells that layer 3 is not capped by max_layers.
+        code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=7)
+        segments = [s for s in parse_extrusion_segments(code) if s[0] == 3 and s[1] == "INFILL_RADIAL"]
+        self.assertEqual(len(segments), 17)
+        for previous, current in zip(segments, segments[1:]):
+            self.assertLess((previous[5] - previous[3]) * (current[5] - current[3]), 0.0)
+            self.assertAlmostEqual(current[3], previous[5])
+            self.assertAlmostEqual(abs(current[2] - previous[4]), 2.0)
 
     def test_paths_within_role_are_ordered_from_current_position(self):
         config = SlicerConfig(axial_min=0.0, max_axial_segment=20.0)

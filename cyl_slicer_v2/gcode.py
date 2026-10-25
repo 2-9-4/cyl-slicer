@@ -16,7 +16,7 @@ from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_R
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
-BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE"})
+BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL"})
 
 
 @dataclass(frozen=True)
@@ -200,8 +200,11 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
         return False
     if path.closed or len(path.points) < 2:
         return False
-    theta0 = path.points[0][0]
-    return all(abs(point[0] - theta0) <= tol for point in path.points[1:])
+    theta0, axial0 = path.points[0]
+    return all(abs(point[0] - theta0) <= tol for point in path.points[1:]) or (
+        path.role == "INFILL_RADIAL"
+        and all(abs(point[1] - axial0) <= tol for point in path.points[1:])
+    )
 
 
 def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Toolpath:
@@ -275,6 +278,7 @@ def _should_retract_after_path(
         return True
 
     end_state = _shadow_after_path(path, state)
+    next_path = _orient_path_for_current_position(next_path, end_state)
     travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
     return travel_distance >= config.nozzle_width * 2.0
 
