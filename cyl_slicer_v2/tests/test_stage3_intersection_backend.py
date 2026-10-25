@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 
 import numpy as np
-from shapely.geometry import LineString, Point
+from shapely.geometry import GeometryCollection, LineString, Point
 import trimesh
 
 from cyl_slicer_v2.config import SlicerConfig
@@ -13,9 +13,10 @@ from cyl_slicer_v2.coordinates import cylindrical_to_cartesian
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.intersection_backend import _polygon_parts, cylindrical_intersection_segments, sample_intersection_layer
-from cyl_slicer_v2.layers import slice_mesh
+from cyl_slicer_v2.layers import layer_radii, slice_mesh
 from cyl_slicer_v2.mesh_io import axial_bounds, load_mesh, radial_bounds
-from cyl_slicer_v2.toolpaths import build_toolpaths
+from cyl_slicer_v2.models import LayerSlice
+from cyl_slicer_v2.toolpaths import build_layer_toolpaths
 
 
 class IntersectionBackendTests(unittest.TestCase):
@@ -102,14 +103,30 @@ class IntersectionBackendTests(unittest.TestCase):
     def test_cubeandring_intersection_layers_64_to_66_no_full_turn_perimeters(self):
         root = Path(__file__).resolve().parents[2]
         config = SlicerConfig(layer_backend="intersection", slice_workers=1)
-        layers = slice_mesh(load_mesh(root / "cubeandring.stl"), config, max_layers=67)
-        gcode = emit_gcode(build_toolpaths(layers, config), config)
-        bad = []
-        for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
-            if layer in {64, 65, 66} and role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}:
-                if abs(y1 - y0) >= 300.0:
-                    bad.append((layer, role, x0, y0, x1, y1))
-        self.assertEqual(bad, [])
+        mesh = load_mesh(root / "cubeandring.stl")
+        radii = layer_radii(mesh, config)
+        paths = []
+        # Keep the original regression contours and radii, but sample only the
+        # three relevant layers. Surface classification, support and gap rafts
+        # are unnecessary for checking perimeter winding.
+        for index in (64, 65, 66):
+            occupied, window, full = sample_intersection_layer(mesh, radii[index], config)
+            empty = GeometryCollection()
+            layer = LayerSlice(
+                index=index, radius=radii[index], occupied=occupied,
+                top_surfaces=empty, bottom_surfaces=empty, needs_support=empty, support=empty,
+                theta_window=window, is_full_wrap=full,
+            )
+            paths.append(build_layer_toolpaths(layer, config))
+
+        segments = parse_extrusion_segments(emit_gcode(paths, config))
+        for index in (64, 65, 66):
+            for role in ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"):
+                with self.subTest(layer=index, role=role):
+                    perimeters = [s for s in segments if s[0] == index and s[1] == role]
+                    self.assertTrue(perimeters, "Expected perimeter extrusion in the target layer")
+                    for segment in perimeters:
+                        self.assertLess(abs(segment[5] - segment[3]), 300.0, segment)
 
     def test_cubeandring_intersection_layer_58_at_fine_height_is_not_fully_infilled(self):
         root = Path(__file__).resolve().parents[2]

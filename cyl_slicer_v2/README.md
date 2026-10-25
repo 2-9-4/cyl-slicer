@@ -149,6 +149,13 @@ feedrate for E-only retraction moves. `--hotend-temp` sets a fixed temperature.
 ```bash
 .venv/bin/python -m unittest discover cyl_slicer_v2/tests
 ```
+or
+```bash
+# Runs tests in parallel using all CPU cores, terminating any individual test that exceeds 10 seconds
+PYTHONPATH=. pytest -n auto --timeout=30
+```
+
+
 
 The tests are staged to match the implementation pipeline: coordinates/config,
 fixtures, occupancy sampling, periodic geometry, layer classification, toolpath

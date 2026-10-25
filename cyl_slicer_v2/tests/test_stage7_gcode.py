@@ -6,7 +6,7 @@ import re
 import unittest
 from unittest.mock import patch
 
-from shapely.geometry import LineString, box
+from shapely.geometry import GeometryCollection, LineString, box
 from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
@@ -14,11 +14,12 @@ from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.calibration import RetractionSweep
 from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.gcode import _orient_path_for_current_position, _ordered_layer_paths, emit_gcode, parse_extrusion_segments
-from cyl_slicer_v2.layers import slice_mesh
+from cyl_slicer_v2.intersection_backend import sample_intersection_layer
+from cyl_slicer_v2.layers import layer_radii, slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh
-from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
+from cyl_slicer_v2.models import GcodeState, LayerSlice, LayerToolpaths, Toolpath
 from cyl_slicer_v2.pipeline import slice_to_gcode
-from cyl_slicer_v2.toolpaths import build_toolpaths
+from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths
 
 
 class GcodeTests(unittest.TestCase):
@@ -661,12 +662,27 @@ class GcodeTests(unittest.TestCase):
             toolpath_workers=1,
             intersection_refine_factor=0,
         )
-        gcode = slice_to_gcode(load_mesh(mesh_path), config, max_layers=18)
+        mesh = load_mesh(mesh_path)
+        radius = layer_radii(mesh, config)[17]
+        occupied, window, full = sample_intersection_layer(mesh, radius, config)
+        # Only layer 17's contour matters here; avoid slicing earlier layers or
+        # generating solid infill, support and gap rafts for the whole model.
+        empty = GeometryCollection()
+        layer = LayerSlice(
+            index=17, radius=radius, occupied=occupied,
+            top_surfaces=empty, bottom_surfaces=empty, needs_support=empty, support=empty,
+            theta_window=window, is_full_wrap=full,
+        )
+        self.assertEqual(window, (0.0, 2.0 * math.pi))
+        for theta in window:
+            seam = LineString([(theta, occupied.bounds[1]), (theta, occupied.bounds[3])])
+            self.assertGreater(occupied.intersection(seam).length, 0.0)
+        gcode = emit_gcode([build_layer_toolpaths(layer, config)], config)
+        perimeters = [s for s in parse_extrusion_segments(gcode) if s[0] == 17 and s[1] == "EXTERNAL_PERIMETER"]
+        self.assertTrue(perimeters, "Expected external perimeter extrusion in the target layer")
 
         seam_segments = []
-        for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
-            if layer != 17 or role != "EXTERNAL_PERIMETER":
-                continue
+        for _, _, x0, y0, x1, y1 in perimeters:
             a = math.radians(y0 % 360.0)
             b = math.radians(y1 % 360.0)
             if min(a, 2.0 * math.pi - a) < 1e-4 and min(b, 2.0 * math.pi - b) < 1e-4:
