@@ -49,6 +49,22 @@ class IntersectionRecoveryGuardTests(unittest.TestCase):
         self.assertIn("boundary deviation=", str(caught[0].message))
         self.assertIn("two-sided verified", str(caught[0].message))
 
+    def test_false_positive_full_span_detector_keeps_stable_original(self):
+        # Both adjacent surfaces agree with the original even though an
+        # independently sampled occupancy classifier flags it as degenerate.
+        with patch("cyl_slicer_v2.intersection_backend._sample_intersection_layer_once",
+                   return_value=self.center), patch(
+            "cyl_slicer_v2.intersection_backend._looks_like_degenerate_full_span",
+            return_value=True
+        ), patch("cyl_slicer_v2.intersection_backend._degenerate_radius_offsets",
+                 return_value=(0.001, -0.001)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                geom, _, full = sample_intersection_layer(object(), 30, self.config)
+        self.assertTrue(geom.equals(self.center[0]))
+        self.assertTrue(full)
+        self.assertTrue(any("kept original geometry" in str(w.message) for w in caught))
+
     def test_topology_change_between_sides_is_rejected(self):
         hole = self.positive[0].difference(box(.2, .2, .5, .5))
         with self.assertRaisesRegex(RuntimeError, "degenerate"):
