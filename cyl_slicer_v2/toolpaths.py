@@ -673,13 +673,22 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             if not infill_source.is_valid:
                 infill_source = shapely.make_valid(infill_source)
             infill_source = infill_source.buffer(0)
+        # Crosshatching two orthogonal families at spacing S extrudes about
+        # twice the line length of one family at S. Halve the one-family
+        # spacing when alternating so the deposited volume per *layer*
+        # remains comparable, apart from finite polygon clipping effects.
+        sparse_spacing = (
+            config.infill_spacing * 0.5
+            if config.sparse_infill_pattern == "alternate"
+            else config.infill_spacing
+        )
         if config.sparse_infill_pattern == "both" or layer.index % 2 == 0:
             paths["INFILL_RADIAL"].extend(
-                line_grid_paths(infill_source, "INFILL_RADIAL", radius, config.infill_spacing, config, direction="radial")
+                line_grid_paths(infill_source, "INFILL_RADIAL", radius, sparse_spacing, config, direction="radial")
             )
         if config.sparse_infill_pattern == "both" or layer.index % 2 != 0:
             paths["INFILL_AXIAL"].extend(
-                line_grid_paths(infill_source, "INFILL_AXIAL", radius, config.infill_spacing, config, direction="axial")
+                line_grid_paths(infill_source, "INFILL_AXIAL", radius, sparse_spacing, config, direction="axial")
             )
 
     support = _clean_polygonal(layer.support)

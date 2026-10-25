@@ -70,10 +70,18 @@ are still open validation/improvement items.
 ## Alternating infill (opt in)
 
 The original sparse pattern crosshatches radial and axial passes **on every
-layer**. `--sparse-infill-pattern alternate` deposits radial-only paths on
-even model layers and axial-only on odd layers, reducing same-layer grid
-crossings without assuming support that is not present. User-selected
-`--infill-spacing` continues to control physical pitch.
+layer** at the specified `--infill-spacing S`. In alternating mode the
+slicer prints radial-only passes on even model layers and axial-only passes on
+odd layers at *S/2*. This keeps approximate deposited line length (and thus
+material volume) per layer comparable to the old two-direction crosshatch,
+instead of silently halving infill density. Clipped-edge effects can cause
+minor differences. Because the same physical material volume is concentrated
+into one direction, alternation also avoids same-layer grid intersections.
+
+A check rejects alternating sparse infill when S/2 would be smaller than the
+calibrated dense-bead pitch; use solid infill instead of crossing the strands
+at a physically overfull spacing. The configured S is the **crosshatch
+equivalent spacing**, not the actual single-family pitch in alternate mode.
 
 `--solid-infill-pattern alternate` rotates dense skin/infill lines between
 axial (even) and radial (odd) shells, retaining the unified bead-width/pitch

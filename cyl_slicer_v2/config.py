@@ -164,6 +164,9 @@ class SlicerConfig:
             raise ValueError("infill_spacing must be positive")
         if self.sparse_infill_pattern not in {"both", "alternate"}:
             raise ValueError("sparse_infill_pattern must be 'both' or 'alternate'")
+        if (self.sparse_infill_pattern == "alternate"
+                and self.infill_spacing * 0.5 < self.dense_line_spacing - 1e-9):
+            raise ValueError("alternate sparse infill requires infill_spacing >= 2 * dense_line_spacing")
         if self.solid_infill_pattern not in {"axial", "alternate"}:
             raise ValueError("solid_infill_pattern must be 'axial' or 'alternate'")
         if not isinstance(self.monotonic_top_skin, bool):
