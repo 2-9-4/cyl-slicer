@@ -504,7 +504,9 @@ def emit_toolpath(
     lines.extend(_ensure_rotary_range(t0, state))
     z_hop = _should_z_hop_to_path(path, state, config, perimeter_index)
     if z_hop:
-        state.radial = path.radius + config.z_hop_height
+        # state.radial tracks physical nozzle radius (outer face of the slab),
+        # while path.radius is the geometric slice sample/metric radius.
+        state.radial += config.z_hop_height
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z hop")
     # XY travel uses Marlin's mixed-unit planner metric too. Radial hop
     # motions are separate Z-only commands and retain their native mm/min.
@@ -515,7 +517,7 @@ def emit_toolpath(
     state.theta_accum = t0
     state.axial = x0
     if z_hop:
-        state.radial = path.radius
+        state.radial -= config.z_hop_height
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z unhop")
     lines.extend(_unretract(state, config))
 
@@ -578,19 +580,28 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
 
     fan_started = False
     for layer in layers:
-        height = layer.radius - config.bed_radius
+        nozzle_radius = layer.deposition_radius(config.layer_height)
+        if not math.isfinite(nozzle_radius) or nozzle_radius < config.bed_radius:
+            raise ValueError("Nozzle radius must be finite and at/above bed radius")
+        deposited_thickness = (layer.deposited_thickness if layer.deposited_thickness is not None
+                               else config.layer_height)
+        if not math.isfinite(deposited_thickness) or deposited_thickness <= 0:
+            raise ValueError("Deposited layer thickness must be finite and positive")
+        height = nozzle_radius - config.bed_radius
         overrides = config.retraction_sweep.overrides(height) if config.retraction_sweep else {}
         layer_config = replace(config, **overrides) if overrides else config
         out.append(f";LAYER:{layer.layer_index}")
-        out.append(f";Z:{layer.radius:.4f}")
+        out.append(f";SAMPLE_RADIUS:{layer.radius:.4f}")
+        out.append(f";DEPOSITED_THICKNESS:{deposited_thickness:.4f}")
+        out.append(f";Z:{nozzle_radius:.4f}")
         if config.retraction_sweep:
             out.append(config.retraction_sweep.comment(height).rstrip())
         if not fan_started and config.fan_speed > 0 and height >= config.fan_start_height - 1e-8:
             out.append(f"M106 S{config.fan_speed} ; part cooling on")
             fan_started = True
-        out.append(_format_move("G0", z=_emitted_z(layer.radius, layer_config), f=layer_config.travel_mm_per_min))
+        out.append(_format_move("G0", z=_emitted_z(nozzle_radius, layer_config), f=layer_config.travel_mm_per_min))
         out.extend(_reset_rotary_axis(state, reset_extrusion=True, comment="reset E/Y accumulators for layer"))
-        state.radial = layer.radius
+        state.radial = nozzle_radius
         perimeter_index = (
             _layer_perimeter_index(layer)
             if layer_config.z_hop_height > 0 and layer_config.z_hop_on_perimeter_crossing
