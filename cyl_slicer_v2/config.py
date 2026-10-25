@@ -15,6 +15,9 @@ class SlicerConfig:
     top_layers: int = 3
     bottom_layers: int = 3
     infill_spacing: float = 2.0
+    # Fraction of line width that solid/sparse infill may enter the inner
+    # perimeter bead; cross-section still uses the rectangular w*h model.
+    infill_wall_overlap_fraction: float = 0.15
     support_spacing: float = 1.5
     support_min_island_area: float = 0.05
     support_min_region_area: float = 1.0
@@ -87,6 +90,8 @@ class SlicerConfig:
             raise ValueError("bottom_layers must be at least 1")
         if self.infill_spacing <= 0:
             raise ValueError("infill_spacing must be positive")
+        if not math.isfinite(self.infill_wall_overlap_fraction) or not 0 <= self.infill_wall_overlap_fraction <= 0.5:
+            raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
         if self.support_spacing <= 0:
             raise ValueError("support_spacing must be positive")
         if self.support_min_island_area < 0:

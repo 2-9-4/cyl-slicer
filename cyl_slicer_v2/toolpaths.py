@@ -600,33 +600,41 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     if not model.is_empty:
         periodic = layer.is_full_wrap
         theta_window = layer.theta_window
-        paths["EXTERNAL_PERIMETER"].extend(perimeter_paths(model, "EXTERNAL_PERIMETER", radius, config, theta_window))
-        last_inset = model
-        for wall in range(1, config.wall_count):
+        # Contours are occupied MATERIAL boundaries, not bead CENTERLINES.
+        # First wall centers sit half a bead inside both outer edges and holes;
+        # subsequent wall centers are spaced by one full nominal bead width.
+        # Keep rectangular (width * layer height) flow and width spacing
+        # together; rounded-bead conversions must update both (#7).
+        for wall in range(config.wall_count):
             inset = inset_geometry(
                 model,
                 radius,
-                config.nozzle_width * wall,
+                config.nozzle_width * (wall + 0.5),
                 periodic=periodic,
                 theta_window=theta_window,
             )
             if inset.is_empty:
                 break
-            paths["INTERNAL_PERIMETER"].extend(perimeter_paths(inset, "INTERNAL_PERIMETER", radius, config, theta_window))
-            last_inset = inset
+            role = "EXTERNAL_PERIMETER" if wall == 0 else "INTERNAL_PERIMETER"
+            paths[role].extend(perimeter_paths(inset, role, radius, config, theta_window))
 
-        solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])
-        solid_source = solid_source.intersection(last_inset) if not solid_source.is_empty else solid_source
-        paths["SOLID_INFILL"].extend(
-            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.nozzle_width, config, direction="axial")
-        )
-
+        # The innermost wall covers through (wall_count * width) from the
+        # original outline. Infill is clipped to that edge, with only the
+        # explicitly permitted overlap extending into that wall's bead.
+        # The same rule for solid and sparse avoids retracing wall centerlines
+        # with skins, or leaving a sparse-infill anchoring gap.
+        overlap = config.nozzle_width * config.infill_wall_overlap_fraction
         infill_source = inset_geometry(
-            last_inset,
+            model,
             radius,
-            config.nozzle_width * 0.5,
+            config.nozzle_width * config.wall_count - overlap,
             periodic=periodic,
             theta_window=theta_window,
+        )
+        solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])
+        solid_source = solid_source.intersection(infill_source) if not solid_source.is_empty else solid_source
+        paths["SOLID_INFILL"].extend(
+            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.nozzle_width, config, direction="axial")
         )
         if not solid_source.is_empty and not infill_source.is_empty:
             infill_source = infill_source.difference(solid_source)
