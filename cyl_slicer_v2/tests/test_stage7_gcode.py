@@ -324,7 +324,7 @@ class GcodeTests(unittest.TestCase):
         # material instead: correct inward offsets necessarily change volume.
         extrusion_segments = parse_extrusion_segments(code)
         total_surface_length = sum(
-            math.hypot(x1 - x0, config.bed_radius * 0 + 30.1 * math.radians(y1 - y0))
+            math.hypot(x1 - x0, (config.bed_radius + config.layer_height * 0.5) * math.radians(y1 - y0))
             for _, _, x0, y0, x1, y1 in extrusion_segments
         )
         last_print_e = float(re.search(r"\bE([0-9.]+)", moves[-1])[1])
