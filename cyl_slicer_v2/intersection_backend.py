@@ -709,7 +709,9 @@ def sample_intersection_layer(
     # Restrict radius substitution by both sampling precision and deposited
     # slab thickness. A 10%-layer offset is not automatically acceptable if
     # the geometry can vary sharply over that radial distance.
-    max_shift = min(config.intersection_curve_error_mm, 0.1 * config.layer_height)
+    max_shift = 0.1 * config.layer_height
+    if config.intersection_strict_recovery:
+        max_shift = min(max_shift, config.intersection_curve_error_mm)
     for delta in _degenerate_radius_offsets(config):
         if abs(delta) > max_shift + 1e-12:
             continue
@@ -739,6 +741,8 @@ def sample_intersection_layer(
             continue
         status = ("two-sided verified" if compatible
                   else "ONE-SIDED, topology or dimensional disagreement unverified")
+        if abs(delta) > config.intersection_curve_error_mm:
+            status += "; SHIFT EXCEEDS CURVE-ERROR BUDGET"
         warnings.warn(
             f"Intersection layer R={radius:.6f} mm recovered from R={radius + delta:.6f} mm "
             f"(radial shift={delta:+.6g} mm, {status}, "
