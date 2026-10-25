@@ -55,6 +55,7 @@ class SlicerConfig:
     min_path_length: float = 0.6
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
     intersection_curve_error_mm: float = 0.025  # Maximum physical unwrapped chord deviation.
+    intersection_strict_recovery: bool = False  # Fail if shifted samples disagree.
     slice_workers: int = 1
     layer_backend: str = "raster"
     intersection_refine_factor: int = 0
@@ -157,6 +158,8 @@ class SlicerConfig:
             raise ValueError("toolpath_workers must be at least 1")
         if self.layer_backend not in {"raster", "intersection"}:
             raise ValueError("layer_backend must be 'raster' or 'intersection'")
+        if not isinstance(self.intersection_strict_recovery, bool):
+            raise ValueError("intersection_strict_recovery must be a bool")
         if self.intersection_refine_factor < 0:
             raise ValueError("intersection_refine_factor must be non-negative")
         if self.max_radius is not None and self.max_radius <= 0:
