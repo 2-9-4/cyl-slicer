@@ -11,15 +11,84 @@ from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
-from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
+from cyl_slicer_v2.calibration import RetractionSweep
+from cyl_slicer_v2.coordinates import cylindrical_distance
+from cyl_slicer_v2.gcode import _orient_path_for_current_position, _ordered_layer_paths, emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh
-from cyl_slicer_v2.models import LayerToolpaths, Toolpath
+from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 from cyl_slicer_v2.pipeline import slice_to_gcode
 from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
 class GcodeTests(unittest.TestCase):
+    def test_closed_perimeter_entry_projects_onto_nearest_edge_and_preserves_length(self):
+        path = Toolpath("INTERNAL_PERIMETER", 10.0,
+                        [(0.04, 0.4), (0.2, 0.4), (0.2, 9.6), (0.04, 9.6), (0.04, 0.4)])
+        oriented = _orient_path_for_current_position(path, GcodeState(theta_accum=0.25, axial=5.0))
+        self.assertEqual(oriented.points[0], oriented.points[-1])
+        self.assertAlmostEqual(oriented.points[0][0], 0.2)
+        self.assertAlmostEqual(oriented.points[0][1], 5.0)
+        length = lambda p: sum(cylindrical_distance(a, b, p.radius) for a, b in zip(p.points, p.points[1:]))
+        self.assertAlmostEqual(length(oriented), length(path), places=10)
+        signed_area = lambda p: sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(p.points, p.points[1:]))
+        self.assertAlmostEqual(signed_area(oriented), signed_area(path), places=10)
+        self.assertEqual(path.points[0], (0.04, 0.4), "Do not mutate input geometry")
+
+    def test_adjacent_closed_perimeters_do_not_retract_for_distant_original_starts(self):
+        layer = LayerToolpaths(0, 10.0, {
+            "EXTERNAL_PERIMETER": [Toolpath("EXTERNAL_PERIMETER", 10.0,
+                [(0, 0), (0.24, 0), (0.24, 10), (0, 10), (0, 0)])],
+            "INTERNAL_PERIMETER": [Toolpath("INTERNAL_PERIMETER", 10.0,
+                [(0.2, 9.6), (0.04, 9.6), (0.04, 0.4), (0.2, 0.4), (0.2, 9.6)])],
+        }, travel_region=box(0, 0, 0.24, 10))
+        code = emit_gcode([layer], SlicerConfig())
+        self.assertEqual(code.count("; retract"), 1)
+        self.assertNotIn("; unretract", code)
+
+    def test_next_island_is_selected_from_current_position(self):
+        a = Toolpath("EXTERNAL_PERIMETER", 30, [(0, 0), (0.2, 0)])
+        b = Toolpath("EXTERNAL_PERIMETER", 30, [(1, 20), (1.2, 20)])
+        layer = LayerToolpaths(0, 30, {"EXTERNAL_PERIMETER": [a, b]}, island_paths=[
+            {"EXTERNAL_PERIMETER": [a]}, {"EXTERNAL_PERIMETER": [b]},
+        ])
+        ordered = _ordered_layer_paths(layer, GcodeState(theta_accum=1, axial=20))
+        self.assertIs(ordered[0], b)
+        self.assertIs(ordered[1], a)
+
+    def test_coupon_finishes_each_island_and_retracts_at_calibration_boundary(self):
+        root = Path(__file__).resolve().parents[2]
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.2, bed_radius=30,
+                              wall_count=3, feed_mm_per_min=4500, travel_mm_per_min=9000, hotend_temp=195,
+                              retraction_sweep=RetractionSweep("retract-mm", (0, 1, 2, 3, 4)))
+        code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=30)
+        shell24 = code.split(";LAYER:24\n")[1].split(";LAYER:25\n")[0]
+        shell25 = code.split(";LAYER:25\n")[1].split(";LAYER:26\n")[0]
+        self.assertIn("value=0 unit=mm height=4.9000", shell24)
+        self.assertNotIn("; retract", shell24)
+        self.assertIn("value=1 unit=mm height=5.1000", shell25)
+        self.assertEqual(shell25.count("; retract"), 4, "Three island transfers and the layer end")
+        islands = shell25.split(";TYPE:EXTERNAL_PERIMETER")[1:]
+        self.assertEqual(len(islands), 4)
+        for island in islands:
+            self.assertEqual(island.count(";TYPE:INTERNAL_PERIMETER"), 2)
+            self.assertIn(";TYPE:INFILL_", island)
+            self.assertEqual(island.count("; retract"), 1)
+        for line in shell25.splitlines():
+            if line.startswith("G0 "):
+                self.assertIn("F9000.0", line)
+            elif line.startswith("G1 X"):
+                self.assertIn("F4500.0", line)
+
+    def test_short_gap_between_islands_still_retracts(self):
+        layer = LayerToolpaths(0, 30, {"INFILL_RADIAL": [
+            Toolpath("INFILL_RADIAL", 30, [(0, 0), (1, 0)]),
+            Toolpath("INFILL_RADIAL", 30, [(0, 0.4), (1, 0.4)]),
+        ]}, travel_region=box(0, -0.05, 1, 0.05).union(box(0, 0.35, 1, 0.45)))
+        code = emit_gcode([layer], SlicerConfig())
+        self.assertEqual(code.count("; retract"), 2)
+        self.assertEqual(code.count("; unretract"), 1)
+
     def test_part_cooling_starts_at_nominal_radial_height_once(self):
         layers = [LayerToolpaths(i-2, radius) for i, radius in enumerate(
             (30.0, 31.9, 32.0, 32.2))]
@@ -243,7 +312,9 @@ class GcodeTests(unittest.TestCase):
         code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=1)
         infill = code.split(";TYPE:SOLID_INFILL")[1:]
         self.assertEqual(len(infill), 76)
-        self.assertTrue(all("; z hop" not in path for path in infill))
+        # A nearest-point perimeter seam may leave a long travel to the first
+        # skin pass. Transfers between subsequent adjacent passes must not hop.
+        self.assertTrue(all("; z hop" not in path for path in infill[1:]))
         self.assertTrue(all(len(parse_extrusion_segments(";TYPE:SOLID_INFILL\n" + path)) == 1 for path in infill))
         moves = [line for line in code.splitlines() if line.startswith("G1 X")]
         self.assertAlmostEqual(float(re.search(r"\bE([0-9.]+)", moves[-1])[1]), 94.77276, places=5)

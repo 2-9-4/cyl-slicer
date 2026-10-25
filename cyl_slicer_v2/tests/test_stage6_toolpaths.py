@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import unittest
+from collections import Counter
 
 import shapely
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon, box
@@ -18,6 +19,48 @@ from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_
 
 
 class ToolpathTests(unittest.TestCase):
+    def test_each_disconnected_model_island_has_its_own_walls_and_fill(self):
+        occupied = unary_union([box(t, x, t + 0.3, x + 6) for t in (0.2, 1.2) for x in (0, 14)])
+        empty = GeometryCollection()
+        layer = LayerSlice(0, 30.0, occupied, occupied, empty, empty, empty, theta_window=(0, 2 * math.pi))
+        result = build_layer_toolpaths(layer, SlicerConfig(wall_count=3))
+
+        self.assertEqual(len(result.island_paths), 4)
+        for island in result.island_paths:
+            self.assertEqual(len(island["EXTERNAL_PERIMETER"]), 1)
+            self.assertEqual(len(island["INTERNAL_PERIMETER"]), 2)
+            self.assertTrue(island["SOLID_INFILL"])
+        self.assertEqual(Counter(id(p) for items in result.paths_by_role.values() for p in items),
+                         Counter(id(p) for group in result.island_paths for items in group.values() for p in items))
+
+    def test_model_island_split_at_periodic_seam_is_grouped_once(self):
+        turn = 2 * math.pi
+        for cut in (0.0, 0.1):
+            with self.subTest(cut=cut):
+                occupied = unary_union([box(turn - 0.2 + cut, 0, turn + cut, 6),
+                                        box(cut, 0, cut + 0.2, 6), box(2, 0, 2.3, 6)])
+                empty = GeometryCollection()
+                layer = LayerSlice(0, 30.0, occupied, occupied, empty, empty, empty, theta_window=(cut, turn + cut))
+                result = build_layer_toolpaths(layer, SlicerConfig(wall_count=2))
+
+                self.assertEqual(len(result.island_paths), 2)
+                self.assertEqual(Counter(id(p) for items in result.paths_by_role.values() for p in items),
+                                 Counter(id(p) for group in result.island_paths for items in group.values() for p in items))
+                seam_group = next(group for group in result.island_paths
+                                  if any(p.points[0][0] > 6 for p in group.get("EXTERNAL_PERIMETER", [])))
+                self.assertTrue(any(p.points[0][0] < cut + 0.3 for p in seam_group["EXTERNAL_PERIMETER"]))
+
+    def test_support_bridge_does_not_merge_separate_model_islands(self):
+        occupied = box(0, 0, 0.2, 6).union(box(0.5, 0, 0.7, 6))
+        support = box(0.2, 2, 0.5, 4)
+        empty = GeometryCollection()
+        layer = LayerSlice(0, 30.0, occupied, occupied, empty, empty, support)
+        result = build_layer_toolpaths(layer, SlicerConfig(wall_count=2))
+
+        self.assertEqual(len(result.island_paths), 3)
+        self.assertEqual(sum("EXTERNAL_PERIMETER" in group for group in result.island_paths), 2)
+        self.assertEqual(sum("SUPPORT" in group for group in result.island_paths), 1)
+
     def test_cubeandring2_top_patch_gets_three_shells_of_solid_infill(self):
         fixture = Path(__file__).resolve().parent / "fixtures" / "cubeandring2_top_surfaces.wkt"
         top = _clean(shapely.from_wkt(fixture.read_text()))

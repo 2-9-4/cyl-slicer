@@ -5,13 +5,14 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
 import shapely
-from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, box
+from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
+from shapely.strtree import STRtree
 
 from .config import SlicerConfig
 from .coordinates import TWO_PI, coalesce_collinear_points, cylindrical_distance
 from .models import LayerSlice, LayerToolpaths, Toolpath
-from .periodic import periodic_copies
+from .periodic import periodic_copies, translate_theta
 
 ROLE_ORDER = [
     "EXTERNAL_PERIMETER",
@@ -105,6 +106,56 @@ def _line_parts(geom) -> list[LineString]:
             result.extend(_line_parts(part))
         return result
     return []
+
+
+def _island_path_groups(paths_by_role: dict[str, list[Toolpath]], region) -> list[dict[str, list[Toolpath]]]:
+    """Assign each path once to a connected component, joining seam neighbors."""
+    parts = _polygon_parts(region)
+    if not paths_by_role:
+        return []
+    if len(parts) <= 1:
+        return [paths_by_role]
+
+    tree = STRtree(parts)
+    parents = list(range(len(parts)))
+
+    def root(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for i, part in enumerate(parts):
+        for shift in (0.0, -TWO_PI, TWO_PI):
+            shifted = translate_theta(part, shift) if shift else part
+            for candidate in tree.query(shifted.envelope.buffer(1e-8)):
+                j = int(candidate)
+                if root(i) != root(j) and shifted.distance(parts[j]) <= 1e-8:
+                    parents[root(j)] = root(i)
+
+    groups: dict[int, dict[str, list[Toolpath]]] = {}
+    unassigned: dict[str, list[Toolpath]] = defaultdict(list)
+    center = (region.bounds[0] + region.bounds[2]) * 0.5
+    for role, paths in paths_by_role.items():
+        for path in paths:
+            theta, axial = path.points[0]
+            theta += round((center - theta) / TWO_PI) * TWO_PI
+            owner = None
+            for shift in (0.0, -TWO_PI, TWO_PI):
+                point = Point(theta + shift, axial)
+                for candidate in tree.query(point.buffer(1e-8)):
+                    index = int(candidate)
+                    if parts[index].distance(point) <= 1e-8:
+                        owner = root(index)
+                        break
+                if owner is not None:
+                    break
+            if owner is None:
+                # Preserve unexpected paths instead of silently dropping material.
+                unassigned[role].append(path)
+            else:
+                groups.setdefault(owner, {}).setdefault(role, []).append(path)
+    return [*groups.values(), *([dict(unassigned)] if unassigned else [])]
 
 
 def _merged_axial_intervals(geom, tol: float = 1e-8) -> list[tuple[float, float]]:
@@ -646,7 +697,12 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         model if layer.support.is_empty else layer.support if model.is_empty
         else unary_union([model, layer.support])
     )
-    return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths, travel_region=travel_region)
+    support_roles = {"SUPPORT", "SUPPORT_INTERFACE"}
+    model_paths = {role: items for role, items in paths.items() if role not in support_roles}
+    support_paths = {role: items for role, items in paths.items() if role in support_roles}
+    islands = _island_path_groups(model_paths, model) + _island_path_groups(support_paths, layer.support)
+    return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths,
+                          travel_region=travel_region, island_paths=islands)
 
 
 def _init_toolpath_worker(config: SlicerConfig) -> None:

@@ -75,7 +75,15 @@ at the nearer endpoint, so they alternate positive and negative Y with a short
 axial travel between rows. Reversed moves retain their intended angular span,
 including across the periodic seam.
 
-Short transfers between neighboring fill passes stay primed when the entire
+Each model island is finished locally: external perimeter, internal perimeters,
+then its solid or sparse infill. The next island is chosen from the current
+nozzle position. Components connected across the rotary seam belong to one
+island; support components are grouped separately so a support bridge does not
+merge distinct model islands. Closed perimeters start at the nearest point on
+their contour, including the middle of an edge, rather than their original
+mesh vertex.
+
+Short transfers between neighboring walls or fill passes stay primed when the entire
 travel lies inside the layer's model or support footprint. The local distance
 allowance is the larger pass spacing plus half a nozzle width. This also applies
 across infill type changes; ending a type does not itself force retraction.

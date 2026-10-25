@@ -14,6 +14,10 @@
   model/support footprint. Check the whole connection, including across the seam;
   don't suppress retraction across holes or separate islands based on distance
   alone. A role/type change is not by itself a reason to retract.
+- Finish each model island's walls and infill before moving to another island.
+  Join periodic seam components for ordering; keep support components separate.
+  Enter closed perimeters at their nearest contour point, preserving winding and
+  deposited length. Keep intentional zero-distance calibration bands intact.
 - Keep Marlin's native Y position bounded as well as emitted Y values. The target
   firmware enables `POWER_LOSS_RECOVERY`: use `M400`, `G92.9 Y<wrapped phase>`,
   then `G92 Y0` (or `G92 E0 Y0` at layer changes). Keep angular phase so resets

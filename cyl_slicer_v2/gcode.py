@@ -252,6 +252,8 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
 
 
 def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Toolpath:
+    if path.role in PERIMETER_ROLES and len(path.points) > 3 and cylindrical_distance(path.points[0], path.points[-1], path.radius) <= 1e-8:
+        return _rotate_closed_perimeter(path, state)
     if not _can_reverse_for_output(path):
         return path
     start_distance = _travel_distance_to_point(path, path.points[0], state)
@@ -259,6 +261,36 @@ def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Tool
     if end_distance + 1e-9 >= start_distance:
         return path
     return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
+
+
+def _rotate_closed_perimeter(path: Toolpath, state: GcodeState) -> Toolpath:
+    loop = path.points[:-1]
+    center = (min(p[0] for p in loop) + max(p[0] for p in loop)) * 0.5
+    current_theta = _nearest_theta(state.theta_accum, center)
+    best = None
+    for shift in (0.0, -TWO_PI, TWO_PI):
+        current = ((current_theta + shift) * path.radius, state.axial)
+        for i, (a, b) in enumerate(zip(path.points[:-1], path.points[1:])):
+            ax, ay = a[0] * path.radius, a[1]
+            dx, dy = (b[0] - a[0]) * path.radius, b[1] - a[1]
+            length2 = dx * dx + dy * dy
+            if length2 <= 1e-16:
+                continue
+            fraction = max(0.0, min(1.0, ((current[0] - ax) * dx + (current[1] - ay) * dy) / length2))
+            distance2 = (current[0] - ax - fraction * dx) ** 2 + (current[1] - ay - fraction * dy) ** 2
+            if best is None or distance2 < best[0]:
+                best = (distance2, i, fraction)
+    if best is None:
+        return path
+    _, index, fraction = best
+    if fraction <= 1e-10 or fraction >= 1.0 - 1e-10:
+        index = (index + (fraction >= 1.0 - 1e-10)) % len(loop)
+        points = loop[index:] + loop[:index] + [loop[index]]
+    else:
+        a, b = path.points[index:index + 2]
+        point = (a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction)
+        points = [point, *loop[index + 1:], *loop[:index + 1], point]
+    return replace(path, points=points)
 
 
 def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
@@ -327,6 +359,14 @@ def _should_retract_after_path(
     end_state = _shadow_after_path(path, state)
     next_path = _orient_path_for_current_position(next_path, end_state)
     travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
+    inside = False
+    if travel_region is not None and travel_distance > 1e-8:
+        theta = end_state.theta_accum % TWO_PI
+        target_theta = _nearest_theta(next_path.points[0][0], theta)
+        travel = LineString([(theta, end_state.axial), (target_theta, next_path.points[0][1])])
+        inside = travel_region.covers(travel) or travel.difference(travel_region).length <= 1e-8
+        if not inside:
+            return True
     if travel_distance < config.nozzle_width * 2.0:
         return False
     fill_spacing = {
@@ -335,17 +375,16 @@ def _should_retract_after_path(
         "INFILL_AXIAL": config.infill_spacing,
         "SUPPORT": config.support_spacing,
         "SUPPORT_INTERFACE": config.support_interface_spacing or config.nozzle_width,
+        "EXTERNAL_PERIMETER": config.nozzle_width,
+        "INTERNAL_PERIMETER": config.nozzle_width,
     }
     if path.role in fill_spacing and next_path.role in fill_spacing and travel_region is not None:
         local_distance = max(fill_spacing[path.role], fill_spacing[next_path.role]) + config.nozzle_width * 0.5
         if travel_distance <= local_distance + 1e-8:
-            theta = end_state.theta_accum % TWO_PI
-            target_theta = _nearest_theta(next_path.points[0][0], theta)
-            travel = LineString([(theta, end_state.axial), (target_theta, next_path.points[0][1])])
             # Only omit retraction when the entire connection stays in material.
             # The tiny residual allowance handles floating-point boundary drift,
             # including paths touching the periodic seam, without bridging holes.
-            if travel_region.covers(travel) or travel.difference(travel_region).length <= 1e-8:
+            if inside:
                 return False
     return True
 
@@ -353,11 +392,23 @@ def _should_retract_after_path(
 def _ordered_layer_paths(layer: LayerToolpaths, state: GcodeState) -> list[Toolpath]:
     ordered = []
     shadow = state
-    for role in ROLE_ORDER:
-        for path in _ordered_paths_for_current_position(layer.paths_by_role.get(role, []), shadow):
-            path = _orient_path_for_current_position(path, shadow)
-            ordered.append(path)
-            shadow = _shadow_after_path(path, shadow)
+    remaining = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
+    while remaining:
+        def entry_distance(group):
+            first_role = next((role for role in ROLE_ORDER if group.get(role)), None)
+            if first_role is None:
+                return math.inf
+            candidates = [_orient_path_for_current_position(path, shadow) for path in group[first_role]]
+            return min(_travel_distance_to_point(path, path.points[0], shadow) for path in candidates)
+
+        nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i]))
+                   if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
+        group = remaining.pop(nearest)
+        for role in ROLE_ORDER:
+            for path in _ordered_paths_for_current_position(group.get(role, []), shadow):
+                path = _orient_path_for_current_position(path, shadow)
+                ordered.append(path)
+                shadow = _shadow_after_path(path, shadow)
     return ordered
 
 

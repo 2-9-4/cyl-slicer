@@ -37,6 +37,7 @@ class LayerToolpaths:
     radius: float
     paths_by_role: dict[str, list[Toolpath]] = field(default_factory=dict)
     travel_region: BaseGeometry | None = None
+    island_paths: list[dict[str, list[Toolpath]]] = field(default_factory=list)
 
 
 @dataclass
