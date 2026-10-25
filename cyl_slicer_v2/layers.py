@@ -29,7 +29,11 @@ def _clean(geom):
         return GeometryCollection()
     if not geom.is_valid:
         geom = shapely.make_valid(geom)
-    geom = geom.buffer(0)
+    # A zero-width buffer can discard valid components of a MultiPolygon when
+    # very thin components are present. Preserve valid surfaces; only strip non-area
+    # pieces that make_valid or a polygon intersection may have produced.
+    if not isinstance(geom, (Polygon, MultiPolygon)):
+        geom = _safe_union(_polygon_parts(geom))
     if geom.is_empty or geom.area <= 1e-12:
         return GeometryCollection()
     return geom
@@ -46,9 +50,7 @@ def _safe_union(geoms):
     except shapely.errors.GEOSException:
         repaired = []
         for part in parts:
-            if not part.is_valid:
-                part = shapely.make_valid(part)
-            part = part.buffer(0)
+            part = _clean(part)
             if not part.is_empty:
                 repaired.append(part)
         if not repaired:

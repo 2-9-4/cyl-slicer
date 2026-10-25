@@ -134,8 +134,7 @@ class IntersectionBackendTests(unittest.TestCase):
         self.assertLess(float(np.mean(~expected & actual)), 0.025)
 
     def test_cubeandring2_intersection_layers_do_not_drop_or_fill_frames(self):
-        root = Path(__file__).resolve().parents[2]
-        mesh = load_mesh(root / "cubeandring2.stl")
+        mesh = load_mesh(Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cubes.stl")
         config = SlicerConfig(layer_backend="intersection", layer_height=0.25, intersection_refine_factor=0)
         r_min, _ = radial_bounds(mesh)
         frame_area = 2.0 * math.pi * (mesh.bounds[1, 2] - mesh.bounds[0, 2])
@@ -154,8 +153,7 @@ class IntersectionBackendTests(unittest.TestCase):
                 self.assertLess(sample_area(layer_index), frame_area * 0.90)
 
     def test_cubeandring2_layer_20_keeps_intersection_boundary_not_cell_grid(self):
-        root = Path(__file__).resolve().parents[2]
-        mesh = load_mesh(root / "cubeandring2.stl")
+        mesh = load_mesh(Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cubes.stl")
         config = SlicerConfig(layer_backend="intersection", layer_height=0.25, intersection_refine_factor=0)
         r_min, _ = radial_bounds(mesh)
         radius = r_min + config.layer_height * 0.5 + 20 * config.layer_height

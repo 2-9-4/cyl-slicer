@@ -4,12 +4,14 @@ import math
 from pathlib import Path
 import unittest
 
-from shapely.geometry import GeometryCollection, Point, box
+import shapely
+from shapely.geometry import GeometryCollection, LineString, Point, Polygon, box
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.intersection_backend import _polygon_parts
 from cyl_slicer_v2.layers import (
+    _clean,
     _metric_area,
     _needs_support_from_previous,
     _support_regions,
@@ -28,6 +30,29 @@ def _corner_count(geom) -> int:
 
 
 class LayerClassificationTests(unittest.TestCase):
+    def test_clean_preserves_valid_cubeandring2_top_surface_components(self):
+        # Reduced from the layer 48 exposed surface at radius 54.634266 mm.
+        # buffer(0) on this valid MultiPolygon drops the large printable patch.
+        fixture = Path(__file__).resolve().parent / "fixtures" / "cubeandring2_top_surfaces.wkt"
+        surface = shapely.from_wkt(fixture.read_text())
+        self.assertTrue(surface.is_valid)
+
+        cleaned = _clean(surface)
+
+        self.assertTrue(cleaned.equals(surface))
+        self.assertAlmostEqual(cleaned.area, surface.area, places=12)
+        self.assertTrue(cleaned.covers(Point(math.radians(295), -8.0)))
+
+    def test_clean_repairs_invalid_surfaces_and_discards_non_polygonal_parts(self):
+        bowtie = Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
+        cleaned = _clean(bowtie)
+        self.assertTrue(cleaned.is_valid)
+        self.assertAlmostEqual(cleaned.area, 2.0)
+
+        mixed = GeometryCollection([box(0, 0, 1, 1), LineString([(2, 0), (2, 1)]), Point(3, 0)])
+        self.assertTrue(_clean(mixed).equals(box(0, 0, 1, 1)))
+        self.assertTrue(_clean(LineString([(0, 0), (1, 1)])).is_empty)
+
     def test_first_occupied_layer_is_bottom_surface(self):
         layers = slice_mesh(make_fixture("solid_box"), SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0), max_layers=3)
         first = next(layer for layer in layers if not layer.occupied.is_empty)

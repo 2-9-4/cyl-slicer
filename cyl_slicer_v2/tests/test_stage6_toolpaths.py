@@ -4,18 +4,40 @@ import math
 from pathlib import Path
 import unittest
 
+import shapely
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon, box
+from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.fixtures import make_fixture
-from cyl_slicer_v2.layers import slice_mesh
+from cyl_slicer_v2.layers import _clean, propagate_solid_surfaces, slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh
 from cyl_slicer_v2.models import LayerSlice, Toolpath
 from cyl_slicer_v2.toolpaths import build_layer_toolpaths, build_toolpaths, gap_support_slices, _postprocess_role_paths
 
 
 class ToolpathTests(unittest.TestCase):
+    def test_cubeandring2_top_patch_gets_three_shells_of_solid_infill(self):
+        fixture = Path(__file__).resolve().parent / "fixtures" / "cubeandring2_top_surfaces.wkt"
+        top = _clean(shapely.from_wkt(fixture.read_text()))
+        empty = GeometryCollection()
+        layers = [
+            LayerSlice(i, 54.23426613215031 + i * 0.2, box(5.0, -11.0, 5.6, 0.0),
+                       top if i == 2 else empty, empty, empty, empty)
+            for i in range(3)
+        ]
+        config = SlicerConfig(layer_height=0.2, wall_count=3, top_layers=3)
+        propagate_solid_surfaces(layers, config)
+
+        for layer in layers:
+            with self.subTest(layer=layer.index):
+                paths = build_layer_toolpaths(layer, config).paths_by_role.get("SOLID_INFILL", [])
+                coverage = unary_union([
+                    LineString([(t * layer.radius, x) for t, x in path.points]) for path in paths
+                ]).buffer(config.nozzle_width / 2)
+                self.assertTrue(coverage.covers(Point(math.radians(295) * layer.radius, -8.0)))
+
     def test_toolpath_points_lie_on_or_inside_source(self):
         config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, wall_count=2)
         layer = next(layer for layer in slice_mesh(make_fixture("solid_box"), config, max_layers=3) if not layer.occupied.is_empty)
@@ -287,7 +309,7 @@ class ToolpathTests(unittest.TestCase):
                 self.assertNotIn("SUPPORT_INTERFACE", paths_by_index[layer_index])
 
     def test_cubeandring2_emits_real_support_without_floating_midlayer_support(self):
-        mesh_path = Path(__file__).resolve().parents[2] / "cubeandring2.stl"
+        mesh_path = Path(__file__).resolve().parent / "fixtures" / "cubeandring2_cubes.stl"
         config = SlicerConfig(
             layer_backend="intersection",
             intersection_refine_factor=0,

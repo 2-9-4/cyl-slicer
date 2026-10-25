@@ -20,13 +20,17 @@ module subdivided_cube(size=1, center=false, dim=5) {
         }
     }
 }
-
+difference(){
 union(){
     for(i = [0:10:360]){
     rotate([0,0,i])translate([30+25,0,0])rotate([0.2*i,0.2*i,45])subdivided_cube(10    ,center=true);
     }
-    /*difference(){
-        cylinder(r=55,h=10);
-        translate([0,0,-1]) cylinder(r=50,h=12,$fn=30);
-    }*/
+    translate([0,0,-10])
+    difference(){
+        cylinder(r=55,h=20);
+        translate([0,0,-1]) cylinder(r=45,h=50,$fn=30);
+    }
+}
+translate([0,0,-20])
+cube([100,10,40]);
 }
