@@ -50,7 +50,8 @@ class SlicerConfig:
     fan_speed: int = 255
     fan_start_height: float = 2.0
     min_path_length: float = 0.6
-    max_axial_segment: float = 1.5  # Intersection curve sampling only; not a G-code block limit.
+    max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
+    intersection_curve_error_mm: float = 0.025  # Maximum physical unwrapped chord deviation.
     slice_workers: int = 1
     layer_backend: str = "raster"
     intersection_refine_factor: int = 0
@@ -125,6 +126,8 @@ class SlicerConfig:
             raise ValueError("bed_radius must be non-negative")
         if self.max_axial_segment <= 0:
             raise ValueError("max_axial_segment must be positive")
+        if not math.isfinite(self.intersection_curve_error_mm) or self.intersection_curve_error_mm <= 0:
+            raise ValueError("intersection_curve_error_mm must be finite and positive")
         if self.min_path_length < 0:
             raise ValueError("min_path_length must be non-negative")
         if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:

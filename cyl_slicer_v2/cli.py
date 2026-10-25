@@ -157,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Layer geometry backend: raster occupancy sampling or narrow triangle/cylinder intersection.",
     )
     parser.add_argument(
+        "--intersection-curve-error-mm",
+        type=float,
+        default=0.025,
+        help="Maximum physical mm deviation of sampled face/cylinder curves from chord.",
+    )
+    parser.add_argument(
         "--intersection-refine-factor",
         type=int,
         default=0,
@@ -236,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         toolpath_workers=args.toolpath_workers if args.toolpath_workers is not None else args.slice_workers,
         layer_backend=args.layer_backend,
         intersection_refine_factor=args.intersection_refine_factor,
+        intersection_curve_error_mm=args.intersection_curve_error_mm,
     )
     backend = None
     if args.layer_backend == "raster":
