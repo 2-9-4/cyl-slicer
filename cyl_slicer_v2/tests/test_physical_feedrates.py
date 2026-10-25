@@ -10,7 +10,7 @@ from cyl_slicer_v2.models import GcodeState, Toolpath
 
 
 def _f_value(line: str) -> float:
-    match = re.search(r"\\bF([0-9.]+)", line)
+    match = re.search(r"\bF([0-9.]+)", line)
     if match is None:
         raise AssertionError(f"Missing F: {line}")
     return float(match.group(1))
