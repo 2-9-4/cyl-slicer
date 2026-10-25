@@ -5,12 +5,17 @@ import math
 import re
 import unittest
 
+from shapely.geometry import LineString
+from shapely.ops import unary_union
+
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
+from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.mesh_io import load_mesh
 from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 from cyl_slicer_v2.pipeline import slice_to_gcode
+from cyl_slicer_v2.toolpaths import build_toolpaths
 
 
 class GcodeTests(unittest.TestCase):
@@ -135,6 +140,68 @@ class GcodeTests(unittest.TestCase):
 
         self.assertEqual(gcode.count("; retract"), 1)
         self.assertEqual(gcode.count("; unretract"), 0)
+
+    def test_adjacent_infill_travel_along_perimeter_does_not_hop(self):
+        # The travel passes a tessellation vertex on the inner wall. Exercise
+        # both a continuous polyline and walls supplied as separate fragments.
+        for fragmented in (False, True):
+            with self.subTest(fragmented=fragmented):
+                wall = [(0.0, 0.0), (0.02, 0.0), (0.04, 0.0),
+                        (0.04, 10.0), (0.02, 10.0), (0.0, 10.0), (0.0, 0.0)]
+                walls = [[a, b] for a, b in zip(wall, wall[1:])] if fragmented else [wall]
+                layer = LayerToolpaths(0, 10.0, {
+                    "INTERNAL_PERIMETER": [Toolpath("INTERNAL_PERIMETER", 10.0, pts) for pts in walls],
+                    "SOLID_INFILL": [
+                        Toolpath("SOLID_INFILL", 10.0, [(0.0, 0.0), (0.0, 10.0)]),
+                        Toolpath("SOLID_INFILL", 10.0, [(0.04, 0.0), (0.04, 10.0)]),
+                    ],
+                })
+                code = emit_gcode([layer], SlicerConfig(z_hop_min_travel=100.0))
+                second_infill = code.split(";TYPE:SOLID_INFILL")[2]
+                self.assertNotIn("; z hop", second_infill)
+                self.assertNotIn("; unretract", second_infill)
+
+    def test_straight_moves_are_single_blocks_with_correct_extrusion(self):
+        for points in (
+            [(0.0, 0.0), (0.0, 0.02), (0.0, 0.5), (0.0, 0.52), (0.0, 30.0)],
+            [(0.0, 0.0), (0.02, 0.0), (0.5, 0.0), (0.52, 0.0), (1.0, 0.0)],
+            [(0.0, 0.0), (0.02, 0.6), (0.5, 15.0), (0.52, 15.6), (1.0, 30.0)],
+        ):
+            with self.subTest(points=points):
+                layer = LayerToolpaths(0, 30.0, {
+                    "EXTERNAL_PERIMETER": [Toolpath("EXTERNAL_PERIMETER", 30.0, points)],
+                })
+                code = emit_gcode([layer], SlicerConfig(axial_min=0.0, retract_mm=0.0, extrusion_per_mm=0.1))
+                segments = parse_extrusion_segments(code)
+                self.assertEqual(len(segments), 1)
+                self.assertAlmostEqual(segments[0][4], points[-1][1], places=3)
+                self.assertAlmostEqual(segments[0][5], math.degrees(points[-1][0]), places=3)
+                expected_e = math.hypot(points[-1][0] * 30.0, points[-1][1]) * 0.1
+                self.assertAlmostEqual(float(re.findall(r"\bE([0-9.]+)", code)[-1]), expected_e, places=5)
+
+    def test_coalescing_preserves_corners_reversals_and_full_turns(self):
+        paths = [
+            Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.1, 0.0), (0.2, 0.0), (0.2, 1.0), (0.1, 1.0), (0.0, 1.0)]),
+            Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (0.0, 1.0), (0.0, 0.0)]),
+            Toolpath("SUPPORT", 10.0, [(0.0, 0.0), (math.pi, 0.0), (2 * math.pi, 0.0)]),
+        ]
+        for path, count, length in zip(paths, (3, 2, 1), (5.0, 2.0, 20 * math.pi)):
+            with self.subTest(points=path.points):
+                code = emit_gcode([LayerToolpaths(0, 10.0, {"SUPPORT": [path]})],
+                                  SlicerConfig(axial_min=0.0, retract_mm=0.0, extrusion_per_mm=0.1))
+                self.assertEqual(len(parse_extrusion_segments(code)), count)
+                self.assertAlmostEqual(float(re.findall(r"\bE([0-9.]+)", code)[-1]), length * 0.1, places=5)
+
+    def test_retraction_coupon_first_layer_has_no_infill_hops_or_fragmentation(self):
+        root = Path(__file__).resolve().parents[2]
+        config = SlicerConfig(layer_backend="intersection", layer_height=0.2, bed_radius=30.0, wall_count=3)
+        code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=1)
+        infill = code.split(";TYPE:SOLID_INFILL")[1:]
+        self.assertEqual(len(infill), 76)
+        self.assertTrue(all("; z hop" not in path for path in infill))
+        self.assertTrue(all(len(parse_extrusion_segments(";TYPE:SOLID_INFILL\n" + path)) == 1 for path in infill))
+        moves = [line for line in code.splitlines() if line.startswith("G1 X")]
+        self.assertAlmostEqual(float(re.search(r"\bE([0-9.]+)", moves[-1])[1]), 94.77276, places=5)
 
     def test_layer_changes_reset_extrusion_and_rotary_axes(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
@@ -292,15 +359,29 @@ class GcodeTests(unittest.TestCase):
         self.assertEqual(min(x_values), 30.0)
         self.assertEqual(max(x_values), 50.0)
 
-    def test_no_thread_jump_like_segments(self):
+    def test_emitted_segments_follow_planned_geometry(self):
         for fixture in ("helix_like_ribbon", "tube"):
             with self.subTest(fixture=fixture):
-                gcode = slice_to_gcode(make_fixture(fixture), SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0), max_layers=2)
-                flags = []
-                for _, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
-                    if abs(x1 - x0) > 2.0 and abs(y1 - y0) < 30.0:
-                        flags.append(role)
-                self.assertEqual(flags, [])
+                config = SlicerConfig(theta_step_deg=20, axial_step=2.0, layer_height=1.0)
+                layers = build_toolpaths(slice_mesh(make_fixture(fixture), config, max_layers=2), config)
+                offset = config.axial_min - min(p[1] for layer in layers for paths in layer.paths_by_role.values()
+                                                for path in paths for p in path.points)
+                sources = {
+                    (layer.layer_index, role): (layer.radius, unary_union([
+                        LineString([(t * layer.radius, x + offset) for t, x in path.points]) for path in paths
+                    ]).buffer(0.002))
+                    for layer in layers for role, paths in layer.paths_by_role.items()
+                }
+                for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(emit_gcode(layers, config)):
+                    radius, source = sources[layer, role]
+                    t0, t1 = math.radians(y0), math.radians(y1)
+                    period = 2 * math.pi * radius
+                    shift = round((source.centroid.x - (t0 + t1) * radius / 2) / period) * period
+                    candidates = [LineString([(t0 * radius + shift + extra, x0),
+                                               (t1 * radius + shift + extra, x1)])
+                                  for extra in (-period, 0.0, period)]
+                    self.assertTrue(any(source.covers(segment) for segment in candidates),
+                                    (fixture, layer, role, x0, y0, x1, y1))
 
     def test_viewer_format_comments_and_axes_are_present(self):
         gcode = slice_to_gcode(make_fixture("tube"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=1)

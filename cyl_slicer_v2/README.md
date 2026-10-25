@@ -64,6 +64,17 @@ The emitted G-code preserves the current viewer convention:
 - `Z`: radial lift from `bed_radius`
 - comments: `;LAYER`, `;Z`, `;TYPE`
 
+Straight moves are emitted as single extrusion blocks, including axial and rotary
+moves. Redundant collinear mesh vertices are removed with a numerical tolerance
+of 1e-8 mm; corners, reversals, and rotary winding are preserved. The internal
+`max_axial_segment` setting controls intersection curve sampling only, rather than
+limiting G-code block length.
+
+Z-hop defaults to 0.4 mm for travels of at least 5 mm or shorter travels crossing
+a perimeter. Traveling along a perimeter (such as the 0.4 mm step between adjacent
+solid infill lines) does not count as crossing it. Use `--z-hop-min-travel`,
+`--z-hop-height`, and `--no-z-hop-perimeter-crossing` to adjust this policy.
+
 ## Retraction calibration
 
 Both slicers support stepped retraction distance or speed sweeps over radial

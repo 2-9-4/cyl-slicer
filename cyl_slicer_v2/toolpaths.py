@@ -9,7 +9,7 @@ from shapely.geometry import GeometryCollection, LineString, MultiLineString, Mu
 from shapely.ops import unary_union
 
 from .config import SlicerConfig
-from .coordinates import TWO_PI, cylindrical_distance
+from .coordinates import TWO_PI, coalesce_collinear_points, cylindrical_distance
 from .models import LayerSlice, LayerToolpaths, Toolpath
 from .periodic import periodic_copies
 
@@ -171,7 +171,7 @@ def _ring_to_paths(
     config: SlicerConfig,
     theta_window: tuple[float, float] | None = None,
 ) -> list[Toolpath]:
-    pts = [(float(t), float(z)) for t, z in ring.coords]
+    pts = coalesce_collinear_points([(float(t), float(z)) for t, z in ring.coords], radius)
     if _is_full_theta_window(theta_window):
         return _ring_to_window_runs(pts, role, radius, config, theta_window)
     return _ring_to_edge_paths(pts, role, radius, config, theta_window)

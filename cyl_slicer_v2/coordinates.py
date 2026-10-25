@@ -35,6 +35,34 @@ def cylindrical_distance(p0: tuple[float, float], p1: tuple[float, float], radiu
     return math.hypot((t1 - t0) * radius, x1 - x0)
 
 
+def coalesce_collinear_points(
+    points: list[tuple[float, float]],
+    radius: float,
+    tol: float = 1e-8,
+) -> list[tuple[float, float]]:
+    """Remove redundant vertices in continuous (theta, axial) machine space.
+
+    The tolerance is in physical mm and only absorbs numerical noise. Corners,
+    reversals, endpoints, and unwrapped rotary winding must survive.
+    """
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if out and cylindrical_distance(out[-1], point, radius) <= 1e-12:
+            continue
+        while len(out) >= 2:
+            a, b = out[-2:]
+            ab = ((b[0] - a[0]) * radius, b[1] - a[1])
+            bc = ((point[0] - b[0]) * radius, point[1] - b[1])
+            ac_length = cylindrical_distance(a, point, radius)
+            cross = ab[0] * bc[1] - ab[1] * bc[0]
+            dot = ab[0] * bc[0] + ab[1] * bc[1]
+            if dot <= 0 or abs(cross) > tol * ac_length:
+                break
+            out.pop()
+        out.append(point)
+    return out
+
+
 def _forward_delta(theta: float, reference: float, tol: float = 1e-9) -> float:
     delta = (theta - reference) % TWO_PI
     if delta <= tol or abs(delta - TWO_PI) <= tol:

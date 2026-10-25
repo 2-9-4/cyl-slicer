@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 import unittest
 
-from shapely.geometry import GeometryCollection, Point, Polygon, box
+from shapely.geometry import GeometryCollection, LineString, Point, Polygon, box
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_distance
@@ -71,8 +71,11 @@ class ToolpathTests(unittest.TestCase):
         paths = build_layer_toolpaths(layer, SlicerConfig(wall_count=1)).paths_by_role.get("EXTERNAL_PERIMETER", [])
 
         self.assertEqual(len(paths), 2)
-        self.assertTrue(all(len(path.points) > 2 for path in paths))
+        self.assertTrue(all(len(path.points) >= 2 for path in paths))
         self.assertTrue(all(b[0] >= a[0] for path in paths for a, b in zip(path.points, path.points[1:])))
+        for path in paths:
+            self.assertAlmostEqual(path.points[-1][0] - path.points[0][0], theta_max)
+            self.assertTrue(all(point[1] == path.points[0][1] for point in path.points))
 
     def test_cubeandring_layer_73_external_perimeters_are_continuous_runs(self):
         mesh_path = Path(__file__).resolve().parents[2] / "cubeandring.stl"
@@ -85,7 +88,9 @@ class ToolpathTests(unittest.TestCase):
         paths = build_layer_toolpaths(layers[73], SlicerConfig(layer_height=0.2)).paths_by_role.get("EXTERNAL_PERIMETER", [])
 
         self.assertEqual(len(paths), 2)
-        self.assertTrue(all(len(path.points) > 100 for path in paths))
+        boundary = layers[73].occupied.boundary.buffer(1e-8)
+        self.assertTrue(all(len(path.points) >= 2 for path in paths))
+        self.assertTrue(all(boundary.covers(LineString(path.points)) for path in paths))
 
     def test_perimeters_keep_tiny_triangle_corners_below_min_path_length(self):
         occupied = Polygon([(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.0)])

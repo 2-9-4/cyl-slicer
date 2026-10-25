@@ -48,7 +48,7 @@ class SlicerConfig:
     z_hop_on_perimeter_crossing: bool = True
     hotend_temp: int = 215
     min_path_length: float = 0.6
-    max_axial_segment: float = 1.5
+    max_axial_segment: float = 1.5  # Intersection curve sampling only; not a G-code block limit.
     slice_workers: int = 1
     layer_backend: str = "raster"
     intersection_refine_factor: int = 0

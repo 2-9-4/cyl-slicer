@@ -9,7 +9,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
 from .config import SlicerConfig
-from .coordinates import cylindrical_distance, unwrap_path_from_current
+from .coordinates import coalesce_collinear_points, cylindrical_distance, unwrap_path_from_current
 from .models import GcodeState, LayerToolpaths, Toolpath
 from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_ROLES, ROLE_ORDER
 
@@ -131,7 +131,9 @@ def _intersection_is_away_from_endpoints(
         return geom.distance(start) > tol and geom.distance(end) > tol
     if hasattr(geom, "geoms"):
         return any(_intersection_is_away_from_endpoints(part, start, end, tol) for part in geom.geoms)
-    return geom.length > tol
+    # Following a perimeter is not crossing it. In particular, adjacent solid
+    # infill lines end on the same inner wall and travel along it to the next row.
+    return False
 
 
 def _travel_crosses_perimeter(
@@ -145,7 +147,9 @@ def _travel_crosses_perimeter(
     target_theta = _nearest_theta(point[0], state.theta_accum)
     start_xy = _metric_point(state.theta_accum, state.axial, path.radius)
     end_xy = _metric_point(target_theta, point[1], path.radius)
-    if math.hypot(end_xy[0] - start_xy[0], end_xy[1] - start_xy[1]) <= 1e-8:
+    tx, ty = end_xy[0] - start_xy[0], end_xy[1] - start_xy[1]
+    travel_length = math.hypot(tx, ty)
+    if travel_length <= 1e-8:
         return False
 
     travel = LineString([start_xy, end_xy])
@@ -158,6 +162,12 @@ def _travel_crosses_perimeter(
         shifted_start = Point(shifted_travel.coords[0])
         shifted_end = Point(shifted_travel.coords[-1])
         for segment in _query_perimeter_index(perimeter_index, shifted_travel):
+            # Collinear fragments can also intersect at a shared vertex. Those
+            # point contacts are still travel along the wall, not across it.
+            (sx0, sy0), (sx1, sy1) = segment.coords
+            sx, sy = sx1 - sx0, sy1 - sy0
+            if abs(tx * sy - ty * sx) <= 1e-12 * travel_length * math.hypot(sx, sy):
+                continue
             inter = shifted_travel.intersection(segment)
             if _intersection_is_away_from_endpoints(inter, shifted_start, shifted_end):
                 return True
@@ -331,7 +341,7 @@ def emit_toolpath(
         return []
     accum = _unwrap_toolpath_thetas(path, state.theta_accum)
     pts = list(zip(accum, [p[1] for p in path.points]))
-    pts = _split_long_axial_segments(pts, config.max_axial_segment)
+    pts = coalesce_collinear_points(pts, path.radius)
 
     lines = [";start of path"]
     t0, x0 = pts[0]
@@ -370,25 +380,6 @@ def emit_toolpath(
         lines.extend(_retract(state, config))
     lines.append(";end of path")
     return lines
-
-
-def _split_long_axial_segments(
-    pts: list[tuple[float, float]],
-    max_axial_segment: float,
-) -> list[tuple[float, float]]:
-    if len(pts) < 2:
-        return pts
-    out = [pts[0]]
-    for (t0, x0), (t1, x1) in zip(pts[:-1], pts[1:]):
-        dx = x1 - x0
-        if abs(dx) > max_axial_segment:
-            steps = int(math.ceil(abs(dx) / max_axial_segment))
-            for i in range(1, steps + 1):
-                frac = i / steps
-                out.append((t0 + (t1 - t0) * frac, x0 + dx * frac))
-        else:
-            out.append((t1, x1))
-    return out
 
 
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
