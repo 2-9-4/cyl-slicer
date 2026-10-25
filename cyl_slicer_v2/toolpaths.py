@@ -635,20 +635,25 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         )
         solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])
         solid_source = solid_source.intersection(infill_source) if not solid_source.is_empty else solid_source
+        solid_direction = (
+            "radial" if config.solid_infill_pattern == "alternate" and layer.index % 2 else "axial"
+        )
         paths["SOLID_INFILL"].extend(
-            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing, config, direction="axial")
+            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing, config, direction=solid_direction)
         )
         if not solid_source.is_empty and not infill_source.is_empty:
             infill_source = infill_source.difference(solid_source)
             if not infill_source.is_valid:
                 infill_source = shapely.make_valid(infill_source)
             infill_source = infill_source.buffer(0)
-        paths["INFILL_RADIAL"].extend(
-            line_grid_paths(infill_source, "INFILL_RADIAL", radius, config.infill_spacing, config, direction="radial")
-        )
-        paths["INFILL_AXIAL"].extend(
-            line_grid_paths(infill_source, "INFILL_AXIAL", radius, config.infill_spacing, config, direction="axial")
-        )
+        if config.sparse_infill_pattern == "both" or layer.index % 2 == 0:
+            paths["INFILL_RADIAL"].extend(
+                line_grid_paths(infill_source, "INFILL_RADIAL", radius, config.infill_spacing, config, direction="radial")
+            )
+        if config.sparse_infill_pattern == "both" or layer.index % 2 != 0:
+            paths["INFILL_AXIAL"].extend(
+                line_grid_paths(infill_source, "INFILL_AXIAL", radius, config.infill_spacing, config, direction="axial")
+            )
 
     support = _clean_polygonal(layer.support)
     interface_source = layer.support_interface if layer.support_interface is not None else GeometryCollection()

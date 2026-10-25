@@ -55,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
+    parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default="both",
+                        help="Legacy crosshatched grid on every layer or one alternating grid axis per layer.")
+    parser.add_argument("--solid-infill-pattern", choices=("axial", "alternate"), default="axial",
+                        help="Legacy axial solid lines or alternate radial/axial lines by layer.")
     parser.add_argument("--line-width", type=float, default=0.4,
                         help="Nominal deposited bead width in mm (not physical nozzle diameter).")
     parser.add_argument("--bead-model", choices=("rectangular", "rounded"), default="rectangular",
@@ -259,6 +263,8 @@ def main(argv: list[str] | None = None) -> int:
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
+        sparse_infill_pattern=args.sparse_infill_pattern,
+        solid_infill_pattern=args.solid_infill_pattern,
         nozzle_width=args.line_width,
         bead_model=args.bead_model,
         infill_wall_overlap_fraction=args.infill_wall_overlap_fraction,
