@@ -160,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="bed_radius",
         type=float,
         default=None,
-        help="Build-cylinder radius: 30 mm for legacy-cli, zero for library profile.")
+        help="Build-cylinder radius: 30 mm for legacy-cli, zero for library profile.",
     )
     parser.add_argument(
         "--no-gap-support",
