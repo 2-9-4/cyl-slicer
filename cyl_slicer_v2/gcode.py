@@ -569,6 +569,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         ";MARLIN_REQUIRES:POWER_LOSS_RECOVERY (G92.9 native Y reset)",
         f";LAYER_HEIGHT:{config.layer_height}",
         f";LINE_WIDTH:{config.nozzle_width}",
+        f";MATERIAL_PROFILE:{config.material_profile}",
+        f";LINEAR_ADVANCE:{('Marlin M900 K' + f'{config.linear_advance_k:g}') if config.linear_advance_k is not None else 'disabled'}",
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",
@@ -589,6 +591,11 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
     ]
+    if config.linear_advance_k is not None:
+        # Only an explicitly verified Marlin LIN_ADVANCE build may see M900.
+        # This is a firmware-level pressure offset; absolute E accounting
+        # and per-move speed-corrected motion remain untouched.
+        out.append(f"M900 K{config.linear_advance_k:g} ; enable calibrated Marlin linear advance")
     if config.retraction_sweep:
         out.append(config.retraction_sweep.header().rstrip())
 
@@ -651,6 +658,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             ]
         )
 
+    if config.linear_advance_k is not None:
+        # Return to the known no-advance state after the print rather than
+        # surprising subsequent jobs with a persistent modified K factor.
+        out.append("M900 K0 ; clear job-scoped linear advance")
     out.extend(
         [
             "M104 S0 ; hotend off",

@@ -46,6 +46,9 @@ class SlicerConfig:
     axial_margin: float = 0.0
     axial_min: float = 15.0
     feed_mm_per_min: float = 1800.0
+    material_profile: str = "unprofiled"  # Metadata; never guesses a material's K.
+    linear_advance_k: float | None = None
+    linear_advance_firmware: str | None = None  # Explicit firmware build declaration.
     travel_mm_per_min: float = 3000.0
     extrusion_per_mm: float | None = None
     retraction_sweep: RetractionSweep | None = None
@@ -181,6 +184,17 @@ class SlicerConfig:
             raise ValueError("intersection_curve_error_mm must be finite and positive")
         if self.min_path_length < 0:
             raise ValueError("min_path_length must be non-negative")
+        if self.material_profile not in {"unprofiled", "pla", "petg", "abs", "tpu"}:
+            raise ValueError("material_profile must be unprofiled, pla, petg, abs, or tpu")
+        if self.linear_advance_firmware not in {None, "marlin-m900"}:
+            raise ValueError("linear_advance_firmware must be None or marlin-m900")
+        if self.linear_advance_k is not None:
+            if not math.isfinite(self.linear_advance_k) or not (0 <= self.linear_advance_k <= 10):
+                raise ValueError("linear_advance_k must be finite within [0, 10]")
+            if self.linear_advance_firmware != "marlin-m900":
+                raise ValueError("linear_advance_k requires explicit Marlin M900 firmware support")
+        elif self.linear_advance_firmware is not None:
+            raise ValueError("linear_advance_firmware requires an explicit K value")
         if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
             raise ValueError("feed_mm_per_min must be finite and positive")
         if not math.isfinite(self.travel_mm_per_min) or self.travel_mm_per_min <= 0:

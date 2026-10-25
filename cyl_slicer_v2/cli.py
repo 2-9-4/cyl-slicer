@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_calibration_arguments(parser)
     parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
     parser.add_argument("--hotend-temp", type=int, default=215)
+    parser.add_argument("--material-profile", choices=("unprofiled", "pla", "petg", "abs", "tpu"),
+                        default="unprofiled", help="Material identity metadata, not an assumed pressure-advance K.")
+    parser.add_argument("--marlin-linear-advance", action="store_true",
+                        help="Explicitly declare flashed firmware supports Marlin LIN_ADVANCE M900.")
+    parser.add_argument("--linear-advance-k", type=float, default=None,
+                        help="Calibrated Marlin K, 0..10; requires --marlin-linear-advance.")
     parser.add_argument("--print-feed", type=float, default=1800.0,
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
     parser.add_argument("--travel-feed", type=float, default=3000.0,
@@ -256,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         retraction_sweep=sweep,
         hotend_temp=args.hotend_temp,
         feed_mm_per_min=args.print_feed,
+        material_profile=args.material_profile,
+        linear_advance_k=args.linear_advance_k,
+        linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),
         travel_mm_per_min=args.travel_feed,
         fan_speed=args.fan_speed,
         fan_start_height=args.fan_start_height,
