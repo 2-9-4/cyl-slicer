@@ -107,5 +107,11 @@ def classify_bridge_regions(
         unwrapped = affinity.scale(joined, xfact=1/radius,yfact=1,origin=(0,0))
         low,high=current.bounds[1],current.bounds[3]
         # Collapse copies only once; never triple-deposit seam-adjacent spans.
-        out[direction] = fold_to_canonical(unwrapped,low,high)
+        # Periodic copies and buffer arithmetic can leave microscopic
+        # fragments outside the model footprint after folding. Strictly clip
+        # back to the actual canonical occupied cross-section: no bridge
+        # extrusion/support suppression is allowed outside printable material.
+        folded = fold_to_canonical(unwrapped,low,high)
+        canonical_model = fold_to_canonical(current,low,high)
+        out[direction] = folded.intersection(canonical_model)
     return out
