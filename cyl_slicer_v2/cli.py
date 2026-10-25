@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
+    parser.add_argument("--line-width", type=float, default=0.4,
+                        help="Nominal deposited bead width in mm (not physical nozzle diameter).")
+    parser.add_argument("--infill-wall-overlap-fraction", type=float, default=0.15,
+                        help="Fraction of bead width infill may extend into the inner wall footprint.")
     parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
     add_calibration_arguments(parser)
     parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
@@ -205,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
+        nozzle_width=args.line_width,
+        infill_wall_overlap_fraction=args.infill_wall_overlap_fraction,
         min_path_length=args.min_path_length,
         retract_mm=args.retract_mm,
         retract_speed_mm_per_min=args.retract_speed * 60,

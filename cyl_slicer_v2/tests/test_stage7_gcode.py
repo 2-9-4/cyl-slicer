@@ -319,13 +319,23 @@ class GcodeTests(unittest.TestCase):
         config = SlicerConfig(layer_backend="intersection", layer_height=0.2, bed_radius=30.0, wall_count=3)
         code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=1)
         infill = code.split(";TYPE:SOLID_INFILL")[1:]
-        self.assertEqual(len(infill), 76)
+        self.assertEqual(len(infill), 75)  # Finite-width outline/skin clipping.
         # A nearest-point perimeter seam may leave a long travel to the first
         # skin pass. Transfers between subsequent adjacent passes must not hop.
         self.assertTrue(all("; z hop" not in path for path in infill[1:]))
         self.assertTrue(all(len(parse_extrusion_segments(";TYPE:SOLID_INFILL\n" + path)) == 1 for path in infill))
         moves = [line for line in code.splitlines() if line.startswith("G1 X")]
-        self.assertAlmostEqual(float(re.search(r"\bE([0-9.]+)", moves[-1])[1]), 94.77276, places=5)
+        # The former hard-coded E value came from tracing the model outline
+        # with bead centerlines. Check emitted physical length and resulting
+        # material instead: correct inward offsets necessarily change volume.
+        extrusion_segments = parse_extrusion_segments(code)
+        total_surface_length = sum(
+            math.hypot(x1 - x0, (config.bed_radius + config.layer_height * 0.5) * math.radians(y1 - y0))
+            for _, _, x0, y0, x1, y1 in extrusion_segments
+        )
+        last_print_e = float(re.search(r"\bE([0-9.]+)", moves[-1])[1])
+        self.assertAlmostEqual(last_print_e, total_surface_length * config.extrusion_per_mm,
+                               delta=0.1)
 
     def test_layer_changes_reset_extrusion_and_rotary_axes(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
@@ -446,7 +456,7 @@ class GcodeTests(unittest.TestCase):
         # Leave enough later shells that layer 3 is not capped by max_layers.
         code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"), config, max_layers=7)
         segments = [s for s in parse_extrusion_segments(code) if s[0] == 3 and s[1] == "INFILL_RADIAL"]
-        self.assertEqual(len(segments), 17)
+        self.assertEqual(len(segments), 15)  # Shorter fill region after proper walls.
         for previous, current in zip(segments, segments[1:]):
             self.assertLess((previous[5] - previous[3]) * (current[5] - current[3]), 0.0)
             self.assertAlmostEqual(current[3], previous[5])

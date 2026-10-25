@@ -153,7 +153,11 @@ class ToolpathTests(unittest.TestCase):
         paths = build_layer_toolpaths(layers[73], SlicerConfig(layer_height=0.2)).paths_by_role.get("EXTERNAL_PERIMETER", [])
 
         self.assertEqual(len(paths), 2)
-        boundary = layers[73].occupied.boundary.buffer(1e-8)
+        from cyl_slicer_v2.toolpaths import inset_geometry
+        expected_centers = inset_geometry(layers[73].occupied, layers[73].radius, 0.2,
+                                          periodic=layers[73].is_full_wrap,
+                                          theta_window=layers[73].theta_window)
+        boundary = expected_centers.boundary.buffer(1e-8)
         self.assertTrue(all(len(path.points) >= 2 for path in paths))
         self.assertTrue(all(boundary.covers(LineString(path.points)) for path in paths))
 
@@ -174,10 +178,10 @@ class ToolpathTests(unittest.TestCase):
             [],
         )
 
-        self.assertTrue(paths)
-        points = {(round(theta, 4), round(axial, 4)) for path in paths for theta, axial in path.points}
-        self.assertIn((0.01, 0.0), points)
-        self.assertIn((0.01, 0.01), points)
+        # A bead wider than this triangular detail cannot fit entirely inside
+        # it. Gap/thin-wall generation (#11) is responsible for recovering
+        # deliberate material in features below one nozzle width.
+        self.assertEqual(paths, [])
 
     def test_infill_spacing_is_reasonable(self):
         config = SlicerConfig(theta_step_deg=10, axial_step=1.0, layer_height=1.0, infill_spacing=2.0)
