@@ -4,7 +4,7 @@ import unittest
 
 from shapely.geometry import GeometryCollection, box
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import emit_gcode
 from cyl_slicer_v2.models import LayerSlice
 from cyl_slicer_v2.toolpaths import build_layer_toolpaths
