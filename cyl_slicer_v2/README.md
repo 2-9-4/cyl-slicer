@@ -3,6 +3,23 @@
 This is a self-contained raster-based prototype. It does not import or mutate
 the legacy `slicer.py`/`togcode.py` pipeline.
 
+## Machine and default profiles
+
+The CLI retains the original `legacy-cli` defaults to avoid silently changing
+existing prints: three walls, 30 mm build radius, and strong support filtering
+and merging. `--profile library` instead selects the smaller support thresholds,
+two walls, and zero build radius of bare `SlicerConfig()`. Explicit arguments
+override either profile.
+
+`--nozzle-diameter` specifies the physical nozzle orifice, while
+`--line-width` specifies the deposited bead width. They are independent.
+Supplying a nozzle diameter validates that layer height does not exceed the
+physical orifice. Without a specified nozzle, hardware is marked `unknown`
+in G-code and the old settings remain available for compatibility; this is
+not evidence that the historic h0.5/w0.4 configuration is printable.
+For a 0.4 mm nozzle, use `--nozzle-diameter 0.4 --layer-height 0.2` with a
+separately calibrated line width.
+
 ## Run
 
 ```bash

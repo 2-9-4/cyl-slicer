@@ -9,7 +9,8 @@ from .calibration import RetractionSweep
 @dataclass(frozen=True)
 class SlicerConfig:
     layer_height: float = 0.5
-    nozzle_width: float = 0.4
+    nozzle_width: float = 0.4  # Deposited track width; not physical nozzle orifice.
+    nozzle_diameter: float | None = None
     # "rectangular" preserves the original flow/spacing approximation.
     # "rounded" uses a flat-topped bead with semicircular sides.
     bead_model: str = "rectangular"
@@ -112,6 +113,11 @@ class SlicerConfig:
             raise ValueError("layer_height must be finite and positive")
         if not math.isfinite(self.nozzle_width) or self.nozzle_width <= 0:
             raise ValueError("nozzle_width must be finite and positive")
+        if self.nozzle_diameter is not None:
+            if not math.isfinite(self.nozzle_diameter) or self.nozzle_diameter <= 0:
+                raise ValueError("nozzle_diameter must be finite and positive")
+            if self.layer_height > self.nozzle_diameter + 1e-9:
+                raise ValueError("layer_height cannot exceed specified nozzle_diameter")
         if self.bead_model not in {"rectangular", "rounded"}:
             raise ValueError("bead_model must be 'rectangular' or 'rounded'")
         if self.bead_model == "rounded" and self.layer_height > self.nozzle_width:

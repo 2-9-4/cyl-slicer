@@ -15,18 +15,41 @@ from .occupancy_backends import build_occupancy_backend
 from .toolpaths import build_toolpaths
 
 
+CLI_PROFILE_OVERRIDES = {
+    "wall_count": 3,
+    "bed_radius": 30.0,
+    "support_min_island_area": 10.0,
+    "support_min_region_area": 10.0,
+    "support_bearing_min_area": 25.0,
+    "support_merge_gap": 10.0,
+}
+
+
+def _profile_value(args, key: str):
+    specified = getattr(args, key)
+    if specified is not None:
+        return specified
+    if args.profile == "legacy-cli" and key in CLI_PROFILE_OVERRIDES:
+        return CLI_PROFILE_OVERRIDES[key]
+    return getattr(SlicerConfig(), key)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Raster-based cylindrical slicer v2")
     parser.add_argument("input", nargs="?", help="STL/mesh input path")
     parser.add_argument("--fixture", choices=sorted(FIXTURES), help="Use a generated fixture mesh")
     parser.add_argument("--out", default="output_v2.gcode", help="G-code output path")
     parser.add_argument("--max-layers", type=int, default=None)
+    parser.add_argument("--profile", choices=("legacy-cli", "library"), default="legacy-cli",
+                        help="Use original printer-oriented defaults or bare Python SlicerConfig defaults.")
     parser.add_argument("--layer-height", type=float, default=0.5)
     parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
+    parser.add_argument("--nozzle-diameter", type=float, default=None,
+                        help="Physical nozzle orifice diameter in mm; independent of line width.")
     parser.add_argument("--theta-step-deg", type=float, default=5.0)
     parser.add_argument("--axial-step", type=float, default=1.0)
     parser.add_argument("--axial-min", type=float, default=15.0, help="Minimum emitted X position in mm.")
-    parser.add_argument("--wall-count", type=int, default=3)
+    parser.add_argument("--wall-count", type=int, default=None)
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
@@ -36,14 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Coupled extrusion/spacing model; rounded requires layer height <= line width.")
     parser.add_argument("--infill-wall-overlap-fraction", type=float, default=0.15,
                         help="Fraction of bead width infill may extend into the inner wall footprint.")
-    parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
+    parser.add_argument("--min-path-length", type=float, default=0.6,
+                        help="Reject entire unprintably short features, not corners within a path.")
     add_calibration_arguments(parser)
     parser.add_argument("--retract-speed", type=float, default=30.0, help="Retraction speed in mm/s.")
     parser.add_argument("--hotend-temp", type=int, default=215)
     parser.add_argument("--print-feed", type=float, default=1800.0,
-                        help="Commanded G1 printing feed F (default 1800); mixed axial/rotary units.")
+                        help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
     parser.add_argument("--travel-feed", type=float, default=3000.0,
-                        help="Commanded G0 travel feed F (default 3000), including Z hops; mixed axial/rotary units.")
+                        help="Target physical XY travel mm/min; radial Z moves retain native mm/min.")
     parser.add_argument("--fan-speed", type=int, default=255,
                         help="Part-cooling PWM from 0 (off) to 255 (full); default 255.")
     parser.add_argument("--fan-start-height", type=float, default=2.0,
@@ -79,25 +103,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--support-min-island-area",
         type=float,
-        default=10,
+        default=None,
         help="Drop support fragments smaller than this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-min-region-area",
         type=float,
-        default=10.0,
+        default=None,
         help="Inflate surviving support fragments below this metric area in mm^2.",
     )
     parser.add_argument(
         "--support-bearing-min-area",
         type=float,
-        default=25.0,
+        default=None,
         help="Minimum contact area in mm^2 before lower geometry counts as load-bearing.",
     )
     parser.add_argument(
         "--support-merge-gap",
         type=float,
-        default=10.0,
+        default=None,
         help="Merge support branches closer than this metric gap in mm.",
     )
     parser.add_argument(
@@ -135,8 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--bed-radius",
         dest="bed_radius",
         type=float,
-        default=30.0,
-        help="Radius of the printer build cylinder; support foundations start from this radius.",
+        default=None,
+        help="Build-cylinder radius: 30 mm for legacy-cli, zero for library profile.",
     )
     parser.add_argument(
         "--no-gap-support",
@@ -212,10 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     config = SlicerConfig(
         layer_height=args.layer_height,
         filament_diameter=args.filament_diameter,
+        nozzle_diameter=args.nozzle_diameter,
         theta_step_deg=args.theta_step_deg,
         axial_step=args.axial_step,
         axial_min=args.axial_min,
-        wall_count=args.wall_count,
+        wall_count=_profile_value(args, "wall_count"),
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
@@ -235,10 +260,10 @@ def main(argv: list[str] | None = None) -> int:
         z_hop_min_travel=args.z_hop_min_travel,
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
         support_spacing=args.support_spacing,
-        support_min_island_area=args.support_min_island_area,
-        support_min_region_area=args.support_min_region_area,
-        support_bearing_min_area=args.support_bearing_min_area,
-        support_merge_gap=args.support_merge_gap,
+        support_min_island_area=_profile_value(args, "support_min_island_area"),
+        support_min_region_area=_profile_value(args, "support_min_region_area"),
+        support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),
+        support_merge_gap=_profile_value(args, "support_merge_gap"),
         support_gap_layers=args.support_gap_layers,
         support_interface_layers=args.support_interface_layers,
         support_interface_spacing=args.support_interface_spacing,
@@ -247,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         raft_layers=args.raft_layers,
         raft_grid_spacing=args.raft_grid_spacing,
         raft_axial_gap=args.raft_axial_gap,
-        bed_radius=args.bed_radius,
+        bed_radius=_profile_value(args, "bed_radius"),
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,
         toolpath_workers=args.toolpath_workers if args.toolpath_workers is not None else args.slice_workers,
@@ -256,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
         intersection_curve_error_mm=args.intersection_curve_error_mm,
         intersection_strict_recovery=args.intersection_strict_recovery,
     )
+    try:
+        config.validate()
+    except ValueError as exc:
+        parser.error(str(exc))
     backend = None
     if args.layer_backend == "raster":
         backend = timed(
