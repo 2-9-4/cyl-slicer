@@ -52,8 +52,10 @@ Extrusion is derived from line width, layer height, and filament cross-section:
 filament diameter is 1.75 mm; override it with `--filament-diameter D`.
 
 Degenerate face/cylinder recovery checks nearby samples from both
-sides of the requested radius, bounded by layer thickness and the
-intersection curve-error budget. A two-sided match in island/hole topology
+sides of the requested radius, bounded by 10% of deposited layer thickness.
+Strict mode additionally caps that shift to the intersection curve-error
+budget. Compatibility mode explicitly warns if it exceeds that budget.
+A two-sided match in island/hole topology
 and physical boundary position is reported as verified. True radial
 tangencies can cause topology to change exactly at the sample radius; the
 default preserves bounded one-sided recovery for compatibility, but emits a
