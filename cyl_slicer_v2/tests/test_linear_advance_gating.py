@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 

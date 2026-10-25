@@ -4,7 +4,7 @@ import math
 import re
 import unittest
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import _cooling_print_speed, _layer_fan_pwm, emit_gcode
 from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 

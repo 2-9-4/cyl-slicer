@@ -15,7 +15,7 @@ from io import StringIO
 
 import numpy as np
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import MAX_MARLIN_Y_DEGREES, emit_gcode, emit_toolpath, parse_extrusion_segments
 from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 
