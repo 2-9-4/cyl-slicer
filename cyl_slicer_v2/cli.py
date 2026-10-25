@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wall-count", type=int, default=None)
     parser.add_argument("--wall-order", choices=("outer-first", "inner-first"), default="outer-first",
                         help="Per-island printing order; inner-first prints supporting walls before visible shell.")
+    parser.add_argument("--seam-policy", choices=("nearest", "aligned", "corner"), default="nearest",
+                        help="Closed-wall start selection; nearest preserves current toolpath behavior.")
+    parser.add_argument("--seam-angle-deg", type=float, default=180.0,
+                        help="Cylinder angular phase target for aligned seams and corner tie-breaking.")
+    parser.add_argument("--seam-exclude-deg", type=float, nargs=2, default=None, metavar=("START", "END"),
+                        help="Exclude closed-loop starts in this angular window (wraps through zero if START>END).")
     parser.add_argument("--top-layers", type=int, default=3, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=3, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=2.0)
@@ -262,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         axial_min=args.axial_min,
         wall_count=_profile_value(args, "wall_count"),
         wall_order=args.wall_order,
+        seam_policy=args.seam_policy,
+        seam_angle_deg=args.seam_angle_deg,
+        seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),
         top_layers=args.top_layers,
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,

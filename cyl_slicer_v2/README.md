@@ -96,6 +96,26 @@ is no intentional double-extrusion. The same calibrated bead area and dense
 pitch apply to both skin and buried fill. This is not yet a variable-width
 skin/gap fill process and still needs surface/flow calibration coupons.
 
+## Predictable perimeter seams
+
+For closed perimeters only, `--seam-policy nearest` preserves the existing
+nearest-point entry. `--seam-policy aligned --seam-angle-deg 180` places the
+start at the contour point nearest the selected cylinder phase (180° is the
+default target); if the ray intersects an edge, it can split the edge without
+changing its geometry or extrusion length. `--seam-policy corner` prefers
+the sharpest actual polygon corner, with the target angle and travel distance
+as tie-breakers. These policies are especially useful for stacking starts over
+successive layers or hiding them at corners.
+
+`--seam-exclude-deg START END` excludes start angles in the half-open cylinder
+window [START,END) measured in degrees; START greater than END means the
+window crosses the 0/360° rotary seam. When every candidate is excluded the
+slicer raises an error instead of silently putting a seam in the forbidden
+region. This applies to already closed perimeter loops only; open/wraparound
+surface walls retain their original winding. No automatic coasting/restart
+over-extrusion is enabled: calibrate pressure advance and retraction on the
+machine first.
+
 ## Run
 
 ```bash

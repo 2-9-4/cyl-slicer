@@ -268,9 +268,11 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
     )
 
 
-def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Toolpath:
+def _orient_path_for_current_position(
+    path: Toolpath, state: GcodeState, config: SlicerConfig | None = None
+) -> Toolpath:
     if path.role in PERIMETER_ROLES and len(path.points) > 3 and cylindrical_distance(path.points[0], path.points[-1], path.radius) <= 1e-8:
-        return _rotate_closed_perimeter(path, state)
+        return _rotate_closed_perimeter(path, state, config)
     if not _can_reverse_for_output(path):
         return path
     start_distance = _travel_distance_to_point(path, path.points[0], state)
@@ -280,7 +282,13 @@ def _orient_path_for_current_position(path: Toolpath, state: GcodeState) -> Tool
     return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
 
 
-def _rotate_closed_perimeter(path: Toolpath, state: GcodeState) -> Toolpath:
+def _rotate_closed_perimeter(
+    path: Toolpath, state: GcodeState, config: SlicerConfig | None = None
+) -> Toolpath:
+    if config is not None and (
+        config.seam_policy != "nearest" or config.seam_exclude_deg is not None
+    ):
+        return _rotate_preferred_seam(path, state, config)
     loop = path.points[:-1]
     center = (min(p[0] for p in loop) + max(p[0] for p in loop)) * 0.5
     current_theta = _nearest_theta(state.theta_accum, center)
@@ -302,6 +310,111 @@ def _rotate_closed_perimeter(path: Toolpath, state: GcodeState) -> Toolpath:
     _, index, fraction = best
     if fraction <= 1e-10 or fraction >= 1.0 - 1e-10:
         index = (index + (fraction >= 1.0 - 1e-10)) % len(loop)
+        points = loop[index:] + loop[:index] + [loop[index]]
+    else:
+        a, b = path.points[index:index + 2]
+        point = (a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction)
+        points = [point, *loop[index + 1:], *loop[:index + 1], point]
+    return replace(path, points=points)
+
+
+
+def _seam_angle_distance(theta: float, angle_rad: float) -> float:
+    """Shortest periodic theta distance, independent of rotary winding."""
+    return abs((theta - angle_rad + math.pi) % TWO_PI - math.pi)
+
+
+def _seam_angle_excluded(theta: float, window: tuple[float, float] | None) -> bool:
+    if window is None:
+        return False
+    angle = math.degrees(theta) % 360.0
+    begin, end = window
+    if begin < end:
+        return begin - 1e-9 <= angle < end - 1e-9
+    return angle >= begin - 1e-9 or angle < end - 1e-9
+
+
+def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConfig) -> Toolpath:
+    """Choose a phase-aligned or high-curvature seam without changing loop geometry.
+
+    Candidate points include every original vertex, the closest point on
+    each edge in the physical cylindrical metric, and intersections with the
+    desired fixed-angle ray (and exclusion-window boundaries). Only choose
+    points on real edges. A cut simply rotates/splits the original polyline,
+    retaining exact oriented geometry, including non-zero rotary winding.
+    """
+    loop = path.points[:-1]
+    n = len(loop)
+    radius = path.radius
+    target = math.radians(config.seam_angle_deg)
+    center = 0.5 * (min(p[0] for p in loop) + max(p[0] for p in loop))
+    current_theta = _nearest_theta(state.theta_accum, center)
+    current = (current_theta * radius, state.axial)
+    best = None
+
+    for index, (a, b) in enumerate(zip(path.points[:-1], path.points[1:])):
+        ax, ay = a[0] * radius, a[1]
+        dx, dy = (b[0] - a[0]) * radius, b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        if length2 < 1e-16:
+            continue
+        fractions = [0.0, 1.0]
+        for shift in (0, -1, 1):
+            here = ((current_theta + shift * TWO_PI) * radius, state.axial)
+            fractions.append(max(0.0, min(1.0,
+                ((here[0] - ax) * dx + (here[1] - ay) * dy) / length2)))
+
+        ray_degrees = [config.seam_angle_deg]
+        if config.seam_exclude_deg is not None:
+            # The upper exclusion boundary is printable. The lower boundary
+            # is blocked by design, but its neighboring vertices are tested.
+            ray_degrees.append(config.seam_exclude_deg[1])
+        for degrees in ray_degrees:
+            phase = math.radians(degrees)
+            lower = math.floor((min(a[0], b[0]) - phase) / TWO_PI) - 1
+            upper = math.ceil((max(a[0], b[0]) - phase) / TWO_PI) + 1
+            if abs(b[0] - a[0]) <= 1e-14:
+                continue
+            for k in range(lower, upper + 1):
+                fraction = (phase + TWO_PI * k - a[0]) / (b[0] - a[0])
+                if 0 <= fraction <= 1:
+                    fractions.append(fraction)
+        for fraction in fractions:
+            theta = a[0] + fraction * (b[0] - a[0])
+            axial = a[1] + fraction * (b[1] - a[1])
+            if _seam_angle_excluded(theta, config.seam_exclude_deg):
+                continue
+            angular_cost = radius * _seam_angle_distance(theta, target)
+            travel = min(
+                math.hypot((theta + shift * TWO_PI) * radius - current[0], axial - current[1])
+                for shift in (-1, 0, 1)
+            )
+            turn = 0.0
+            if fraction < 1e-10 or fraction > 1.0 - 1e-10:
+                vertex = index if fraction < 1e-10 else (index + 1) % n
+                prev_pt = loop[(vertex - 1) % n]
+                vertex_pt = loop[vertex]
+                next_pt = loop[(vertex + 1) % n]
+                u = ((vertex_pt[0] - prev_pt[0]) * radius, vertex_pt[1] - prev_pt[1])
+                v = ((next_pt[0] - vertex_pt[0]) * radius, next_pt[1] - vertex_pt[1])
+                denom = math.hypot(*u) * math.hypot(*v)
+                if denom > 1e-12:
+                    turn = 1.0 - max(-1.0, min(1.0,
+                        (u[0] * v[0] + u[1] * v[1]) / denom))
+            if config.seam_policy == "corner":
+                cost = (-round(turn, 9), angular_cost, travel)
+            elif config.seam_policy == "aligned":
+                cost = (angular_cost, travel, -turn)
+            else:
+                cost = (travel, angular_cost, -turn)
+            if best is None or cost < best[0]:
+                best = (cost, index, fraction)
+
+    if best is None:
+        raise ValueError("No eligible perimeter seam point outside excluded angular window")
+    _, index, fraction = best
+    if fraction <= 1e-10 or fraction >= 1.0 - 1e-10:
+        index = (index + (fraction >= 1.0 - 1e-10)) % n
         points = loop[index:] + loop[:index] + [loop[index]]
     else:
         a, b = path.points[index:index + 2]
@@ -354,7 +467,9 @@ def _monotonic_skin_paths(paths: list[Toolpath]) -> list[Toolpath]:
     return output
 
 
-def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState) -> list[Toolpath]:
+def _ordered_paths_for_current_position(
+    paths: list[Toolpath], state: GcodeState, config: SlicerConfig | None = None
+) -> list[Toolpath]:
     if len(paths) > PATH_ORDER_OPTIMIZE_LIMIT:
         return paths
 
@@ -373,10 +488,10 @@ def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState
     )
     while remaining:
         best_index = 0
-        best_path = _orient_path_for_current_position(remaining[0], shadow)
+        best_path = _orient_path_for_current_position(remaining[0], shadow, config)
         best_distance = _travel_distance_to_point(best_path, best_path.points[0], shadow)
         for index, path in enumerate(remaining[1:], start=1):
-            oriented = _orient_path_for_current_position(path, shadow)
+            oriented = _orient_path_for_current_position(path, shadow, config)
             distance = _travel_distance_to_point(oriented, oriented.points[0], shadow)
             if distance < best_distance:
                 best_index = index
@@ -401,7 +516,7 @@ def _should_retract_after_path(
         return True
 
     end_state = _shadow_after_path(path, state)
-    next_path = _orient_path_for_current_position(next_path, end_state)
+    next_path = _orient_path_for_current_position(next_path, end_state, config)
     travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
     inside = False
     if travel_region is not None and travel_distance > 1e-8:
@@ -452,7 +567,7 @@ def _ordered_layer_paths(
             first_role = next((role for role in roles if group.get(role)), None)
             if first_role is None:
                 return math.inf
-            candidates = [_orient_path_for_current_position(path, shadow) for path in group[first_role]]
+            candidates = [_orient_path_for_current_position(path, shadow, config) for path in group[first_role]]
             return min(_travel_distance_to_point(path, path.points[0], shadow) for path in candidates)
 
         nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i]))
@@ -462,10 +577,10 @@ def _ordered_layer_paths(
             role_paths = (
                 _monotonic_skin_paths(group.get(role, []))
                 if role == "TOP_SKIN" and config is not None and config.monotonic_top_skin
-                else _ordered_paths_for_current_position(group.get(role, []), shadow)
+                else _ordered_paths_for_current_position(group.get(role, []), shadow, config)
             )
             for path in role_paths:
-                path = _orient_path_for_current_position(path, shadow)
+                path = _orient_path_for_current_position(path, shadow, config)
                 ordered.append(path)
                 shadow = _shadow_after_path(path, shadow)
     return ordered
@@ -641,6 +756,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",
         f";MONOTONIC_TOP_SKIN:{str(config.monotonic_top_skin).lower()}",
+        f";SEAM_POLICY:{config.seam_policy}",
+        f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
+        f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
@@ -709,7 +827,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
         paths = _ordered_layer_paths(layer, state, layer_config)
         for index, path in enumerate(paths):
-            path = _orient_path_for_current_position(path, state)
+            path = _orient_path_for_current_position(path, state, layer_config)
             next_path = paths[index + 1] if index + 1 < len(paths) else None
             retract_after = _should_retract_after_path(path, next_path, state, layer_config, travel_region)
             out.append(f";TYPE:{path.role}")
