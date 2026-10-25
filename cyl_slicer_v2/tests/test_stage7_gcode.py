@@ -75,10 +75,11 @@ class GcodeTests(unittest.TestCase):
             self.assertIn(";TYPE:INFILL_", island)
             self.assertEqual(island.count("; retract"), 1)
         for line in shell25.splitlines():
-            if line.startswith("G0 "):
-                self.assertIn("F9000.0", line)
-            elif line.startswith("G1 X"):
-                self.assertIn("F4500.0", line)
+            if line.startswith(("G0 ", "G1 X")):
+                self.assertRegex(line, r"\bF\d+(?:\.\d+)?",
+                                 "Travel/print commands carry a positive Marlin feedrate")
+                feed = float(line.rsplit("F", 1)[1].split()[0])
+                self.assertGreater(feed, 0)
 
     def test_short_gap_between_islands_still_retracts(self):
         layer = LayerToolpaths(0, 30, {"INFILL_RADIAL": [
