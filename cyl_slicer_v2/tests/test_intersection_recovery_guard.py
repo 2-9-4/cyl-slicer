@@ -18,9 +18,10 @@ class IntersectionRecoveryGuardTests(unittest.TestCase):
         self.positive = (box(0, 0, 1, 1), (0, 1), False)
         self.negative = (box(0, 0.001, 1, 1.001), (0, 1), False)
 
-    def _test_recovery(self, opposite=None, offsets=(0.001, -0.001), strict=False):
+    def _test_recovery(self, opposite=None, offsets=(0.001, -0.001),
+                       strict=False, layer_height=0.2):
         opposite = self.negative if opposite is None else opposite
-        self.config = SlicerConfig(layer_height=0.2, intersection_curve_error_mm=0.025,
+        self.config = SlicerConfig(layer_height=layer_height, intersection_curve_error_mm=0.025,
                                    intersection_strict_recovery=strict)
 
         def sample(_mesh, radius, _config, _z_bounds):
@@ -69,6 +70,15 @@ class IntersectionRecoveryGuardTests(unittest.TestCase):
     def test_recovery_cannot_exceed_layer_or_curve_error_budget(self):
         with self.assertRaises(RuntimeError):
             self._test_recovery(offsets=(0.04, -0.04))
+
+    def test_compatibility_uses_legacy_shift_range_but_reports_excess(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = self._test_recovery(offsets=(0.04, -0.04), layer_height=0.5)
+        self.assertTrue(result[0].equals(self.positive[0]))
+        self.assertTrue(any("EXCEEDS CURVE-ERROR BUDGET" in str(w.message) for w in caught))
+        with self.assertRaises(RuntimeError):
+            self._test_recovery(offsets=(0.04, -0.04), layer_height=0.5, strict=True)
 
     def test_hole_count_and_full_wrap_are_topological_invariants(self):
         self.assertFalse(_recovery_compatible(
