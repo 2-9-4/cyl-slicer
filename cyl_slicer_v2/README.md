@@ -60,7 +60,7 @@ cells. `0` disables it and is the default.
 The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters, shifted so the minimum emitted X is `--axial-min`
-- `Y`: layer-local rotary angle in degrees after `G92 E0 Y0`
+- `Y`: rotary degrees since the most recent Y reset (normally each layer)
 - `Z`: radial lift from `bed_radius`
 - comments: `;LAYER`, `;Z`, `;TYPE`
 
@@ -74,6 +74,29 @@ Sparse radial infill can print in either rotary direction. Adjacent passes start
 at the nearer endpoint, so they alternate positive and negative Y with a short
 axial travel between rows. Reversed moves retain their intended angular span,
 including across the periodic seam.
+
+V2 targets the printer's Marlin 2.0.7 firmware with `POWER_LOSS_RECOVERY` enabled.
+At startup and each layer, `M400`, `G92.9 Y<wrapped phase>`, and `G92 E0 Y0`
+rebase the native rotary position by whole turns and reset logical Y without
+rotating the motor. Retaining the angular phase avoids accumulating fractional
+motor-step rounding at each layer's zero.
+Ordinary `G92 Y0` alone only changes the workspace in this firmware and does not
+bound its internal float32 planner position. See Marlin's
+[G92 implementation](https://github.com/MarlinFirmware/Marlin/blob/2.0.7.2/Marlin/src/gcode/geometry/G92.cpp).
+
+Additional Y-only resets happen inside large layers before the next command
+would exceed ±3600 degrees. At that magnitude float32 spacing is approximately
+0.000244 degrees, below the 0.001-degree output resolution. Moves too large to
+fit after a reset are rejected before writing G-code. Mid-layer resets preserve
+E, retraction state, and physical rotary winding. This requires `G92.9` support;
+it is not a generic profile for firmware that lacks that Marlin feature.
+
+`test_marlin_rotary_precision.py` replays emitted commands using Marlin's
+float32 workspace math and signed 32-bit planner steps at the configured
+52.7777778 steps/degree. It covers a print exceeding 80 million physical degrees,
+large individual layers, reversals, small moves, existing workspace offsets,
+and oversized-move rejection. It models these numeric operations rather than
+executing a complete firmware image.
 
 Z-hop defaults to 0.4 mm for travels of at least 5 mm or shorter travels crossing
 a perimeter. Traveling along a perimeter (such as the 0.4 mm step between adjacent

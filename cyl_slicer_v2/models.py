@@ -48,3 +48,4 @@ class GcodeState:
     retracted: bool = False
     retracted_mm: float = 0.0
     retracted_speed_mm_per_min: float = 1800.0
+    native_y_origin_degrees: float = 0.0

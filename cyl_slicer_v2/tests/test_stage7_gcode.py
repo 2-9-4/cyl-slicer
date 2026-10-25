@@ -28,7 +28,7 @@ class GcodeTests(unittest.TestCase):
         self.assertEqual(code.count("M106 S255 ; part cooling on"), 1)
         self.assertLess(code.index(";LAYER:0"), code.index("M106 S255"))
         self.assertLess(code.index("M106 S255"), code.index(";LAYER:1"))
-        self.assertLess(code.index("M400"), code.index("M106 S0 ; fan off"))
+        self.assertLess(code.index("M400 ; wait for end lift"), code.index("M106 S0 ; fan off"))
 
     def test_part_cooling_can_be_disabled_or_set_to_partial_from_first_shell(self):
         layers = [LayerToolpaths(0, 30.2)]
@@ -53,9 +53,10 @@ class GcodeTests(unittest.TestCase):
                 self.assertIn(expected, code)
                 self.assertLess(code.index("G90 ; absolute positioning for end lift"),
                                 code.index(expected))
-                self.assertLess(code.index(expected), code.index("M400"))
-                self.assertLess(code.index("M400"), code.index("M104 S0"))
-                self.assertLess(code.index("M400"), code.index("M84"))
+                wait = code.index("M400 ; wait for end lift")
+                self.assertLess(code.index(expected), wait)
+                self.assertLess(wait, code.index("M104 S0"))
+                self.assertLess(wait, code.index("M84"))
 
     def test_empty_slice_does_not_move_to_an_assumed_park_height(self):
         code = emit_gcode([], SlicerConfig(bed_radius=30.0))

@@ -17,6 +17,9 @@ from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_R
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
 BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL"})
+# Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
+# is 0.000244 degrees, below our 0.001-degree output resolution.
+MAX_MARLIN_Y_DEGREES = 3600.0
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,46 @@ def _format_move(cmd: str, x: float | None = None, y_deg: float | None = None, z
 
 def _emitted_y_degrees(theta: float, state: GcodeState) -> float:
     return math.degrees(theta - state.theta_origin)
+
+
+def _reset_rotary_axis(
+    state: GcodeState,
+    *,
+    reset_extrusion: bool = False,
+    comment: str = "",
+) -> list[str]:
+    # The target Marlin firmware enables POWER_LOSS_RECOVERY (G92.9). Ordinary
+    # G92 only shifts the workspace, leaving native/planner coordinates growing.
+    # Rebase by whole turns, retaining angular phase so layer resets don't
+    # repeatedly round a fractional motor step into a new zero. The following
+    # G92 keeps logical Y layer-local while native Y starts at the wrapped phase.
+    native_phase = float(f"{math.degrees(math.remainder(state.theta_accum, TWO_PI)):.3f}")
+    state.theta_origin = state.theta_accum
+    state.native_y_origin_degrees = native_phase
+    if reset_extrusion:
+        state.extrusion = 0.0
+    reset = "G92 E0 Y0" if reset_extrusion else "G92 Y0"
+    return [
+        "M400 ; finish moves before rotary coordinate reset",
+        f"G92.9 Y{native_phase:.3f} ; rebase Marlin native rotary position",
+        reset + (" ; " + comment if comment else ""),
+    ]
+
+
+def _ensure_rotary_range(theta: float, state: GcodeState) -> list[str]:
+    target = _emitted_y_degrees(theta, state)
+    if not math.isfinite(target):
+        raise ValueError("Rotary coordinate must be finite")
+    # Leave room for formatting to 0.001 degrees and float32 addition of the
+    # workspace offset. Bound the native planner target as well as logical Y.
+    limit = MAX_MARLIN_Y_DEGREES - 0.001
+    if max(abs(target), abs(target + state.native_y_origin_degrees)) <= limit:
+        return []
+    delta = math.degrees(theta - state.theta_accum)
+    phase = float(f"{math.degrees(math.remainder(state.theta_accum, TWO_PI)):.3f}")
+    if max(abs(delta), abs(delta + phase)) > limit:
+        raise ValueError("A single rotary move exceeds the Marlin precision budget (3600 degrees)")
+    return _reset_rotary_axis(state, comment="reset rotary accumulator within layer")
 
 
 def _emitted_x(axial: float, output_x_offset: float) -> float:
@@ -224,6 +267,7 @@ def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
     return GcodeState(
         theta_accum=accum[-1],
         theta_origin=state.theta_origin,
+        native_y_origin_degrees=state.native_y_origin_degrees,
         axial=path.points[-1][1],
         radial=state.radial,
         extrusion=state.extrusion,
@@ -242,6 +286,7 @@ def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState
     shadow = GcodeState(
         theta_accum=state.theta_accum,
         theta_origin=state.theta_origin,
+        native_y_origin_degrees=state.native_y_origin_degrees,
         axial=state.axial,
         radial=state.radial,
         extrusion=state.extrusion,
@@ -349,6 +394,7 @@ def emit_toolpath(
 
     lines = [";start of path"]
     t0, x0 = pts[0]
+    lines.extend(_ensure_rotary_range(t0, state))
     z_hop = _should_z_hop_to_path(path, state, config, perimeter_index)
     if z_hop:
         state.radial = path.radius + config.z_hop_height
@@ -367,6 +413,7 @@ def emit_toolpath(
         dist = cylindrical_distance((t_prev, x_prev), (t, x), path.radius)
         if dist <= min_length:
             continue
+        lines.extend(_ensure_rotary_range(t, state))
         state.extrusion += dist * config.extrusion_per_mm
         extruded = True
         lines.append(
@@ -392,6 +439,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     output_x_offset = _output_x_offset(layers, config)
     out = [
         ";start of slice",
+        ";MARLIN_REQUIRES:POWER_LOSS_RECOVERY (G92.9 native Y reset)",
         f";LAYER_HEIGHT:{config.layer_height}",
         f";LINE_WIDTH:{config.nozzle_width}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
@@ -400,8 +448,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";HOTEND_TEMP:{config.hotend_temp}",
         f";FAN_SPEED:{config.fan_speed}",
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
+        "G90 ; absolute positioning",
         "M82 ; absolute extrusion mode",
-        "G92 E0 Y0",
+        *_reset_rotary_axis(state, reset_extrusion=True),
         "M106 S0 ; part cooling off for adhesion",
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
@@ -422,9 +471,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             out.append(f"M106 S{config.fan_speed} ; part cooling on")
             fan_started = True
         out.append(_format_move("G0", z=_emitted_z(layer.radius, layer_config), f=layer_config.travel_mm_per_min))
-        out.append("G92 E0 Y0 ; reset E/Y accumulators for layer")
-        state.extrusion = 0.0
-        state.theta_origin = state.theta_accum
+        out.extend(_reset_rotary_axis(state, reset_extrusion=True, comment="reset E/Y accumulators for layer"))
         state.radial = layer.radius
         perimeter_index = (
             _layer_perimeter_index(layer)

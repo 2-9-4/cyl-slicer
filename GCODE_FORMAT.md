@@ -5,9 +5,17 @@
 The G-code uses a non-standard coordinate system adapted for cylindrical printing:
 
 - **X axis**: Axial position (Z in cylindrical coords), in millimeters, shifted so the minimum emitted X is the configured output minimum
-- **Y axis**: Rotation angle in **degrees**, relative to the most recent layer's `G92 Y0`
+- **Y axis**: Rotation angle in **degrees**, relative to the most recent `G92 Y0`
 
 The printer rotates around the Y-axis, extruding radially outward. `E` and `Y` are reset on each layer change with `G92 E0 Y0` to keep accumulating axes close to zero. The slicer tracks physical rotary position internally, so emitted Y values after the reset are local offsets from the current physical angle.
+
+V2 targets Marlin with `POWER_LOSS_RECOVERY` enabled. Each rotary reset waits
+with `M400`, rebases native Y by whole turns with `G92.9 Y<wrapped phase>`, then
+sets logical Y to zero with ordinary `G92`. Retaining angular phase prevents
+fractional-step drift across layer resets. Ordinary `G92 Y0` alone does not reset native coordinates
+in this firmware. Extra Y-only resets within large layers bound native and
+emitted Y to ±3600 degrees without resetting E or moving the rotary motor.
+See the [v2 precision notes](cyl_slicer_v2/README.md).
 
 ## PathObject
 
