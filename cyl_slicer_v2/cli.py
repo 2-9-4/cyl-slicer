@@ -56,6 +56,7 @@ _CLI_ALIASES = {
     "feed_mm_per_min": "print_feed",
     "travel_mm_per_min": "travel_feed",
     "retract_speed_mm_per_min": "retract_speed",
+    "bridge_print_feed_mm_per_min": "bridge_print_feed",
     "cooling_min_print_speed_mm_per_min": "cooling_min_print_speed",
 }
 
@@ -157,6 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="z_hop_on_perimeter_crossing",
         help="Disable Z-hop for travel moves that cross layer perimeters.",
     )
+    parser.add_argument("--bridge-mode", choices=("off", "print"), default=None,
+                        help="Opt-in short two-bearing spans on a rotating mandrel (requires hardware calibration).")
+    parser.add_argument("--bridge-max-span-mm", type=float, default=None)
+    parser.add_argument("--bridge-anchor-overlap-mm", type=float, default=None)
+    parser.add_argument("--bridge-print-feed", type=float, default=None,
+                        help="Bridge speed ceiling in physical mm/min.")
+    parser.add_argument("--bridge-flow-ratio", type=float, default=None,
+                        help="Bridge extrusion multiplier relative to calibrated bead.")
+    parser.add_argument("--bridge-fan-pwm", type=int, default=None,
+                        help="Temporary M106 PWM for bridges; layer fan is restored afterward.")
     parser.add_argument("--support-spacing", type=float, default=1.5)
     parser.add_argument("--support-print-feed", type=float, default=None,
                         help="Physical mm/min max print speed for support; default standard speed.")
@@ -361,6 +372,12 @@ def main(argv: list[str] | None = None) -> int:
         route_max_vertices=_profile_value(args, "route_max_vertices"),
         route_max_unretracted_mm=_profile_value(args, "route_max_unretracted_mm"),
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
+        bridge_mode=_profile_value(args, "bridge_mode"),
+        bridge_max_span_mm=_profile_value(args, "bridge_max_span_mm"),
+        bridge_anchor_overlap_mm=_profile_value(args, "bridge_anchor_overlap_mm"),
+        bridge_print_feed_mm_per_min=_profile_value(args, "bridge_print_feed_mm_per_min"),
+        bridge_flow_ratio=_profile_value(args, "bridge_flow_ratio"),
+        bridge_fan_pwm=_profile_value(args, "bridge_fan_pwm"),
         support_spacing=args.support_spacing,
         support_print_feed_mm_per_min=args.support_print_feed,
         support_interface_print_feed_mm_per_min=args.support_interface_print_feed,

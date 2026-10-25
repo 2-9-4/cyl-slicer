@@ -17,6 +17,7 @@ from .periodic import periodic_copies, translate_theta
 ROLE_ORDER = [
     "EXTERNAL_PERIMETER",
     "INTERNAL_PERIMETER",
+    "BRIDGE",
     "TOP_SKIN",
     "SOLID_INFILL",
     "SUPPORT",
@@ -49,6 +50,11 @@ def _to_metric(geom, radius: float):
 
 def _from_metric(geom, radius: float):
     return shapely.transform(geom, lambda p: p * [1.0 / radius, 1.0])
+
+
+def _metric_buffer(geom, radius: float, distance: float):
+    """Buffer by physical mm in unwrapped theta*R / axial space."""
+    return _clean_polygonal(_from_metric(_to_metric(geom, radius).buffer(distance), radius))
 
 
 def _clean_polygonal(geom):
@@ -640,6 +646,33 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             periodic=periodic,
             theta_window=theta_window,
         )
+        # Reserve bridge corridors and their bearing overlap before generating
+        # ordinary fill. This prevents two intentional extrusions in the same
+        # physical area when bridges intersect bottom skins or sparse grids.
+        bridge_masks = {}
+        if layer.bridge_regions is not None and config.bridge_mode == "print":
+            for direction, region in layer.bridge_regions.items():
+                if region is None or region.is_empty:
+                    continue
+                extended = (
+                    _metric_buffer(region, radius, config.bridge_anchor_overlap_mm)
+                    if config.bridge_anchor_overlap_mm > 0 else region
+                )
+                bridge_masks[direction] = _clean_polygonal(
+                    extended.intersection(infill_source)
+                )
+        bridge_union = (
+            unary_union([part for part in bridge_masks.values() if not part.is_empty])
+            if bridge_masks else GeometryCollection()
+        )
+        for direction, region in bridge_masks.items():
+            if not region.is_empty:
+                paths["BRIDGE"].extend(line_grid_paths(
+                    region, "BRIDGE", radius, config.dense_line_spacing,
+                    config, direction=direction
+                ))
+        if not bridge_union.is_empty:
+            infill_source = _safe_polygon_difference(infill_source, bridge_union)
         solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])
         solid_source = solid_source.intersection(infill_source) if not solid_source.is_empty else solid_source
         solid_direction = (

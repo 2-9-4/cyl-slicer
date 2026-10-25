@@ -760,6 +760,8 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
     Per-layer cooling may already have reduced config.feed_mm_per_min.
     The role's speed is an upper bound, never a way to override cooling.
     """
+    if role == "BRIDGE":
+        return min(config.feed_mm_per_min, config.bridge_print_feed_mm_per_min), config.bridge_flow_ratio
     if role == "SUPPORT":
         maximum = config.support_print_feed_mm_per_min
         return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_flow_ratio
@@ -921,6 +923,11 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
         f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
+        f";BRIDGE_MODE:{config.bridge_mode}",
+        f";BRIDGE_MAX_SPAN_MM:{config.bridge_max_span_mm:g}",
+        f";BRIDGE_FEED_MM_MIN:{config.bridge_print_feed_mm_per_min:g}",
+        f";BRIDGE_FLOW_RATIO:{config.bridge_flow_ratio:g}",
+        f";BRIDGE_FAN_PWM:{config.bridge_fan_pwm}",
         f";SUPPORT_PRINT_FEED_MM_MIN:{config.support_print_feed_mm_per_min}",
         f";SUPPORT_INTERFACE_PRINT_FEED_MM_MIN:{config.support_interface_print_feed_mm_per_min}",
         f";SUPPORT_FLOW_RATIO:{config.support_flow_ratio:g}",
@@ -996,6 +1003,13 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             next_path = paths[index + 1] if index + 1 < len(paths) else None
             retract_after = _should_retract_after_path(path, next_path, state, layer_config, travel_region)
             out.append(f";TYPE:{path.role}")
+            bridge_fan = (
+                path.role == "BRIDGE" and layer_config.bridge_mode == "print"
+                and layer_config.bridge_fan_pwm is not None
+                and layer_config.bridge_fan_pwm != fan_pwm
+            )
+            if bridge_fan:
+                out.append(f"M106 S{layer_config.bridge_fan_pwm} ; bridge fan override")
             out.extend(
                 emit_toolpath(
                     path,
@@ -1007,6 +1021,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                     travel_region=travel_region,
                 )
             )
+            if bridge_fan:
+                out.append(f"M106 S{fan_pwm} ; restore layer fan after bridge")
 
     if layers:
         # Z is radial lift above the mandrel. Park relative to the last emitted

@@ -26,5 +26,9 @@ jobs:
         run: |
           python -m unittest cyl_slicer_v2.tests.test_stage3_intersection_backend.IntersectionBackendTests.test_tube_intersection_layer_is_nonempty_and_full_wrap
           python -m unittest cyl_slicer_v2.tests.test_intersection_recovery_guard
+      - name: Verify anchored bridge geometry and opt-in output
+        run: |
+          python -m unittest cyl_slicer_v2.tests.test_bridge_classification
+          python -m unittest cyl_slicer_v2.tests.test_bridge_output
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests
