@@ -60,6 +60,9 @@ class SlicerConfig:
     hotend_temp: int = 215
     fan_speed: int = 255
     fan_start_height: float = 2.0
+    fan_ramp_height_mm: float = 0.0  # 0 retains step-at-height behavior.
+    cooling_min_layer_time_s: float = 0.0  # 0 disables conservative slowdown.
+    cooling_min_print_speed_mm_per_min: float = 300.0
     min_path_length: float = 0.6
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
     intersection_curve_error_mm: float = 0.025  # Maximum physical unwrapped chord deviation.
@@ -207,6 +210,16 @@ class SlicerConfig:
             raise ValueError("fan_speed must be an integer from 0 to 255")
         if not math.isfinite(self.fan_start_height) or self.fan_start_height < 0:
             raise ValueError("fan_start_height must be finite and non-negative")
+        if not math.isfinite(self.fan_ramp_height_mm) or self.fan_ramp_height_mm < 0:
+            raise ValueError("fan_ramp_height_mm must be finite and non-negative")
+        if not math.isfinite(self.cooling_min_layer_time_s) or self.cooling_min_layer_time_s < 0:
+            raise ValueError("cooling_min_layer_time_s must be finite and non-negative")
+        if (not math.isfinite(self.cooling_min_print_speed_mm_per_min)
+                or self.cooling_min_print_speed_mm_per_min <= 0):
+            raise ValueError("cooling_min_print_speed_mm_per_min must be finite and positive")
+        if (self.cooling_min_layer_time_s > 0
+                and self.cooling_min_print_speed_mm_per_min > self.feed_mm_per_min):
+            raise ValueError("cooling minimum print speed cannot exceed normal print speed")
         if self.z_hop_height < 0:
             raise ValueError("z_hop_height must be non-negative")
         if self.z_hop_min_travel < 0:
