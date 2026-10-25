@@ -257,7 +257,7 @@ def _should_z_hop_to_path(
 
 
 def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
-    if path.role in PERIMETER_ROLES:
+    if path.role in PERIMETER_ROLES or path.role == "TOP_SKIN":
         return False
     if path.closed or len(path.points) < 2:
         return False
@@ -327,6 +327,33 @@ def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
     )
 
 
+def _monotonic_skin_paths(paths: list[Toolpath]) -> list[Toolpath]:
+    """Order independent parallel stripes; every deposited pass has one sign.
+
+    Do not connect across openings or reorder islands. The existing G-code
+    travel/retraction guards still handle the intervening non-extruding moves.
+    """
+    if not paths:
+        return []
+    # Paths of a skin layer share the same primary axis; alternate solid
+    # direction controls whether the constant coordinate is theta or axial.
+    first = paths[0].points
+    axial_direction = abs(first[-1][0] - first[0][0]) <= 1e-8
+    output = []
+    for path in paths:
+        points = list(path.points)
+        start = points[0][1 if axial_direction else 0]
+        end = points[-1][1 if axial_direction else 0]
+        if start > end:
+            points.reverse()
+        output.append(replace(path, points=points))
+    output.sort(key=lambda path: (
+        round(path.points[0][0 if axial_direction else 1], 9),
+        path.points[0][1 if axial_direction else 0],
+    ))
+    return output
+
+
 def _ordered_paths_for_current_position(paths: list[Toolpath], state: GcodeState) -> list[Toolpath]:
     if len(paths) > PATH_ORDER_OPTIMIZE_LIMIT:
         return paths
@@ -388,6 +415,7 @@ def _should_retract_after_path(
         return False
     fill_spacing = {
         "SOLID_INFILL": config.nozzle_width,
+        "TOP_SKIN": config.dense_line_spacing,
         "INFILL_RADIAL": config.infill_spacing,
         "INFILL_AXIAL": config.infill_spacing,
         "SUPPORT": config.support_spacing,
@@ -431,7 +459,12 @@ def _ordered_layer_paths(
                    if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
         group = remaining.pop(nearest)
         for role in roles:
-            for path in _ordered_paths_for_current_position(group.get(role, []), shadow):
+            role_paths = (
+                _monotonic_skin_paths(group.get(role, []))
+                if role == "TOP_SKIN" and config is not None and config.monotonic_top_skin
+                else _ordered_paths_for_current_position(group.get(role, []), shadow)
+            )
+            for path in role_paths:
                 path = _orient_path_for_current_position(path, shadow)
                 ordered.append(path)
                 shadow = _shadow_after_path(path, shadow)
@@ -607,6 +640,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",
+        f";MONOTONIC_TOP_SKIN:{str(config.monotonic_top_skin).lower()}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",

@@ -17,6 +17,7 @@ from .periodic import periodic_copies, translate_theta
 ROLE_ORDER = [
     "EXTERNAL_PERIMETER",
     "INTERNAL_PERIMETER",
+    "TOP_SKIN",
     "SOLID_INFILL",
     "SUPPORT",
     "SUPPORT_INTERFACE",
@@ -638,9 +639,29 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         solid_direction = (
             "radial" if config.solid_infill_pattern == "alternate" and layer.index % 2 else "axial"
         )
-        paths["SOLID_INFILL"].extend(
-            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing, config, direction=solid_direction)
-        )
+        if config.monotonic_top_skin:
+            # Do not fuse exposed skin with the buried bottom/solid regions.
+            # Top dominates where both surface masks overlap (thin objects),
+            # so the same physical area is not deposited twice.
+            top = layer.top_surfaces.intersection(infill_source)
+            bottom = layer.bottom_surfaces.intersection(infill_source)
+            if not top.is_empty and not bottom.is_empty:
+                bottom = bottom.difference(top)
+            if not top.is_empty:
+                paths["TOP_SKIN"].extend(
+                    line_grid_paths(top, "TOP_SKIN", radius, config.dense_line_spacing,
+                                    config, direction=solid_direction)
+                )
+            if not bottom.is_empty:
+                paths["SOLID_INFILL"].extend(
+                    line_grid_paths(bottom, "SOLID_INFILL", radius, config.dense_line_spacing,
+                                    config, direction=solid_direction)
+                )
+        else:
+            paths["SOLID_INFILL"].extend(
+                line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing,
+                                config, direction=solid_direction)
+            )
         if not solid_source.is_empty and not infill_source.is_empty:
             infill_source = infill_source.difference(solid_source)
             if not infill_source.is_valid:
