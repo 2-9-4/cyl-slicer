@@ -181,6 +181,29 @@ segments must remain inside the printed island footprint. The router does
 not navigate disconnected islands, move at extrusion Z through empty air,
 or change E, perimeter winding, or part geometry.
 
+## Two-anchor bridge printing (experimental opt-in)
+
+`--bridge-mode print` detects short, nearly straight **two-bearing**
+unsupported corridors in the physical cylindrical distance metric. Both
+anchor ends must meet the previous deposited layer; a one-ended cantilever,
+a long span above `--bridge-max-span-mm` (default 8 mm), or a branched/irregular
+gap retains normal support instead. Detection spans the periodic 0/360°
+seam. Confirmed bridge infill is laid along the anchored direction at the
+calibrated dense bead pitch, including a small `--bridge-anchor-overlap-mm`
+(default 0.2) into solid bearing material, and excluded from other fill so
+filament is not intentionally printed twice. Support propagation omits
+only bridge regions; nearby overhangs retain their support.
+
+`--bridge-print-feed` sets a speed limit in physical mm/min (default 900),
+`--bridge-flow-ratio` scales bridge extrusion, and `--bridge-fan-pwm`
+overrides the part fan for the bridge and restores it immediately afterward.
+All are **opt-in via bridge mode**. The default `--bridge-mode off`
+continues conventional support: bridging under a rotating mandrel depends
+on gravity, radial phase and cooling hardware, not on horizontal-bed
+heuristics. Verify bridge strips at relevant rotary phases before enabling
+this in production. Partially supported walls, sag prediction, and variable
+bridge bead width remain outside the conservative detector.
+
 ## Run
 
 ```bash

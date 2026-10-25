@@ -29,6 +29,14 @@ class SlicerConfig:
     # Fraction of line width that solid/sparse infill may enter the inner
     # perimeter bead, using the selected coupled bead cross-section model.
     infill_wall_overlap_fraction: float = 0.15
+    # Bridging removes support and changes thermal behavior, opt-in until
+    # calibrated for the rotating mandrel's gravity and phase.
+    bridge_mode: str = "off"  # off | print
+    bridge_max_span_mm: float = 8.0
+    bridge_anchor_overlap_mm: float = 0.2
+    bridge_print_feed_mm_per_min: float = 900.0
+    bridge_flow_ratio: float = 1.0
+    bridge_fan_pwm: int | None = 255
     support_spacing: float = 1.5
     support_print_feed_mm_per_min: float | None = None
     support_interface_print_feed_mm_per_min: float | None = None
@@ -178,6 +186,21 @@ class SlicerConfig:
             raise ValueError("monotonic_top_skin must be bool")
         if not math.isfinite(self.infill_wall_overlap_fraction) or not 0 <= self.infill_wall_overlap_fraction <= 0.5:
             raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
+        if self.bridge_mode not in {"off", "print"}:
+            raise ValueError("bridge_mode must be 'off' or 'print'")
+        if not math.isfinite(self.bridge_max_span_mm) or self.bridge_max_span_mm <= 0:
+            raise ValueError("bridge_max_span_mm must be finite and positive")
+        if not math.isfinite(self.bridge_anchor_overlap_mm) or self.bridge_anchor_overlap_mm < 0:
+            raise ValueError("bridge_anchor_overlap_mm must be finite and nonnegative")
+        if (not math.isfinite(self.bridge_print_feed_mm_per_min)
+                or self.bridge_print_feed_mm_per_min <= 0):
+            raise ValueError("bridge_print_feed_mm_per_min must be finite and positive")
+        if not math.isfinite(self.bridge_flow_ratio) or not 0 < self.bridge_flow_ratio <= 2:
+            raise ValueError("bridge_flow_ratio must be finite and within (0, 2]")
+        if self.bridge_fan_pwm is not None and (
+            not isinstance(self.bridge_fan_pwm, int) or not 0 <= self.bridge_fan_pwm <= 255
+        ):
+            raise ValueError("bridge_fan_pwm must be None or PWM 0..255")
         if self.support_spacing <= 0:
             raise ValueError("support_spacing must be positive")
         for name in ("support_print_feed_mm_per_min", "support_interface_print_feed_mm_per_min"):

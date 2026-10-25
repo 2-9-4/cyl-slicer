@@ -9,6 +9,7 @@ from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
 import trimesh
 
+from .bridges import classify_bridge_regions
 from .config import SlicerConfig
 from .coordinates import TWO_PI
 from .intersection_backend import sample_intersection_layers
@@ -354,6 +355,28 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
         carry = _merge_support_carry(next_carry, layer.radius, config)
 
 
+def _assign_printable_bridges(layers: list[LayerSlice], config: SlicerConfig) -> None:
+    """Replace only confirmed two-ended short bridge support with bridge fills."""
+    if config.bridge_mode != "print":
+        return
+    for previous, layer in zip(layers, layers[1:]):
+        regions = classify_bridge_regions(
+            layer.occupied, previous.occupied, layer.radius,
+            config.nozzle_width, config.bridge_max_span_mm,
+        )
+        parts = [part for part in regions.values() if not part.is_empty]
+        if not parts:
+            continue
+        mask = _safe_union(parts)
+        layer.bridge_regions = regions
+        if not layer.needs_support.is_empty:
+            layer.needs_support = _safe_difference(layer.needs_support, mask)
+        if layer.support_interface_target is not None and not layer.support_interface_target.is_empty:
+            layer.support_interface_target = _safe_difference(
+                layer.support_interface_target, mask
+            )
+
+
 def propagate_solid_surfaces(layers: list[LayerSlice], config: SlicerConfig) -> None:
     top_sources = [
         (index, layer.top_surfaces)
@@ -494,6 +517,7 @@ def slice_mesh(
             )
         )
 
+    _assign_printable_bridges(layers, config)
     propagate_solid_surfaces(layers, config)
     propagate_support(layers, config)
 
