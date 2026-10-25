@@ -351,7 +351,15 @@ def cylindrical_intersection_segments(
     radius: float,
     max_theta_step: float | None = None,
     max_axial_step: float | None = None,
+    max_curve_error_mm: float | None = None,
 ) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    # Backward compatible explicit angular/axial caps. When supplied, the
+    # physical deviation limit is independent and additionally constrains the
+    # curvature between exact edge/cylinder intersections.
+    if max_curve_error_mm is not None and (
+        not math.isfinite(max_curve_error_mm) or max_curve_error_mm <= 0
+    ):
+        raise ValueError("max_curve_error_mm must be finite and positive")
     vertices = np.asarray(mesh.vertices, dtype=float)
     faces = np.asarray(mesh.faces, dtype=np.int64)
     vertex_radii = np.hypot(vertices[:, 0], vertices[:, 1])
@@ -401,17 +409,35 @@ def cylindrical_intersection_segments(
         theta1 = math.atan2(float(p1[1]), float(p1[0]))
         delta_theta = (theta1 - theta0 + math.pi) % (2.0 * math.pi) - math.pi
 
+        normal = np.cross(face_vertices[1] - face_vertices[0], face_vertices[2] - face_vertices[0])
+        offset = -float(np.dot(normal, face_vertices[0]))
+        # For a nonvertical plane n·(R cos(t),R sin(t),z) + d = 0,
+        # z(t) is sinusoidal. Its second derivative magnitude is at most
+        # R*hypot(nx,ny)/abs(nz) (mm/radian^2). Linear interpolation error
+        # of a twice differentiable function is <= M*dt^2/8.
+        # Because u = R*t is linear and z is the only nonlinear unwrapped
+        # component, the same bound applies to physical surface distance.
+        curvature_bound = (
+            radius * math.hypot(float(normal[0]), float(normal[1])) / abs(float(normal[2]))
+            if abs(float(normal[2])) > 1e-12 else 0.0
+        )
         steps = 1
+        if max_curve_error_mm is not None and curvature_bound > 0.0:
+            needed = abs(delta_theta) * math.sqrt(curvature_bound / (8.0 * max_curve_error_mm))
+            steps = max(steps, int(math.ceil(needed)))
         if max_theta_step is not None and max_theta_step > 0:
             steps = max(steps, int(math.ceil(abs(delta_theta) / max_theta_step)))
-        if max_axial_step is not None and max_axial_step > 0:
+        # No artificial subdivision of genuinely straight axial lines in
+        # automatic error-bounded mode; otherwise keep the older axial cap.
+        if max_axial_step is not None and max_axial_step > 0 and (
+            max_curve_error_mm is None or curvature_bound > 1e-12
+        ):
             steps = max(steps, int(math.ceil(abs(float(p1[2] - p0[2])) / max_axial_step)))
+        if steps > 65536:
+            raise ValueError("Intersection curve requires >65536 segments: check face degeneracy/tolerance")
         if steps <= 1:
             edges.append((from_idx, to_idx))
             return
-
-        normal = np.cross(face_vertices[1] - face_vertices[0], face_vertices[2] - face_vertices[0])
-        offset = -float(np.dot(normal, face_vertices[0]))
         chain = [from_idx]
         for step in range(1, steps):
             frac = step / steps
@@ -474,8 +500,10 @@ def _sample_intersection_layer_once(
     points_3d, edges = cylindrical_intersection_segments(
         mesh,
         radius,
-        max_theta_step=min(config.theta_step, math.radians(2.0)),
+        # Sampling density follows the physical error of the actual
+        # face/cylinder curve, not a global 2-degree angular grid.
         max_axial_step=config.max_axial_segment,
+        max_curve_error_mm=config.intersection_curve_error_mm,
     )
     if len(points_3d) == 0 or not edges:
         return GeometryCollection(), (0.0, 2.0 * np.pi), False
