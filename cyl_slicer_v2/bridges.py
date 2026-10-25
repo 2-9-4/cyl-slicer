@@ -11,7 +11,7 @@ from shapely.geometry import Point, LineString, GeometryCollection, Polygon, Mul
 from shapely.ops import unary_union
 from shapely import affinity
 
-from .periodic import TWO_PI, periodic_copies, fold_to_canonical
+from .periodic import periodic_copies
 
 
 def _polygons(g):
@@ -105,13 +105,11 @@ def classify_bridge_regions(
             continue
         joined = unary_union(parts)
         unwrapped = affinity.scale(joined, xfact=1/radius,yfact=1,origin=(0,0))
-        low,high=current.bounds[1],current.bounds[3]
-        # Collapse copies only once; never triple-deposit seam-adjacent spans.
-        # Periodic copies and buffer arithmetic can leave microscopic
-        # fragments outside the model footprint after folding. Strictly clip
-        # back to the actual canonical occupied cross-section: no bridge
-        # extrusion/support suppression is allowed outside printable material.
-        folded = fold_to_canonical(unwrapped,low,high)
-        canonical_model = fold_to_canonical(current,low,high)
-        out[direction] = folded.intersection(canonical_model)
+        # Intersect the periodic candidates with the EXACT original sampled
+        # footprint rather than folding to theta [0,2pi]. The slicer's
+        # normalized angular cut can start anywhere in [0,2pi] and extend
+        # past 2pi; folding would shift bridges out of that layer's window
+        # and create apparent out-of-model regions. This also removes copies
+        # without ever triple-printing a seam-adjacent span.
+        out[direction] = unwrapped.intersection(current)
     return out
