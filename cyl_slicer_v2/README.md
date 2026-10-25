@@ -70,6 +70,20 @@ Extrusion is derived from line width, layer height, and filament cross-section:
 `nozzle_width * layer_height / (pi * (filament_diameter / 2)^2)`. The default
 filament diameter is 1.75 mm; override it with `--filament-diameter D`.
 
+Degenerate face/cylinder recovery checks nearby samples from both
+sides of the requested radius, bounded by 10% of deposited layer thickness.
+Strict mode additionally caps that shift to the intersection curve-error
+budget. Compatibility mode explicitly warns if it exceeds that budget.
+A two-sided match in island/hole topology
+and physical boundary position is reported as verified. True radial
+tangencies can cause topology to change exactly at the sample radius; the
+default preserves bounded one-sided recovery for compatibility, but emits a
+`RuntimeWarning` explicitly saying the substitution is unverified.
+Use `--intersection-strict-recovery` to reject these ambiguous topology
+transitions instead of printing them. Warnings include the radius shift and
+boundary discrepancy; they are diagnostic output rather than changes to the
+requested sample radius in G-code.
+
 The intersection backend is experimental and intentionally small. Raster remains
 the default. `--intersection-refine-factor N` optionally enables smooth topology
 voting for mixed faces: sampled occupancy decides whether to keep or discard the
