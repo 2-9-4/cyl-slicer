@@ -604,15 +604,14 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         periodic = layer.is_full_wrap
         theta_window = layer.theta_window
         # Contours are occupied MATERIAL boundaries, not bead CENTERLINES.
-        # First wall centers sit half a bead inside both outer edges and holes;
-        # subsequent wall centers are spaced by one full nominal bead width.
-        # Keep rectangular (width * layer height) flow and width spacing
-        # together; rounded-bead conversions must update both (#7).
+        # First wall centers sit half a bead inside outer edges and holes.
+        # Remaining walls use the same spacing as dense lines; for a rounded
+        # bead this is (area / layer height), not the nominal bead width.
         for wall in range(config.wall_count):
             inset = inset_geometry(
                 model,
                 radius,
-                config.nozzle_width * (wall + 0.5),
+                config.nozzle_width * 0.5 + config.dense_line_spacing * wall,
                 periodic=periodic,
                 theta_window=theta_window,
             )
@@ -621,23 +620,23 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             role = "EXTERNAL_PERIMETER" if wall == 0 else "INTERNAL_PERIMETER"
             paths[role].extend(perimeter_paths(inset, role, radius, config, theta_window))
 
-        # The innermost wall covers through (wall_count * width) from the
-        # original outline. Infill is clipped to that edge, with only the
-        # explicitly permitted overlap extending into that wall's bead.
+        # The last wall covers through w + (wall_count - 1) * dense_pitch.
+        # Clip infill to this boundary with independently chosen anchoring
+        # overlap; this keeps the rounded cross-section/pitch model coherent.
         # The same rule for solid and sparse avoids retracing wall centerlines
         # with skins, or leaving a sparse-infill anchoring gap.
         overlap = config.nozzle_width * config.infill_wall_overlap_fraction
         infill_source = inset_geometry(
             model,
             radius,
-            config.nozzle_width * config.wall_count - overlap,
+            config.wall_coverage_depth(config.wall_count) - overlap,
             periodic=periodic,
             theta_window=theta_window,
         )
         solid_source = unary_union([layer.top_surfaces, layer.bottom_surfaces])
         solid_source = solid_source.intersection(infill_source) if not solid_source.is_empty else solid_source
         paths["SOLID_INFILL"].extend(
-            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.nozzle_width, config, direction="axial")
+            line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing, config, direction="axial")
         )
         if not solid_source.is_empty and not infill_source.is_empty:
             infill_source = infill_source.difference(solid_source)
@@ -658,7 +657,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         interface = interface.intersection(support) if not support.is_empty else GeometryCollection()
         interface = _clean_polygonal(interface)
         if not interface.is_empty:
-            interface_spacing = config.support_interface_spacing or config.nozzle_width
+            interface_spacing = config.support_interface_spacing or config.dense_line_spacing
             interface_direction = layer.support_interface_direction or ("axial" if layer.index % 2 == 0 else "radial")
             if interface_direction == "radial":
                 paths["SUPPORT_INTERFACE"].extend(
@@ -678,7 +677,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             support = _safe_polygon_difference(support, interface)
 
     if not support.is_empty:
-        support_spacing = (config.raft_grid_spacing or config.nozzle_width) if layer.is_raft else config.support_spacing
+        support_spacing = (config.raft_grid_spacing or config.dense_line_spacing) if layer.is_raft else config.support_spacing
         if layer.is_raft:
             paths["SUPPORT"].extend(
                 line_grid_paths(

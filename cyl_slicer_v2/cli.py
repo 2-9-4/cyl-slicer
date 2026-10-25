@@ -32,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--infill-spacing", type=float, default=2.0)
     parser.add_argument("--line-width", type=float, default=0.4,
                         help="Nominal deposited bead width in mm (not physical nozzle diameter).")
+    parser.add_argument("--bead-model", choices=("rectangular", "rounded"), default="rectangular",
+                        help="Coupled extrusion/spacing model; rounded requires layer height <= line width.")
     parser.add_argument("--infill-wall-overlap-fraction", type=float, default=0.15,
                         help="Fraction of bead width infill may extend into the inner wall footprint.")
     parser.add_argument("--min-path-length", type=float, default=0.6, help="Drop printable path segments shorter than this mm length.")
@@ -216,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         bottom_layers=args.bottom_layers,
         infill_spacing=args.infill_spacing,
         nozzle_width=args.line_width,
+        bead_model=args.bead_model,
         infill_wall_overlap_fraction=args.infill_wall_overlap_fraction,
         min_path_length=args.min_path_length,
         retract_mm=args.retract_mm,

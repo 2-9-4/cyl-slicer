@@ -71,7 +71,7 @@ class CoordinatesAndConfigTests(unittest.TestCase):
         self.assertEqual(config.z_hop_height, 0.4)
         self.assertEqual(config.z_hop_min_travel, 5.0)
         self.assertTrue(config.z_hop_on_perimeter_crossing)
-        expected_extrusion = config.nozzle_width * config.layer_height / (
+        expected_extrusion = config.bead_area / (
             math.pi * (config.filament_diameter / 2.0) ** 2
         )
         self.assertAlmostEqual(config.extrusion_per_mm, expected_extrusion)

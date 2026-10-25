@@ -10,6 +10,25 @@ the legacy `slicer.py`/`togcode.py` pipeline.
 .venv/bin/python -m cyl_slicer_v2.cli tube.stl --out /tmp/tube_stl_v2.gcode --max-layers 2
 ```
 
+The physical deposition model is selected with `--bead-model`. The default
+`rectangular` mode preserves the historical `width * layer_height` area and
+full-width dense spacing. For calibrated printing with `layer_height <=
+line_width`, use `--bead-model rounded --layer-height 0.2 --line-width 0.4`.
+It models a flat-sided bead with round ends:
+
+- area = `(w-h)*h + pi*h*h/4` mm² (extrusion mm filament/mm path
+  is area divided by filament cross-sectional area);
+- dense line and inner-wall center spacing = `area/h`;
+- external perimeter centerline inset = `w/2`;
+- inner fill region begins `w + (wall_count-1)*(area/h) - overlap` mm inside
+  the original boundary.
+
+The spacing and flow change together; switching only one creates under/overfill.
+Sparse infill's explicit `--infill-spacing` still sets user-selected density.
+Actual nozzle orifice diameter is not the same as deposited line width.
+Existing slicing profiles retain the rectangular default until hardware
+dimensions are known. G-code reports the chosen bead model and dense pitch.
+
 The default occupancy backend calls `trimesh.contains` directly. A faster
 approximate voxel-grid backend can be enabled and cached:
 

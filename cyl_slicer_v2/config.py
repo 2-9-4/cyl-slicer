@@ -10,6 +10,9 @@ from .calibration import RetractionSweep
 class SlicerConfig:
     layer_height: float = 0.5
     nozzle_width: float = 0.4
+    # "rectangular" preserves the original flow/spacing approximation.
+    # "rounded" uses a flat-topped bead with semicircular sides.
+    bead_model: str = "rectangular"
     filament_diameter: float = 1.75
     wall_count: int = 2
     top_layers: int = 3
@@ -67,22 +70,55 @@ class SlicerConfig:
         object.__setattr__(
             self,
             "extrusion_per_mm",
-            self.nozzle_width * self.layer_height / filament_area,
+            self.bead_area / filament_area,
         )
+
+    @property
+    def bead_area(self) -> float:
+        """Deposited cross-sectional area (mm²) per mm of path.
+
+        Rounded bead: a (w-h) by h rectangle and two half-circles of
+        diameter h. Only valid when h <= w. This is the standard squashed
+        strand approximation, not a literal cylindrical cross-section.
+        """
+        w, h = self.nozzle_width, self.layer_height
+        if self.bead_model == "rounded":
+            return h * (w - h) + math.pi * h * h / 4.0
+        return w * h
+
+    @property
+    def dense_line_spacing(self) -> float:
+        """Center-to-center pitch of adjacent dense beads, in physical mm.
+
+        Matching pitch to A/h keeps the deposited volume per covered
+        planar area consistent with bead_area. The outermost contour still
+        sits w/2 inside the material boundary, independent of pitch.
+        """
+        return self.bead_area / self.layer_height
+
+    def wall_coverage_depth(self, count: int) -> float:
+        """Nominal inwards extent of count deposited perimeters (mm)."""
+        if count < 1:
+            raise ValueError("wall count must be at least one")
+        return self.nozzle_width + (count - 1) * self.dense_line_spacing
 
     @property
     def theta_step(self) -> float:
         return math.radians(self.theta_step_deg)
 
     def validate(self) -> None:
-        if self.layer_height <= 0:
-            raise ValueError("layer_height must be positive")
-        if self.nozzle_width <= 0:
-            raise ValueError("nozzle_width must be positive")
+        if not math.isfinite(self.layer_height) or self.layer_height <= 0:
+            raise ValueError("layer_height must be finite and positive")
+        if not math.isfinite(self.nozzle_width) or self.nozzle_width <= 0:
+            raise ValueError("nozzle_width must be finite and positive")
+        if self.bead_model not in {"rectangular", "rounded"}:
+            raise ValueError("bead_model must be 'rectangular' or 'rounded'")
+        if self.bead_model == "rounded" and self.layer_height > self.nozzle_width:
+            raise ValueError("rounded bead requires layer_height <= line width")
         if self.filament_diameter <= 0:
             raise ValueError("filament_diameter must be positive")
-        if self.extrusion_per_mm is None or self.extrusion_per_mm <= 0:
-            raise ValueError("extrusion_per_mm must be positive")
+        if self.extrusion_per_mm is None or not math.isfinite(self.extrusion_per_mm) or self.extrusion_per_mm <= 0:
+            raise ValueError("extrusion_per_mm must be finite and positive")
         if self.wall_count < 1:
             raise ValueError("wall_count must be at least 1")
         if self.top_layers < 1:
