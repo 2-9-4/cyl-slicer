@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import heapq
 import math
 import re
 
-from shapely.geometry import LineString, Point
+from shapely import affinity
+
+from shapely.geometry import LineString, Point, Polygon, MultiPolygon
 from shapely.geometry.base import BaseGeometry
 from shapely.strtree import STRtree
 
@@ -233,6 +236,105 @@ def _travel_crosses_perimeter(
             if _intersection_is_away_from_endpoints(inter, shifted_start, shifted_end):
                 return True
     return False
+
+
+
+def _travel_polygon_parts(geom: BaseGeometry):
+    """Polygonal components of the periodic island footprint, with holes."""
+    if isinstance(geom, Polygon):
+        yield geom
+    elif isinstance(geom, MultiPolygon) or hasattr(geom, "geoms"):
+        for part in geom.geoms:
+            yield from _travel_polygon_parts(part)
+
+
+def _safe_island_travel_route(
+    start: tuple[float, float],
+    destination: tuple[float, float],
+    radius: float,
+    travel_region: BaseGeometry | None,
+    config: SlicerConfig,
+) -> list[tuple[float, float]] | None:
+    """Shortest bounded inside-island polyline, excluding the starting point.
+
+    The theta coordinate is unwrapped and measured in radians. Search/limit
+    lengths in physical (theta*radius, axial) millimeters; never connect two
+    disjoint polygonal islands. An unsupported or too-expensive graph returns
+    None, preserving existing retraction/hop safety.
+    """
+    if (not config.route_travel_inside_island or travel_region is None
+            or travel_region.is_empty or radius <= 0):
+        return None
+    direct = math.hypot((destination[0]-start[0])*radius,
+                        destination[1]-start[1])
+    if direct < 1e-7:
+        return None
+    # Keep the periodic copies near the accumulated native rotary phase;
+    # state.theta_accum may have traversed many revolutions.
+    shift = math.floor(start[0] / TWO_PI) * TWO_PI
+    shifted = affinity.translate(travel_region, xoff=shift)
+    s = Point(start)
+    e = Point(destination)
+    for polygon in _travel_polygon_parts(shifted):
+        if not polygon.buffer(1e-9).covers(s) or not polygon.buffer(1e-9).covers(e):
+            continue
+        surface = affinity.scale(polygon, xfact=radius, yfact=1.0, origin=(0,0))
+        start_mm = (start[0]*radius, start[1])
+        end_mm = (destination[0]*radius, destination[1])
+        straight = LineString([start_mm, end_mm])
+        if surface.covers(straight):
+            return None  # Existing straight travel is already safe.
+        # Route around holes or concave cutouts by visible boundary vertices.
+        coords = list(polygon.exterior.coords)[:-1]
+        for ring in polygon.interiors:
+            coords.extend(list(ring.coords)[:-1])
+        if len(coords) + 2 > config.route_max_vertices:
+            return None
+        nodes = [start_mm, end_mm, *[(theta*radius, axial) for theta, axial in coords]]
+        n = len(nodes)
+        max_length = min(direct * config.route_max_factor,
+                         direct + config.route_max_extra_mm)
+        edges = [[] for _ in range(n)]
+        clearance = surface.buffer(1e-7)
+        for i in range(n):
+            for j in range(i+1, n):
+                dist = math.dist(nodes[i], nodes[j])
+                if dist > max_length + 1e-8:
+                    continue
+                if not clearance.covers(LineString([nodes[i], nodes[j]])):
+                    continue
+                edges[i].append((j, dist))
+                edges[j].append((i, dist))
+        distances = [math.inf] * n
+        distances[0] = 0.0
+        parents = [-1] * n
+        heap = [(0.0, 0)]
+        while heap:
+            distance, i = heapq.heappop(heap)
+            if distance > distances[i] + 1e-10 or distance > max_length + 1e-8:
+                continue
+            if i == 1:
+                order = []
+                while i != 0:
+                    order.append(i)
+                    i = parents[i]
+                order.reverse()
+                route = [(nodes[j][0]/radius, nodes[j][1]) for j in order]
+                # A tolerance buffer admits endpoints on the actual contour;
+                # never accept a segment crossing the actual empty space.
+                unwrapped = [start_mm, *[nodes[j] for j in order]]
+                if all(surface.buffer(1e-7).covers(LineString([a,b]))
+                       for a,b in zip(unwrapped, unwrapped[1:])):
+                    return route
+                return None
+            for j, step in edges[i]:
+                candidate = distance + step
+                if candidate + 1e-10 < distances[j] and candidate <= max_length + 1e-8:
+                    distances[j] = candidate
+                    parents[j] = i
+                    heapq.heappush(heap, (candidate, j))
+        return None
+    return None
 
 
 def _should_z_hop_to_path(
@@ -525,7 +627,23 @@ def _should_retract_after_path(
         travel = LineString([(theta, end_state.axial), (target_theta, next_path.points[0][1])])
         inside = travel_region.covers(travel) or travel.difference(travel_region).length <= 1e-8
         if not inside:
-            return True
+            route = _safe_island_travel_route(
+                (end_state.theta_accum, end_state.axial),
+                (target_theta, next_path.points[0][1]),
+                next_path.radius, travel_region, config
+            )
+            if route is None:
+                return True
+            route_length = sum(
+                cylindrical_distance(a,b,next_path.radius)
+                for a,b in zip(
+                    [(end_state.theta_accum,end_state.axial),*route],
+                    route
+                )
+            )
+            # A bounded in-island detour can remain primed for short moves,
+            # but longer travel still retracts to avoid oozing.
+            return route_length > config.route_max_unretracted_mm
     if travel_distance < config.nozzle_width * 2.0:
         return False
     fill_spacing = {
@@ -659,6 +777,7 @@ def emit_toolpath(
     *,
     retract_after: bool = True,
     perimeter_index: PerimeterIndex | None = None,
+    travel_region: BaseGeometry | None = None,
 ) -> list[str]:
     if len(path.points) < 2:
         return []
@@ -673,8 +792,18 @@ def emit_toolpath(
 
     lines = [";start of path"]
     t0, x0 = pts[0]
-    lines.extend(_ensure_rotary_range(t0, state))
+    route = _safe_island_travel_route(
+        (state.theta_accum, state.axial), (t0,x0),
+        path.radius, travel_region, config
+    )
+    if route is None:
+        lines.extend(_ensure_rotary_range(t0, state))
     z_hop = _should_z_hop_to_path(path, state, config, perimeter_index)
+    if route is not None:
+        length = sum(cylindrical_distance(a,b,path.radius)
+                     for a,b in zip([(state.theta_accum,state.axial),*route],route))
+        if length < config.z_hop_min_travel:
+            z_hop = False
     if z_hop:
         # state.radial tracks physical nozzle radius (outer face of the slab),
         # while path.radius is the geometric slice sample/metric radius.
@@ -682,12 +811,25 @@ def emit_toolpath(
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z hop")
     # XY travel uses Marlin's mixed-unit planner metric too. Radial hop
     # motions are separate Z-only commands and retain their native mm/min.
-    travel_feed = _surface_feed_for_marlin(
-        x0 - state.axial, t0 - state.theta_accum, path.radius, config.travel_mm_per_min
-    )
-    lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=travel_feed))
-    state.theta_accum = t0
-    state.axial = x0
+    if route is None:
+        travel_feed = _surface_feed_for_marlin(
+            x0 - state.axial, t0 - state.theta_accum, path.radius, config.travel_mm_per_min
+        )
+        lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=travel_feed))
+        state.theta_accum = t0
+        state.axial = x0
+    else:
+        lines.append(f";ROUTED_TRAVEL:{len(route)}")
+        for theta, axial in route:
+            lines.extend(_ensure_rotary_range(theta, state))
+            feed = _surface_feed_for_marlin(
+                axial-state.axial, theta-state.theta_accum,
+                path.radius, config.travel_mm_per_min
+            )
+            lines.append(_format_move("G0", x=_emitted_x(axial, output_x_offset),
+                                      y_deg=_emitted_y_degrees(theta, state), f=feed))
+            state.theta_accum = theta
+            state.axial = axial
     if z_hop:
         state.radial -= config.z_hop_height
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z unhop")
@@ -771,6 +913,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",
+        f";ROUTE_TRAVEL_INSIDE_ISLAND:{str(config.route_travel_inside_island).lower()}",
+        f";ROUTE_MAX_EXTRA_MM:{config.route_max_extra_mm:g}",
+        f";ROUTE_MAX_FACTOR:{config.route_max_factor:g}",
         f";MONOTONIC_TOP_SKIN:{str(config.monotonic_top_skin).lower()}",
         f";SEAM_POLICY:{config.seam_policy}",
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
@@ -859,6 +1004,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                     output_x_offset,
                     retract_after=retract_after,
                     perimeter_index=perimeter_index,
+                    travel_region=travel_region,
                 )
             )
 

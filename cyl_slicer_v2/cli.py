@@ -141,6 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retract-mm", type=float, default=None, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
     parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
+    parser.add_argument("--route-travel-inside-island", action=argparse.BooleanOptionalAction,
+                        default=None, help="Try bounded detours around voids within a connected island (default on).")
+    parser.add_argument("--route-max-extra-mm", type=float, default=None,
+                        help="Maximum physical mm of extra detour beyond direct travel (default 6).")
+    parser.add_argument("--route-max-factor", type=float, default=None,
+                        help="Maximum routed/direct distance factor (default 1.65).")
+    parser.add_argument("--route-max-vertices", type=int, default=None,
+                        help="Maximum visibility graph nodes; above cap fall back safely (default 96).")
+    parser.add_argument("--route-max-unretracted-mm", type=float, default=None,
+                        help="Safe on-island route length that may remain primed (default 5 mm).")
     parser.add_argument(
         "--no-z-hop-perimeter-crossing",
         action="store_false",
@@ -345,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
         cooling_min_print_speed_mm_per_min=_profile_value(args, "cooling_min_print_speed_mm_per_min"),
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
+        route_travel_inside_island=_profile_value(args, "route_travel_inside_island"),
+        route_max_extra_mm=_profile_value(args, "route_max_extra_mm"),
+        route_max_factor=_profile_value(args, "route_max_factor"),
+        route_max_vertices=_profile_value(args, "route_max_vertices"),
+        route_max_unretracted_mm=_profile_value(args, "route_max_unretracted_mm"),
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
         support_spacing=args.support_spacing,
         support_print_feed_mm_per_min=args.support_print_feed,
