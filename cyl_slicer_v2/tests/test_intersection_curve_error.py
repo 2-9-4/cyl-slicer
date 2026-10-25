@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import trimesh
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.intersection_backend import cylindrical_intersection_segments
 
 

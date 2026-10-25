@@ -1,24 +1,44 @@
 # Cylindrical Slicer V2
 
-This is a self-contained raster-based prototype. It does not import or mutate
+This is a self-contained cylindrical slicing pipeline (triangle/cylinder intersection by default). It does not import or mutate
 the legacy `slicer.py`/`togcode.py` pipeline.
 
-## Machine and default profiles
+## Quality defaults
 
-The CLI retains the original `legacy-cli` defaults to avoid silently changing
-existing prints: three walls, 30 mm build radius, and strong support filtering
-and merging. `--profile library` instead selects the smaller support thresholds,
-two walls, and zero build radius of bare `SlicerConfig()`. Explicit arguments
-override either profile.
+`.venv/bin/python -m cyl_slicer_v2.cli part.stl --out part.gcode` now uses
+the same quality-first defaults as `SlicerConfig()`. No quality flags are
+required. These replace the old development/CLI defaults, so **reslice all old
+G-code**; do not assume output from this version matches earlier jobs.
 
-`--nozzle-diameter` specifies the physical nozzle orifice, while
-`--line-width` specifies the deposited bead width. They are independent.
-Supplying a nozzle diameter validates that layer height does not exceed the
-physical orifice. Without a specified nozzle, hardware is marked `unknown`
-in G-code and the old settings remain available for compatibility; this is
-not evidence that the historic h0.5/w0.4 configuration is printable.
-For a 0.4 mm nozzle, use `--nozzle-diameter 0.4 --layer-height 0.2` with a
-separately calibrated line width.
+The default machine is a **30 mm radius mandrel, 0.4 mm physical nozzle,
+1.75 mm PLA filament** at a 195°C setpoint. Geometry uses the
+**triangle/cylinder intersection** backend with a 0.01 mm curve-error budget,
+0.16 mm radial layers, 0.42 mm deposited line width and the rounded-bead
+area/spacing model. Walls: four, outer-first. Top/bottom shells: five each.
+Sparse grid: alternating directions at crosshatch-equivalent 1.5 mm spacing;
+solid: alternating direction; exposed top skin: monotonic. Small features
+are retained down to 0.1 mm and fine supports down to 0.25 mm². Support
+interface: three layers at 0.4 mm pitch and one-layer radial gap.
+
+Printing targets 2700 mm/min (45 mm/s) physical print speed and
+9000 mm/min (150 mm/s) surface travel, 8 s minimum estimated deposition time
+per layer with 300 mm/min (5 mm/s) speed floor, full fan starting 1 mm above
+mandrel with a further 1 mm fan ramp, 1.4 mm retraction at 20 mm/s. Actual
+firmware acceleration and extrusion throughput may prevent reaching targets.
+
+Use `--profile legacy-cli` to reproduce previous **CLI** defaults (0.5 mm
+layers, rectangular flow, raster backend, 3 walls, etc.).
+`--profile library` remains an alias for the new quality profile.
+Explicit options override either profile; use `--no-monotonic-top-skin` to
+disable the default-on skin behavior. Python can directly override fields:
+`SlicerConfig(layer_backend="raster", monotonic_top_skin=False)`.
+
+**Safety/calibration:** defaults represent the user's printer profile, not a
+universal PLA recipe. Verify bed radius, nozzle, material, temperatures,
+feed/acceleration limits, retraction and fan wiring before running new G-code.
+Pressure advance (M900), strict intersection recovery, and fixed-position
+seams remain opt-in because they require firmware calibration or depend on
+the model. Support flow multipliers remain unity pending printed coupons.
 
 ## Perimeter wall order
 
@@ -69,7 +89,7 @@ are still open validation/improvement items.
 
 ## Alternating infill (opt in)
 
-The original sparse pattern crosshatches radial and axial passes **on every
+The optional `--sparse-infill-pattern both` crosshatches radial and axial passes **on every
 layer** at the specified `--infill-spacing S`. In alternating mode the
 slicer prints radial-only passes on even model layers and axial-only passes on
 odd layers at *S/2*. This keeps approximate deposited line length (and thus
@@ -85,14 +105,14 @@ equivalent spacing**, not the actual single-family pitch in alternate mode.
 
 `--solid-infill-pattern alternate` rotates dense skin/infill lines between
 axial (even) and radial (odd) shells, retaining the unified bead-width/pitch
-calibration. Default `axial` preserves current output. These settings operate
+calibration. Default `alternate` provides cross-layer reinforcement. These settings operate
 at the geometric toolpath generation stage, so periodic winding, wall order,
 retraction and firmware speed correction are unchanged. Monotonic top-skin
 ordering/seam tuning remains a separate task (#12/#13).
 
 ## Monotonic exposed top skin
 
-`--monotonic-top-skin` separates the **exposed** upper-surface mask from
+Enabled by default, `--monotonic-top-skin` separates the **exposed** upper-surface mask from
 buried bottom solid infill, then prints its dense lines in a fixed physical
 direction, progressing in stripe order. Unlike nearest-path or serpentine
 printing, the nozzle never reverses during deposited top-skin stripes.
@@ -101,7 +121,7 @@ island/seam-aware retract and Z-hop rules. Default behavior is unchanged.
 
 Thin model regions marked both top and bottom use the top mask once; there
 is no intentional double-extrusion. The same calibrated bead area and dense
-pitch apply to both skin and buried fill. This is not yet a variable-width
+pitch apply to both skin and buried fill. Use `--no-monotonic-top-skin` to disable it. This is not yet a variable-width
 skin/gap fill process and still needs surface/flow calibration coupons.
 
 ## Predictable perimeter seams
@@ -165,7 +185,8 @@ Actual nozzle orifice diameter is not the same as deposited line width.
 Existing slicing profiles retain the rectangular default until hardware
 dimensions are known. G-code reports the chosen bead model and dense pitch.
 
-The default occupancy backend calls `trimesh.contains` directly. A faster
+For the optional **raster** geometry backend, the mesh occupancy implementation
+calls `trimesh.contains` directly. A faster
 approximate voxel-grid backend can be enabled and cached:
 
 ```bash
@@ -202,8 +223,9 @@ part. Raft layers alternate one grid direction per layer, radial first, with
 spacing defaulting to nozzle width. Change these with `--raft-layers N` and
 `--raft-grid-spacing S`.
 
-Extrusion is derived from line width, layer height, and filament cross-section:
-`nozzle_width * layer_height / (pi * (filament_diameter / 2)^2)`. The default
+Extrusion is derived from the selected bead cross-section and filament area.
+For the rounded default: `((w-h)*h + pi*h*h/4) /
+(pi*(filament_diameter/2)^2)` filament-mm per toolpath-mm. The default
 filament diameter is 1.75 mm; override it with `--filament-diameter D`.
 
 Degenerate face/cylinder recovery checks nearby samples from both
@@ -220,8 +242,8 @@ transitions instead of printing them. Warnings include the radius shift and
 boundary discrepancy; they are diagnostic output rather than changes to the
 requested sample radius in G-code.
 
-The intersection backend is experimental and intentionally small. Raster remains
-the default. `--intersection-refine-factor N` optionally enables smooth topology
+The intersection backend is the quality profile default. Raster remains
+available with `--layer-backend raster` for debugging or compatibility. `--intersection-refine-factor N` optionally enables smooth topology
 voting for mixed faces: sampled occupancy decides whether to keep or discard the
 existing smooth polygonized face, but it does not replace boundaries with raster
 cells. `0` disables it and is the default.
@@ -298,15 +320,16 @@ solid infill lines) does not count as crossing it. Use `--z-hop-min-travel`,
 
 ## Retraction calibration
 
-`--print-feed` and `--travel-feed` expose the commanded G-code F values (defaults
-1800 and 3000). Travel includes radial Z hops; end parking stays at F600. These
-are the existing feed settings, with no new radius-based scaling. X is millimeters
-and Y is degrees, so F does not guarantee a particular physical nozzle speed on
-rotary or mixed moves. Firmware acceleration and axis limits also constrain speed.
+`--print-feed` and `--travel-feed` specify physical nozzle surface-speed
+targets (quality defaults 2700 and 9000 mm/min). Marlin has mixed X-mm/Y-degree
+axes; the slicer converts each move's F to account for its **physical** motion
+length, but firmware acceleration and axis limits still constrain actual speed.
+Radial Z hops and end parking use native mm/min.
 For stringing experiments, try faster travel while holding print feed fixed.
 
 Part cooling uses standard Marlin `M106` commands: off at startup, full speed
-once nominal radial Z reaches 2 mm above the mandrel, and off at shutdown.
+ramped over 1 mm of radial height starting 1 mm above the mandrel in the
+quality profile, and off at shutdown.
 Set `--fan-speed 0` to disable cooling, or choose PWM 0–255. Set
 `--fan-start-height` to change the starting radial height; Z-hop does not trigger
 cooling. For PLA, check that `M106 S255` actually starts the part fan on your printer.

@@ -5,7 +5,7 @@ import unittest
 
 from shapely.geometry import box
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import _ordered_layer_paths, emit_gcode, parse_extrusion_segments
 from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 

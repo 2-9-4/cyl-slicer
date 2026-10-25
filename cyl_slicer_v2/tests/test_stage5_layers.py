@@ -7,7 +7,7 @@ import unittest
 import shapely
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon, box
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.intersection_backend import _polygon_parts
 from cyl_slicer_v2.layers import (

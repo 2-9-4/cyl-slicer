@@ -12,8 +12,8 @@ from cyl_slicer_v2.gcode import emit_gcode
 
 
 class HardwareProfileTests(unittest.TestCase):
-    def test_current_cli_defaults_are_intentional_legacy_profile(self):
-        args = build_parser().parse_args([])
+    def test_original_cli_profile_is_explicit_not_the_default(self):
+        args = build_parser().parse_args(["--profile", "legacy-cli"])
         self.assertEqual(args.profile, "legacy-cli")
         for key, old in CLI_PROFILE_OVERRIDES.items():
             self.assertEqual(_profile_value(args, key), old)
@@ -34,12 +34,12 @@ class HardwareProfileTests(unittest.TestCase):
         config = SlicerConfig(nozzle_diameter=0.6, nozzle_width=0.4, layer_height=0.2)
         config.validate()
         self.assertAlmostEqual(config.extrusion_per_mm,
-            (0.4 * 0.2) / (math.pi * (1.75 / 2) ** 2))
+            config.bead_area / (math.pi * (1.75 / 2) ** 2))
         gcode = emit_gcode([], config)
         self.assertIn(";LINE_WIDTH:0.4", gcode)
         self.assertIn(";NOZZLE_DIAMETER:0.6", gcode)
         self.assertIn(";NOZZLE_DIAMETER:unknown",
-            emit_gcode([], SlicerConfig()))
+            emit_gcode([], SlicerConfig(nozzle_diameter=None)))
 
     def test_explicit_nozzle_rejects_thick_or_invalid_layer(self):
         for kw in ({"nozzle_diameter": 0.4, "layer_height": 0.5},

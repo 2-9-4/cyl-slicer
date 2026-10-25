@@ -9,7 +9,7 @@ from unittest.mock import patch
 from shapely.geometry import GeometryCollection, LineString, box
 from shapely.ops import unary_union
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.calibration import RetractionSweep
 from cyl_slicer_v2.coordinates import cylindrical_distance

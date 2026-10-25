@@ -8,39 +8,39 @@ from .calibration import RetractionSweep
 
 @dataclass(frozen=True)
 class SlicerConfig:
-    layer_height: float = 0.5
-    nozzle_width: float = 0.4  # Deposited track width; not physical nozzle orifice.
-    nozzle_diameter: float | None = None
-    # "rectangular" preserves the original flow/spacing approximation.
-    # "rounded" uses a flat-topped bead with semicircular sides.
-    bead_model: str = "rectangular"
+    layer_height: float = 0.16
+    nozzle_width: float = 0.42  # Deposited track width; not physical nozzle orifice.
+    nozzle_diameter: float | None = 0.4
+    # "rounded" is the calibrated quality approximation. "rectangular"
+    # remains available for old G-code/reproducibility profiles.
+    bead_model: str = "rounded"
     filament_diameter: float = 1.75
-    wall_count: int = 2
+    wall_count: int = 4
     wall_order: str = "outer-first"  # Inside-out for overhangs if selected.
     seam_policy: str = "nearest"  # nearest | aligned | corner, for closed loops only.
     seam_angle_deg: float = 180.0  # Cylinder phase target for aligned/corner.
     seam_exclude_deg: tuple[float, float] | None = None
-    top_layers: int = 3
-    bottom_layers: int = 3
-    infill_spacing: float = 2.0
-    sparse_infill_pattern: str = "both"  # optional alternating single-grid layer.
-    solid_infill_pattern: str = "axial"  # optional alternating exposed fill angle.
-    monotonic_top_skin: bool = False  # One-way, ordered exposed top passes.
+    top_layers: int = 5
+    bottom_layers: int = 5
+    infill_spacing: float = 1.5
+    sparse_infill_pattern: str = "alternate"  # optional alternating single-grid layer.
+    solid_infill_pattern: str = "alternate"  # optional alternating exposed fill angle.
+    monotonic_top_skin: bool = True  # One-way exposed top passes enabled for quality.
     # Fraction of line width that solid/sparse infill may enter the inner
-    # perimeter bead; cross-section still uses the rectangular w*h model.
+    # perimeter bead, using the selected coupled bead cross-section model.
     infill_wall_overlap_fraction: float = 0.15
     support_spacing: float = 1.5
     support_print_feed_mm_per_min: float | None = None
     support_interface_print_feed_mm_per_min: float | None = None
     support_flow_ratio: float = 1.0
     support_interface_flow_ratio: float = 1.0
-    support_min_island_area: float = 0.05
+    support_min_island_area: float = 0.25
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
     support_merge_gap: float = 0.0
     support_gap_layers: int = 1
-    support_interface_layers: int = 2
-    support_interface_spacing: float | None = None
+    support_interface_layers: int = 3
+    support_interface_spacing: float | None = 0.4
     support_meander_max_angle_deg: float = 15.0
     support_cross_spacing: float | None = None
     raft_layers: int = 4
@@ -49,36 +49,36 @@ class SlicerConfig:
     theta_step_deg: float = 5.0
     axial_step: float = 1.0
     guard_columns: int = 2
-    bed_radius: float = 0.0
+    bed_radius: float = 30.0
     generate_gap_support: bool = True
     max_radius: float | None = None
     min_radius: float | None = None
     axial_margin: float = 0.0
     axial_min: float = 15.0
-    feed_mm_per_min: float = 1800.0
-    material_profile: str = "unprofiled"  # Metadata; never guesses a material's K.
+    feed_mm_per_min: float = 2700.0
+    material_profile: str = "pla"  # Metadata; never guesses a material's K.
     linear_advance_k: float | None = None
     linear_advance_firmware: str | None = None  # Explicit firmware build declaration.
-    travel_mm_per_min: float = 3000.0
+    travel_mm_per_min: float = 9000.0
     extrusion_per_mm: float | None = None
     retraction_sweep: RetractionSweep | None = None
-    retract_speed_mm_per_min: float = 1800.0
-    retract_mm: float = 1.0
+    retract_speed_mm_per_min: float = 1200.0
+    retract_mm: float = 1.4
     z_hop_height: float = 0.4
     z_hop_min_travel: float = 5.0
     z_hop_on_perimeter_crossing: bool = True
-    hotend_temp: int = 215
+    hotend_temp: int = 195
     fan_speed: int = 255
-    fan_start_height: float = 2.0
-    fan_ramp_height_mm: float = 0.0  # 0 retains step-at-height behavior.
-    cooling_min_layer_time_s: float = 0.0  # 0 disables conservative slowdown.
+    fan_start_height: float = 1.0
+    fan_ramp_height_mm: float = 1.0  # 0 restores immediate fan step.
+    cooling_min_layer_time_s: float = 8.0  # 0 disables conservative slowdown.
     cooling_min_print_speed_mm_per_min: float = 300.0
-    min_path_length: float = 0.6
+    min_path_length: float = 0.1
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
-    intersection_curve_error_mm: float = 0.025  # Maximum physical unwrapped chord deviation.
+    intersection_curve_error_mm: float = 0.01  # Maximum physical unwrapped chord deviation.
     intersection_strict_recovery: bool = False  # Fail if shifted samples disagree.
     slice_workers: int = 1
-    layer_backend: str = "raster"
+    layer_backend: str = "intersection"
     intersection_refine_factor: int = 0
     toolpath_workers: int = 1
 

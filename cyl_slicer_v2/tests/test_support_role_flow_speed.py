@@ -5,7 +5,7 @@ import re
 import unittest
 
 from cyl_slicer_v2.cli import build_parser
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import _role_print_settings, _surface_feed_for_marlin, emit_gcode, emit_toolpath
 from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 

@@ -4,7 +4,7 @@ import math
 import re
 import unittest
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import _surface_feed_for_marlin, emit_toolpath
 from cyl_slicer_v2.models import GcodeState, Toolpath
 

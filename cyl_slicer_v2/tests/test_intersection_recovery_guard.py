@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from shapely.geometry import GeometryCollection, box
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.intersection_backend import _recovery_compatible, sample_intersection_layer
 
 

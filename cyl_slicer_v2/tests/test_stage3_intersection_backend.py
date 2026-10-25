@@ -8,7 +8,7 @@ import numpy as np
 from shapely.geometry import GeometryCollection, LineString, Point
 import trimesh
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_to_cartesian
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.gcode import emit_gcode, parse_extrusion_segments

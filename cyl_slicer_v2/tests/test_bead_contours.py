@@ -6,7 +6,7 @@ import unittest
 from shapely.geometry import GeometryCollection, LineString, box
 from shapely.ops import unary_union
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.coordinates import TWO_PI
 from cyl_slicer_v2.models import LayerSlice
 from cyl_slicer_v2.toolpaths import build_layer_toolpaths, inset_geometry, _to_metric

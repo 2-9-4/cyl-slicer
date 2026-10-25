@@ -6,7 +6,7 @@ import unittest
 
 from cyl_slicer_v2.calibration import RetractionSweep, sweep_from_args
 from cyl_slicer_v2.cli import build_parser
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.gcode import emit_gcode
 from cyl_slicer_v2.models import LayerToolpaths, Toolpath
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.coordinates import cylindrical_distance
 from cyl_slicer_v2.gcode import (
     _orient_path_for_current_position,
