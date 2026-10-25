@@ -82,6 +82,20 @@ at the geometric toolpath generation stage, so periodic winding, wall order,
 retraction and firmware speed correction are unchanged. Monotonic top-skin
 ordering/seam tuning remains a separate task (#12/#13).
 
+## Monotonic exposed top skin
+
+`--monotonic-top-skin` separates the **exposed** upper-surface mask from
+buried bottom solid infill, then prints its dense lines in a fixed physical
+direction, progressing in stripe order. Unlike nearest-path or serpentine
+printing, the nozzle never reverses during deposited top-skin stripes.
+The travel back to the next stripe remains non-extruding and uses the same
+island/seam-aware retract and Z-hop rules. Default behavior is unchanged.
+
+Thin model regions marked both top and bottom use the top mask once; there
+is no intentional double-extrusion. The same calibrated bead area and dense
+pitch apply to both skin and buried fill. This is not yet a variable-width
+skin/gap fill process and still needs surface/flow calibration coupons.
+
 ## Run
 
 ```bash
