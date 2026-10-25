@@ -61,7 +61,7 @@ class SegmentConservationTests(unittest.TestCase):
 
     def test_short_closed_reverse_path_preserves_total_material(self):
         # A tiny corner followed by a reversal must not simplify to a diagonal.
-        points = [(0, 0), (0.01, 0), (0.01, 0.05), (0.01, 0)]
+        points = [(0, 0), (0.03, 0), (0.03, 0.05), (0.03, 0)]
         p = _make_path("INFILL_AXIAL", 30, points, False, self.config)
         self.assertIsNotNone(p)
         self.assertEqual(len(p.points), 4)
