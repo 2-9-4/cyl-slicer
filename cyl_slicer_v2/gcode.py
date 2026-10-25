@@ -636,6 +636,21 @@ def _min_emitted_path_length(path: Toolpath, config: SlicerConfig) -> float:
     return config.min_path_length + MIN_OUTPUT_LENGTH_GUARD
 
 
+def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]:
+    """Physical print feed (mm/min), extrusion multiplier, for a path role.
+
+    Per-layer cooling may already have reduced config.feed_mm_per_min.
+    The role's speed is an upper bound, never a way to override cooling.
+    """
+    if role == "SUPPORT":
+        maximum = config.support_print_feed_mm_per_min
+        return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_flow_ratio
+    if role == "SUPPORT_INTERFACE":
+        maximum = config.support_interface_print_feed_mm_per_min
+        return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_interface_flow_ratio
+    return config.feed_mm_per_min, 1.0
+
+
 def emit_toolpath(
     path: Toolpath,
     state: GcodeState,
@@ -679,6 +694,7 @@ def emit_toolpath(
     lines.extend(_unretract(state, config))
 
     extruded = False
+    role_feed, role_flow = _role_print_settings(path.role, config)
     for (t_prev, x_prev), (t, x) in zip(pts[:-1], pts[1:]):
         # E must describe the move that will ACTUALLY be emitted. If a tiny
         # numerical segment is omitted, the next move starts at the last
@@ -687,7 +703,7 @@ def emit_toolpath(
         if dist <= MIN_GEOMETRY_LENGTH:
             continue
         lines.extend(_ensure_rotary_range(t, state))
-        state.extrusion += dist * config.extrusion_per_mm
+        state.extrusion += dist * config.extrusion_per_mm * role_flow
         extruded = True
         lines.append(
             _format_move(
@@ -696,7 +712,7 @@ def emit_toolpath(
                 y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
                 f=_surface_feed_for_marlin(
-                    x - state.axial, t - state.theta_accum, path.radius, config.feed_mm_per_min
+                    x - state.axial, t - state.theta_accum, path.radius, role_feed
                 ),
             )
         )
@@ -760,6 +776,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
         f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
+        f";SUPPORT_PRINT_FEED_MM_MIN:{config.support_print_feed_mm_per_min}",
+        f";SUPPORT_INTERFACE_PRINT_FEED_MM_MIN:{config.support_interface_print_feed_mm_per_min}",
+        f";SUPPORT_FLOW_RATIO:{config.support_flow_ratio:g}",
+        f";SUPPORT_INTERFACE_FLOW_RATIO:{config.support_interface_flow_ratio:g}",
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
         f";RETRACT_MM:{config.retract_mm:g}",

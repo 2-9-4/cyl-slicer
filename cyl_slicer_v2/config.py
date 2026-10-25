@@ -30,6 +30,10 @@ class SlicerConfig:
     # perimeter bead; cross-section still uses the rectangular w*h model.
     infill_wall_overlap_fraction: float = 0.15
     support_spacing: float = 1.5
+    support_print_feed_mm_per_min: float | None = None
+    support_interface_print_feed_mm_per_min: float | None = None
+    support_flow_ratio: float = 1.0
+    support_interface_flow_ratio: float = 1.0
     support_min_island_area: float = 0.05
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
@@ -168,6 +172,14 @@ class SlicerConfig:
             raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
         if self.support_spacing <= 0:
             raise ValueError("support_spacing must be positive")
+        for name in ("support_print_feed_mm_per_min", "support_interface_print_feed_mm_per_min"):
+            speed = getattr(self, name)
+            if speed is not None and (not math.isfinite(speed) or speed <= 0):
+                raise ValueError(f"{name} must be finite and positive when set")
+        for name in ("support_flow_ratio", "support_interface_flow_ratio"):
+            flow = getattr(self, name)
+            if not math.isfinite(flow) or not 0 < flow <= 2:
+                raise ValueError(f"{name} must be finite and in (0, 2]")
         if self.support_min_island_area < 0:
             raise ValueError("support_min_island_area must be non-negative")
         if self.support_min_region_area < 0:

@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable Z-hop for travel moves that cross layer perimeters.",
     )
     parser.add_argument("--support-spacing", type=float, default=1.5)
+    parser.add_argument("--support-print-feed", type=float, default=None,
+                        help="Physical mm/min max print speed for support; default standard speed.")
+    parser.add_argument("--support-interface-print-feed", type=float, default=None,
+                        help="Physical mm/min max print speed for support interface; default standard speed.")
+    parser.add_argument("--support-flow-ratio", type=float, default=1.0,
+                        help="Support extrusion multiplier relative to calibrated bead (default 1.0).")
+    parser.add_argument("--support-interface-flow-ratio", type=float, default=1.0,
+                        help="Support-interface extrusion multiplier (default 1.0).")
     parser.add_argument(
         "--raft-layers",
         type=int,
@@ -299,6 +307,10 @@ def main(argv: list[str] | None = None) -> int:
         z_hop_min_travel=args.z_hop_min_travel,
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
         support_spacing=args.support_spacing,
+        support_print_feed_mm_per_min=args.support_print_feed,
+        support_interface_print_feed_mm_per_min=args.support_interface_print_feed,
+        support_flow_ratio=args.support_flow_ratio,
+        support_interface_flow_ratio=args.support_interface_flow_ratio,
         support_min_island_area=_profile_value(args, "support_min_island_area"),
         support_min_region_area=_profile_value(args, "support_min_region_area"),
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),

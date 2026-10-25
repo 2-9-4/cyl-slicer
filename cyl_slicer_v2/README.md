@@ -116,6 +116,21 @@ surface walls retain their original winding. No automatic coasting/restart
 over-extrusion is enabled: calibrate pressure advance and retraction on the
 machine first.
 
+## Support and interface motion/flow tuning (opt in)
+
+For a separately calibrated support recipe, set
+`--support-print-feed` and `--support-interface-print-feed` in physical
+mm/min. These are *maximum* role speeds, capped by any layer-wide cooling
+slowdown. Per-motion rotary/axial Marlin F conversion remains in effect.
+
+`--support-flow-ratio` and `--support-interface-flow-ratio` separately scale
+the deposited filament on support and top support-interface toolpaths. Defaults
+are 1.0, keeping the shared bead model and previous G-code unchanged. The
+geometry, model walls, skin, line spacing, raft foundations, support gaps and
+retract distance are unaffected. A flow ratio is **not** a substitute for
+independently tuning interface density, contact gap, support temperature and
+cooling on the actual printer. Avoid exceeding nozzle volumetric flow capacity.
+
 ## Run
 
 ```bash
