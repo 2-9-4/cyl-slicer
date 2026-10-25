@@ -67,6 +67,11 @@ class SlicerConfig:
     z_hop_height: float = 0.4
     z_hop_min_travel: float = 5.0
     z_hop_on_perimeter_crossing: bool = True
+    route_travel_inside_island: bool = True
+    route_max_extra_mm: float = 6.0  # Upper bound beyond direct travel length.
+    route_max_factor: float = 1.65  # Multiplicative detour limit.
+    route_max_vertices: int = 96  # Bound visibility-graph work.
+    route_max_unretracted_mm: float = 5.0
     hotend_temp: int = 195
     fan_speed: int = 255
     fan_start_height: float = 1.0
@@ -260,6 +265,18 @@ class SlicerConfig:
             raise ValueError("z_hop_height must be non-negative")
         if self.z_hop_min_travel < 0:
             raise ValueError("z_hop_min_travel must be non-negative")
+        if not isinstance(self.route_travel_inside_island, bool):
+            raise ValueError("route_travel_inside_island must be bool")
+        if (not math.isfinite(self.route_max_extra_mm)
+                or self.route_max_extra_mm < 0):
+            raise ValueError("route_max_extra_mm must be finite and non-negative")
+        if not math.isfinite(self.route_max_factor) or self.route_max_factor < 1:
+            raise ValueError("route_max_factor must be finite and >= 1")
+        if not isinstance(self.route_max_vertices, int) or not 4 <= self.route_max_vertices <= 512:
+            raise ValueError("route_max_vertices must be between 4 and 512")
+        if (not math.isfinite(self.route_max_unretracted_mm)
+                or self.route_max_unretracted_mm < 0):
+            raise ValueError("route_max_unretracted_mm must be finite and non-negative")
         if self.slice_workers < 1:
             raise ValueError("slice_workers must be at least 1")
         if self.toolpath_workers < 1:

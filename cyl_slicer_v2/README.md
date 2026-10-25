@@ -159,6 +159,28 @@ retract distance are unaffected. A flow ratio is **not** a substitute for
 independently tuning interface density, contact gap, support temperature and
 cooling on the actual printer. Avoid exceeding nozzle volumetric flow capacity.
 
+## Bounded on-island travel routing
+
+The quality profile now enables `--route-travel-inside-island`. When a
+straight non-extruding move would cut across a model hole or leave a concave
+island, the planner tries a bounded visibility-graph detour along that same
+connected polygon in **physical** rotary/axial millimeters, including
+periodic seam copies. Routing is allowed only when both endpoints lie in
+the same island and the graph has at most 96 vertices. A detour must be at
+most 1.65 times the direct distance and at most 6 mm longer. Above those
+limits, or with no verified inside route, the slicer retains its existing
+straight travel/retract/Z-hop safety behavior. A successfully routed short
+move may remain primed only if its full travel is ≤5 mm; longer detours
+still retract. These are deliberately bounded for performance and ooze.
+
+`--no-route-travel-inside-island` disables it, and
+`--route-max-extra-mm`, `--route-max-factor`,
+`--route-max-vertices`, and `--route-max-unretracted-mm` allow tuning.
+`;ROUTED_TRAVEL:N` comments identify paths actually routed. Visibility
+segments must remain inside the printed island footprint. The router does
+not navigate disconnected islands, move at extrusion Z through empty air,
+or change E, perimeter winding, or part geometry.
+
 ## Run
 
 ```bash

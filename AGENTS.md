@@ -17,6 +17,10 @@
   when changing path planning or G-code output.
 - Geometry sampling resolution must not force redundant G-code blocks on a
   straight move. Short travels along a perimeter are not perimeter crossings.
+- Bounded on-island travel routes must stay inside a single polygonal
+  footprint in the physical cylindrical metric. Enforce finite graph/extra-
+  distance budgets, correct periodic theta and Marlin rotary resets, and
+  preserve safe retract/Z-hop fallback when routing cannot be verified.
 - Adjacent fill passes should stay primed for short travel contained in the
   model/support footprint. Check the whole connection, including across the seam;
   don't suppress retraction across holes or separate islands based on distance
