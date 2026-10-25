@@ -6,6 +6,7 @@ import unittest
 from shapely.geometry import GeometryCollection, box
 from shapely.ops import unary_union
 
+from cyl_slicer_v2.cli import _profile_value, build_parser
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.gcode import _role_print_settings, emit_gcode
 from cyl_slicer_v2.layers import _assign_printable_bridges
@@ -93,6 +94,26 @@ class BridgeOutputTests(unittest.TestCase):
         _assign_printable_bridges([lower,upper],c)
         self.assertIsNone(upper.bridge_regions)
         self.assertGreater(upper.needs_support.area,0)
+
+    def test_cli_bridge_profile_parity_and_explicit_overrides(self):
+        canonical = SlicerConfig()
+        for profile in ("quality", "library", "legacy-cli"):
+            args = build_parser().parse_args(["--profile", profile])
+            for field in ("bridge_mode", "bridge_max_span_mm",
+                          "bridge_anchor_overlap_mm",
+                          "bridge_print_feed_mm_per_min", "bridge_flow_ratio",
+                          "bridge_fan_pwm"):
+                self.assertEqual(_profile_value(args, field), getattr(canonical, field))
+        args = build_parser().parse_args([
+            "--bridge-mode", "print", "--bridge-max-span-mm", "5.5",
+            "--bridge-print-feed", "650", "--bridge-flow-ratio", ".8",
+            "--bridge-fan-pwm", "230"
+        ])
+        self.assertEqual(_profile_value(args, "bridge_mode"), "print")
+        self.assertEqual(_profile_value(args, "bridge_max_span_mm"), 5.5)
+        self.assertEqual(_profile_value(args, "bridge_print_feed_mm_per_min"), 650)
+        self.assertEqual(_profile_value(args, "bridge_flow_ratio"), .8)
+        self.assertEqual(_profile_value(args, "bridge_fan_pwm"), 230)
 
     def test_invalid_bridge_parameters(self):
         for kwargs in ({"bridge_mode":"all"},
