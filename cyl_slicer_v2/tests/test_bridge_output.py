@@ -73,7 +73,7 @@ class BridgeOutputTests(unittest.TestCase):
     def test_physical_bridge_feed_flow_and_temporary_fan_override(self):
         c = SlicerConfig(bridge_mode="print",bridge_fan_pwm=220,
             bridge_print_feed_mm_per_min=900, bridge_flow_ratio=.9,
-            retract_mm=0,bed_radius=30)
+            retract_mm=0,bed_radius=30,cooling_min_layer_time_s=0)
         self.assertEqual(_role_print_settings("BRIDGE",c),(900,.9))
         bridge = Toolpath("BRIDGE",30.24,[(.4,4.2),(.4,5.8)])
         lp = LayerToolpaths(1,30.24,{"BRIDGE":[bridge]})
