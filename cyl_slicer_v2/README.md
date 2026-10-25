@@ -30,6 +30,23 @@ slicer still completes each island before traveling to another. A one-wall
 model behaves identically under either setting. This does not change wall
 geometry, extrusion flow, winding, or the selected seam.
 
+## Optional firmware linear advance
+
+The default G-code emits **no M900 commands**. The previously reviewed Marlin
+source has `LIN_ADVANCE` disabled, so simply changing the slicer is not enough.
+Verify that the **flashed** firmware actually supports `M900` before using
+`--marlin-linear-advance --linear-advance-k K`. With both explicitly supplied,
+the slicer issues `M900 K...` after heating, before printing, and `M900 K0`
+at job end. It does not modify calculated extrusion distance, retranslations,
+or the physical X/Y travel-speed correction.
+
+`--material-profile pla|petg|abs|tpu|unprofiled` records the identity in
+G-code; it deliberately assigns **no guessed** K factor, nozzle temperature,
+fan override, or acceleration. Calibrate K separately for X-only, rotary-only,
+and mixed axial/rotary moves at real print speeds on the actual firmware,
+and confirm retract behavior. Extrusion-rate smoothing, if needed, requires
+a separate volume-conserving motion planner and is not enabled here.
+
 ## Run
 
 ```bash
