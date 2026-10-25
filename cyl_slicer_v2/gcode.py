@@ -560,6 +560,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         ";MARLIN_REQUIRES:POWER_LOSS_RECOVERY (G92.9 native Y reset)",
         f";LAYER_HEIGHT:{config.layer_height}",
         f";LINE_WIDTH:{config.nozzle_width}",
+        f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
