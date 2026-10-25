@@ -56,6 +56,7 @@ _CLI_ALIASES = {
     "feed_mm_per_min": "print_feed",
     "travel_mm_per_min": "travel_feed",
     "retract_speed_mm_per_min": "retract_speed",
+    "cooling_min_print_speed_mm_per_min": "cooling_min_print_speed",
 }
 
 
