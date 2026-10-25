@@ -17,6 +17,9 @@ class SlicerConfig:
     filament_diameter: float = 1.75
     wall_count: int = 2
     wall_order: str = "outer-first"  # Inside-out for overhangs if selected.
+    seam_policy: str = "nearest"  # nearest | aligned | corner, for closed loops only.
+    seam_angle_deg: float = 180.0  # Cylinder phase target for aligned/corner.
+    seam_exclude_deg: tuple[float, float] | None = None
     top_layers: int = 3
     bottom_layers: int = 3
     infill_spacing: float = 2.0
@@ -140,6 +143,15 @@ class SlicerConfig:
             raise ValueError("wall_count must be at least 1")
         if self.wall_order not in {"outer-first", "inner-first"}:
             raise ValueError("wall_order must be 'outer-first' or 'inner-first'")
+        if self.seam_policy not in {"nearest", "aligned", "corner"}:
+            raise ValueError("seam_policy must be nearest, aligned or corner")
+        if not math.isfinite(self.seam_angle_deg) or not 0 <= self.seam_angle_deg < 360:
+            raise ValueError("seam_angle_deg must be in [0, 360)")
+        if self.seam_exclude_deg is not None:
+            pair = self.seam_exclude_deg
+            if (len(pair) != 2 or any(not math.isfinite(x) or not 0 <= x < 360 for x in pair)
+                    or pair[0] == pair[1]):
+                raise ValueError("seam_exclude_deg must contain two distinct angles in [0, 360)")
         if self.top_layers < 1:
             raise ValueError("top_layers must be at least 1")
         if self.bottom_layers < 1:
