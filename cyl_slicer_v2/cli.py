@@ -166,6 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.025,
         help="Maximum physical mm deviation of sampled face/cylinder curves from chord.",
     )
+    parser.add_argument("--intersection-strict-recovery", action="store_true",
+                        help="Reject ambiguous radial topology transitions instead of warning and using bounded one-sided recovery.")
     parser.add_argument(
         "--intersection-refine-factor",
         type=int,
@@ -249,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         layer_backend=args.layer_backend,
         intersection_refine_factor=args.intersection_refine_factor,
         intersection_curve_error_mm=args.intersection_curve_error_mm,
+        intersection_strict_recovery=args.intersection_strict_recovery,
     )
     backend = None
     if args.layer_backend == "raster":
