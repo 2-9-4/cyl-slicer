@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from cyl_slicer_v2.config import SlicerConfig
+from cyl_slicer_v2.tests.legacy_config import LegacySlicerConfig as SlicerConfig
 from cyl_slicer_v2.fixtures import make_fixture
 from cyl_slicer_v2.layers import slice_mesh
 from cyl_slicer_v2.occupancy_backends import GridOccupancyBackend, MeshContainsBackend, build_occupancy_backend
