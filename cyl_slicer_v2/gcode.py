@@ -560,6 +560,39 @@ def emit_toolpath(
     return lines
 
 
+def _cooling_print_speed(layer: LayerToolpaths, config: SlicerConfig) -> tuple[float, float]:
+    """Conservative print-only duration estimate using physical surface arcs.
+
+    Travel/retraction/acceleration only INCREASE elapsed layer duration,
+    so ignoring them never overestimates cooling time. At an unreachably short
+    layer, the configured minimum speed takes precedence over the target time.
+    """
+    total_length = sum(
+        cylindrical_distance(a, b, path.radius)
+        for paths in layer.paths_by_role.values()
+        for path in paths
+        for a, b in zip(path.points, path.points[1:])
+    )
+    if config.cooling_min_layer_time_s <= 0 or total_length <= MIN_GEOMETRY_LENGTH:
+        return config.feed_mm_per_min, total_length * 60.0 / config.feed_mm_per_min
+    requested = 60.0 * total_length / config.cooling_min_layer_time_s
+    speed = max(
+        config.cooling_min_print_speed_mm_per_min,
+        min(config.feed_mm_per_min, requested),
+    )
+    return speed, total_length * 60.0 / speed
+
+
+def _layer_fan_pwm(height_mm: float, config: SlicerConfig) -> int:
+    if config.fan_speed <= 0 or height_mm < config.fan_start_height - 1e-8:
+        return 0
+    if config.fan_ramp_height_mm <= 0:
+        return config.fan_speed
+    fraction = min(1.0, max(0.0,
+                          (height_mm - config.fan_start_height) / config.fan_ramp_height_mm))
+    return round(config.fan_speed * fraction)
+
+
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     config.validate()
     state = GcodeState(radial=config.bed_radius)
@@ -584,6 +617,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";TRAVEL_FEED:{config.travel_mm_per_min:g}",  # requested physical surface mm/min for XY travel
         f";FAN_SPEED:{config.fan_speed}",
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
+        f";FAN_RAMP_HEIGHT_MM:{config.fan_ramp_height_mm:g}",
+        f";COOLING_MIN_LAYER_TIME_S:{config.cooling_min_layer_time_s:g}",
+        f";COOLING_MIN_PRINT_SPEED_MM_MIN:{config.cooling_min_print_speed_mm_per_min:g}",
         "G90 ; absolute positioning",
         "M82 ; absolute extrusion mode",
         *_reset_rotary_axis(state, reset_extrusion=True),
@@ -599,7 +635,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     if config.retraction_sweep:
         out.append(config.retraction_sweep.header().rstrip())
 
-    fan_started = False
+    fan_pwm = 0
     for layer in layers:
         nozzle_radius = layer.deposition_radius(config.layer_height)
         if not math.isfinite(nozzle_radius) or nozzle_radius < config.bed_radius:
@@ -611,15 +647,23 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         height = nozzle_radius - config.bed_radius
         overrides = config.retraction_sweep.overrides(height) if config.retraction_sweep else {}
         layer_config = replace(config, **overrides) if overrides else config
+        cooling_speed, estimated_print_time = _cooling_print_speed(layer, layer_config)
+        if abs(cooling_speed - layer_config.feed_mm_per_min) > 1e-10:
+            layer_config = replace(layer_config, feed_mm_per_min=cooling_speed)
         out.append(f";LAYER:{layer.layer_index}")
+        if config.cooling_min_layer_time_s > 0:
+            out.append(f";COOLING_PRINT_DURATION_ESTIMATE_S:{estimated_print_time:.4f}")
+            out.append(f";COOLING_PRINT_SPEED_MM_MIN:{cooling_speed:.4f}")
         out.append(f";SAMPLE_RADIUS:{layer.radius:.4f}")
         out.append(f";DEPOSITED_THICKNESS:{deposited_thickness:.4f}")
         out.append(f";Z:{nozzle_radius:.4f}")
         if config.retraction_sweep:
             out.append(config.retraction_sweep.comment(height).rstrip())
-        if not fan_started and config.fan_speed > 0 and height >= config.fan_start_height - 1e-8:
-            out.append(f"M106 S{config.fan_speed} ; part cooling on")
-            fan_started = True
+        desired_pwm = _layer_fan_pwm(height, layer_config)
+        if desired_pwm != fan_pwm:
+            note = "part cooling on" if desired_pwm == layer_config.fan_speed else "part cooling ramp"
+            out.append(f"M106 S{desired_pwm} ; {note}")
+            fan_pwm = desired_pwm
         out.append(_format_move("G0", z=_emitted_z(nozzle_radius, layer_config), f=layer_config.travel_mm_per_min))
         out.extend(_reset_rotary_axis(state, reset_extrusion=True, comment="reset E/Y accumulators for layer"))
         state.radial = nozzle_radius

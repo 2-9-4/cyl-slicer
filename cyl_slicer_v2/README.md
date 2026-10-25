@@ -47,6 +47,26 @@ and mixed axial/rotary moves at real print speeds on the actual firmware,
 and confirm retract behavior. Extrusion-rate smoothing, if needed, requires
 a separate volume-conserving motion planner and is not enabled here.
 
+## Layer cooling controls (opt in)
+
+Without options, the original fan step and full-speed motion are unchanged.
+`--cooling-min-layer-time-s T` computes deposition-only time from all
+cylindrical toolpath lengths in physical millimeters, then caps *that layer's*
+print speed to approach at least T seconds. This is conservative: travel,
+retraction and acceleration also consume time but are deliberately excluded
+from the estimate. `--cooling-min-print-speed` (default 300 mm/min) bounds
+the slowdown and takes precedence if T is unattainable; **no stationary nozzle
+dwell is added**. G-code comments report chosen print speed and estimated
+deposition time. Per-motion Marlin F conversion still uses the existing
+physical surface-speed correction. Extrusion E remains strictly conserved.
+
+`--fan-ramp-height-mm H` gradually ramps M106 PWM from zero at the already
+configured fan-start height up to `--fan-speed` after H radial millimeters.
+Zero retains the previous binary fan step. This is a radial-height profile,
+**not** measured thermal cooling. Individual island revisit times, bridge
+fan overrides, acceleration-aware timing and actual filament temperature
+are still open validation/improvement items.
+
 ## Run
 
 ```bash

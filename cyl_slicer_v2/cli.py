@@ -80,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Part-cooling PWM from 0 (off) to 255 (full); default 255.")
     parser.add_argument("--fan-start-height", type=float, default=2.0,
                         help="Radial Z height above build cylinder at which cooling starts (mm); default 2.")
+    parser.add_argument("--fan-ramp-height-mm", type=float, default=0.0,
+                        help="Ramp fan PWM from 0 to --fan-speed over this radial height; 0 is an immediate step.")
+    parser.add_argument("--cooling-min-layer-time-s", type=float, default=0.0,
+                        help="Conservatively slow extrusions to this minimum estimated printing time per layer; 0 disables.")
+    parser.add_argument("--cooling-min-print-speed", type=float, default=300.0,
+                        help="Physical mm/min floor on cooling slowdown (default 300); never adds dwell.")
     parser.add_argument("--retract-mm", type=float, default=1.0, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
     parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
@@ -268,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
         travel_mm_per_min=args.travel_feed,
         fan_speed=args.fan_speed,
         fan_start_height=args.fan_start_height,
+        fan_ramp_height_mm=args.fan_ramp_height_mm,
+        cooling_min_layer_time_s=args.cooling_min_layer_time_s,
+        cooling_min_print_speed_mm_per_min=args.cooling_min_print_speed,
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
         z_hop_on_perimeter_crossing=args.z_hop_on_perimeter_crossing,
