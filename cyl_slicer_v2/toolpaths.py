@@ -310,12 +310,15 @@ def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed:
             return None
         return Toolpath(role=role, radius=radius, points=cleaned, closed=closed)
 
-    min_length = _min_printable_length(config)
-    cleaned = [pts[0]]
-    for pt in pts[1:]:
-        if cylindrical_distance(cleaned[-1], pt, radius) >= min_length:
-            cleaned.append(pt)
+    # Only simplify collinear geometry within a physical deviation tolerance.
+    # Distance-based *vertex* pruning can delete a real corner and silently
+    # replace two extruded legs with a diagonal. The minimum printable length
+    # applies to the complete feature, not each constituent segment.
+    cleaned = coalesce_collinear_points(pts, radius)
     if len(cleaned) < 2:
+        return None
+    total_length = sum(cylindrical_distance(a, b, radius) for a, b in zip(cleaned, cleaned[1:]))
+    if total_length < max(MIN_GEOMETRY_LENGTH, _min_printable_length(config)):
         return None
     return Toolpath(role=role, radius=radius, points=cleaned, closed=closed)
 

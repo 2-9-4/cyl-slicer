@@ -470,11 +470,12 @@ def _unwrap_toolpath_thetas(path: Toolpath, current_accum: float) -> list[float]
     return unwrap_path_from_current(raw_thetas, current_accum)
 
 
-def _min_emitted_segment_length(path: Toolpath, config: SlicerConfig) -> float:
+def _min_emitted_path_length(path: Toolpath, config: SlicerConfig) -> float:
+    """A length threshold selects whole features, never individual corners."""
     if path.role in PERIMETER_ROLES:
         return MIN_GEOMETRY_LENGTH
     if config.min_path_length <= 0:
-        return 0.0
+        return MIN_GEOMETRY_LENGTH
     return config.min_path_length + MIN_OUTPUT_LENGTH_GUARD
 
 
@@ -492,6 +493,11 @@ def emit_toolpath(
     accum = _unwrap_toolpath_thetas(path, state.theta_accum)
     pts = list(zip(accum, [p[1] for p in path.points]))
     pts = coalesce_collinear_points(pts, path.radius)
+    if len(pts) < 2:
+        return []
+    total_length = sum(cylindrical_distance(a, b, path.radius) for a, b in zip(pts, pts[1:]))
+    if total_length < _min_emitted_path_length(path, config):
+        return []
 
     lines = [";start of path"]
     t0, x0 = pts[0]
@@ -514,10 +520,12 @@ def emit_toolpath(
     lines.extend(_unretract(state, config))
 
     extruded = False
-    min_length = _min_emitted_segment_length(path, config)
     for (t_prev, x_prev), (t, x) in zip(pts[:-1], pts[1:]):
-        dist = cylindrical_distance((t_prev, x_prev), (t, x), path.radius)
-        if dist <= min_length:
+        # E must describe the move that will ACTUALLY be emitted. If a tiny
+        # numerical segment is omitted, the next move starts at the last
+        # emitted endpoint, not at the skipped point.
+        dist = cylindrical_distance((state.theta_accum, state.axial), (t, x), path.radius)
+        if dist <= MIN_GEOMETRY_LENGTH:
             continue
         lines.extend(_ensure_rotary_range(t, state))
         state.extrusion += dist * config.extrusion_per_mm
