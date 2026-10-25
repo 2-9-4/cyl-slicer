@@ -234,7 +234,13 @@ class GcodeTests(unittest.TestCase):
 
         gcode = emit_gcode(
             [layer],
-            SlicerConfig(z_hop_height=0.5, z_hop_min_travel=100.0, max_axial_segment=20.0, retract_mm=0.0),
+            SlicerConfig(
+                z_hop_height=0.5,
+                z_hop_min_travel=100.0,
+                max_axial_segment=20.0,
+                retract_mm=0.0,
+                min_path_length=0.0,
+            ),
         )
 
         self.assertEqual(gcode.count("; z hop"), 1)
