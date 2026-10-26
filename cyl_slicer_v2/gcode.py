@@ -667,9 +667,9 @@ def _should_retract_after_path(
     return True
 
 
-def _ordered_layer_paths(
+def _ordered_layer_paths_with_islands(
     layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None
-) -> list[Toolpath]:
+) -> list[tuple[Toolpath, int]]:
     # Keep the existing default order for callers of this geometry helper;
     # the outer/inner swap happens *within each island*, not across islands.
     roles = list(ROLE_ORDER)
@@ -679,7 +679,8 @@ def _ordered_layer_paths(
         roles[external], roles[internal] = roles[internal], roles[external]
     ordered = []
     shadow = state
-    remaining = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
+    groups = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
+    remaining = list(enumerate(groups))
     while remaining:
         def entry_distance(group):
             first_role = next((role for role in roles if group.get(role)), None)
@@ -688,9 +689,9 @@ def _ordered_layer_paths(
             candidates = [_orient_path_for_current_position(path, shadow, config) for path in group[first_role]]
             return min(_travel_distance_to_point(path, path.points[0], shadow) for path in candidates)
 
-        nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i]))
+        nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i][1]))
                    if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
-        group = remaining.pop(nearest)
+        group_index, group = remaining.pop(nearest)
         for role in roles:
             role_paths = (
                 _monotonic_skin_paths(group.get(role, []))
@@ -699,9 +700,16 @@ def _ordered_layer_paths(
             )
             for path in role_paths:
                 path = _orient_path_for_current_position(path, shadow, config)
-                ordered.append(path)
+                ordered.append((path, group_index))
                 shadow = _shadow_after_path(path, shadow)
     return ordered
+
+
+def _ordered_layer_paths(
+    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None
+) -> list[Toolpath]:
+    """Legacy public order-only helper; no change to path orientation/order."""
+    return [path for path, _ in _ordered_layer_paths_with_islands(layer, state, config)]
 
 
 def _retract(state: GcodeState, config: SlicerConfig) -> list[str]:
@@ -906,6 +914,51 @@ def _cooling_print_speed(layer: LayerToolpaths, config: SlicerConfig) -> tuple[f
     return speed, total_length * 60.0 / speed
 
 
+def _island_cooling_print_speed(
+    paths: list[Toolpath], config: SlicerConfig
+) -> tuple[float, float]:
+    """Bound tiny-island heat input without slowing already-cooled large islands.
+
+    Estimate the MINIMUM elapsed deposition time in physical surface-mm.
+    Independent role speed caps and the prior layer-wide cooling slowdown
+    are included; retractions, travels, acceleration and junction stalls are
+    intentionally ignored because they only add cooling time. Binary search
+    the fastest permitted island feed meeting the target. If the configured
+    floor makes that impossible, return the floor and actual lower bound,
+    never dwell at the freshly deposited nozzle position.
+    """
+    lengths: dict[str, float] = {}
+    for path in paths:
+        lengths[path.role] = lengths.get(path.role, 0.0) + sum(
+            cylindrical_distance(a, b, path.radius)
+            for a, b in zip(path.points, path.points[1:])
+        )
+    if not lengths:
+        return config.feed_mm_per_min, 0.0
+
+    def duration(base_feed: float) -> float:
+        trial = replace(config, feed_mm_per_min=base_feed)
+        return sum(length * 60.0 / _role_print_settings(role, trial)[0]
+                   for role, length in lengths.items())
+
+    ceiling = config.feed_mm_per_min
+    natural = duration(ceiling)
+    if config.cooling_min_island_print_time_s <= 0 or natural >= config.cooling_min_island_print_time_s:
+        return ceiling, natural
+    floor = min(ceiling, config.cooling_min_print_speed_mm_per_min)
+    maximum = duration(floor)
+    if maximum < config.cooling_min_island_print_time_s or floor >= ceiling:
+        return floor, maximum
+    low, high = floor, ceiling
+    for _ in range(35):
+        middle = (low + high) / 2.0
+        if duration(middle) >= config.cooling_min_island_print_time_s:
+            low = middle
+        else:
+            high = middle
+    return low, duration(low)
+
+
 def _layer_fan_pwm(height_mm: float, config: SlicerConfig) -> int:
     if config.fan_speed <= 0 or height_mm < config.fan_start_height - 1e-8:
         return 0
@@ -960,6 +1013,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
         f";FAN_RAMP_HEIGHT_MM:{config.fan_ramp_height_mm:g}",
         f";COOLING_MIN_LAYER_TIME_S:{config.cooling_min_layer_time_s:g}",
+        f";COOLING_MIN_ISLAND_PRINT_TIME_S:{config.cooling_min_island_print_time_s:g}",
         f";COOLING_MIN_PRINT_SPEED_MM_MIN:{config.cooling_min_print_speed_mm_per_min:g}",
         "G90 ; absolute positioning",
         "M82 ; absolute extrusion mode",
@@ -1014,24 +1068,35 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             else None
         )
         travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
-        paths = _ordered_layer_paths(layer, state, layer_config)
-        for index, path in enumerate(paths):
-            path = _orient_path_for_current_position(path, state, layer_config)
-            next_path = paths[index + 1] if index + 1 < len(paths) else None
-            retract_after = _should_retract_after_path(path, next_path, state, layer_config, travel_region)
+        tagged_paths = _ordered_layer_paths_with_islands(layer, state, layer_config)
+        groups_by_id: dict[int, list[Toolpath]] = {}
+        for path, group_index in tagged_paths:
+            groups_by_id.setdefault(group_index, []).append(path)
+        island_configs: dict[int, SlicerConfig] = {}
+        if layer_config.cooling_min_island_print_time_s > 0:
+            for group_index, group_paths in groups_by_id.items():
+                feed, duration = _island_cooling_print_speed(group_paths, layer_config)
+                if feed + 1e-8 < layer_config.feed_mm_per_min:
+                    island_configs[group_index] = replace(layer_config, feed_mm_per_min=feed)
+                out.append(f";COOLING_ISLAND:{group_index} PRINT_DURATION_ESTIMATE_S:{duration:.4f} SPEED_MM_MIN:{feed:.4f}")
+        for index, (path, group_index) in enumerate(tagged_paths):
+            path_config = island_configs.get(group_index, layer_config)
+            path = _orient_path_for_current_position(path, state, path_config)
+            next_path = tagged_paths[index + 1][0] if index + 1 < len(tagged_paths) else None
+            retract_after = _should_retract_after_path(path, next_path, state, path_config, travel_region)
             out.append(f";TYPE:{path.role}")
             bridge_fan = (
-                path.role == "BRIDGE" and layer_config.bridge_mode == "print"
-                and layer_config.bridge_fan_pwm is not None
-                and layer_config.bridge_fan_pwm != fan_pwm
+                path.role == "BRIDGE" and path_config.bridge_mode == "print"
+                and path_config.bridge_fan_pwm is not None
+                and path_config.bridge_fan_pwm != fan_pwm
             )
             if bridge_fan:
-                out.append(f"M106 S{layer_config.bridge_fan_pwm} ; bridge fan override")
+                out.append(f"M106 S{path_config.bridge_fan_pwm} ; bridge fan override")
             out.extend(
                 emit_toolpath(
                     path,
                     state,
-                    layer_config,
+                    path_config,
                     output_x_offset,
                     retract_after=retract_after,
                     perimeter_index=perimeter_index,
