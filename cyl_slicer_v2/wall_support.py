@@ -45,6 +45,12 @@ def _longest_uncovered_run(path_line: LineString, uncovered, closed: bool) -> fl
             continue
         first = path_line.project(Point(part.coords[0]))
         last = path_line.project(Point(part.coords[-1]))
+        # Projecting a closed line's final endpoint maps to position zero
+        # because it is the same point as the start. Recover total-length
+        # position for the trailing section instead of discarding it.
+        if (closed and last <= 1e-7 and first > 1e-7
+                and Point(part.coords[-1]).distance(Point(path_line.coords[0])) <= 1e-7):
+            last = total
         begin, end = sorted((first, last))
         if end - begin > 1e-9:
             intervals.append((begin, end))
@@ -99,5 +105,6 @@ def measure_wall_support(
         category = "unsupported"
     else:
         category = "partial"
-    run = _longest_uncovered_run(wall, uncovered, path.closed)
+    run = (total if category == "unsupported"
+           else _longest_uncovered_run(wall, uncovered, path.closed))
     return WallSupportStats(category, fraction, min(total, max(0., run)), total)
