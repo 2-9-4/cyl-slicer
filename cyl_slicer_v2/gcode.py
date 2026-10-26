@@ -1014,14 +1014,27 @@ def _island_cooling_print_speed(
     return low, duration(low)
 
 
+_MATERIAL_FAN_PWM_CEILING = {
+    "pla": 255, "petg": 180, "abs": 0, "tpu": 180, "unprofiled": 255,
+}
+
+
+def _effective_material_fan_pwm(config: SlicerConfig) -> int:
+    """Opt-in fan ceiling; never increase the configured PWM."""
+    if config.material_fan_policy == "manual":
+        return config.fan_speed
+    return min(config.fan_speed, _MATERIAL_FAN_PWM_CEILING[config.material_profile])
+
+
 def _layer_fan_pwm(height_mm: float, config: SlicerConfig) -> int:
-    if config.fan_speed <= 0 or height_mm < config.fan_start_height - 1e-8:
+    maximum = _effective_material_fan_pwm(config)
+    if maximum <= 0 or height_mm < config.fan_start_height - 1e-8:
         return 0
     if config.fan_ramp_height_mm <= 0:
-        return config.fan_speed
+        return maximum
     fraction = min(1.0, max(0.0,
                           (height_mm - config.fan_start_height) / config.fan_ramp_height_mm))
-    return round(config.fan_speed * fraction)
+    return round(maximum * fraction)
 
 
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
@@ -1067,6 +1080,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";PRINT_FEED:{config.feed_mm_per_min:g}",  # requested physical surface mm/min
         f";TRAVEL_FEED:{config.travel_mm_per_min:g}",  # requested physical surface mm/min for XY travel
         f";FAN_SPEED:{config.fan_speed}",
+        f";MATERIAL_FAN_POLICY:{config.material_fan_policy}",
+        f";EFFECTIVE_FAN_PWM:{_effective_material_fan_pwm(config)}",
         f";FAN_START_HEIGHT:{config.fan_start_height:g}",
         f";FAN_RAMP_HEIGHT_MM:{config.fan_ramp_height_mm:g}",
         f";COOLING_MIN_LAYER_TIME_S:{config.cooling_min_layer_time_s:g}",
@@ -1113,7 +1128,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             out.append(config.retraction_sweep.comment(height).rstrip())
         desired_pwm = _layer_fan_pwm(height, layer_config)
         if desired_pwm != fan_pwm:
-            note = "part cooling on" if desired_pwm == layer_config.fan_speed else "part cooling ramp"
+            note = "part cooling on" if desired_pwm == _effective_material_fan_pwm(layer_config) else "part cooling ramp"
             out.append(f"M106 S{desired_pwm} ; {note}")
             fan_pwm = desired_pwm
         out.append(_format_move("G0", z=_emitted_z(nozzle_radius, layer_config), f=layer_config.travel_mm_per_min))

@@ -90,6 +90,7 @@ class SlicerConfig:
     route_max_unretracted_mm: float = 5.0
     hotend_temp: int = 195
     fan_speed: int = 255
+    material_fan_policy: str = "manual"  # manual | preset: opt-in thermal recipe.
     fan_start_height: float = 1.0
     fan_ramp_height_mm: float = 1.0  # 0 restores immediate fan step.
     cooling_min_layer_time_s: float = 8.0  # 0 disables conservative slowdown.
@@ -310,6 +311,8 @@ class SlicerConfig:
             raise ValueError("retract_speed_mm_per_min must be finite and positive")
         if not math.isfinite(self.retract_mm) or self.retract_mm < 0:
             raise ValueError("retract_mm must be non-negative")
+        if self.material_fan_policy not in {"manual", "preset"}:
+            raise ValueError("material_fan_policy must be manual or preset")
         if not isinstance(self.fan_speed, int) or not 0 <= self.fan_speed <= 255:
             raise ValueError("fan_speed must be an integer from 0 to 255")
         if not math.isfinite(self.fan_start_height) or self.fan_start_height < 0:

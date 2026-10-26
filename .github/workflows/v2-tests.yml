@@ -38,5 +38,7 @@ jobs:
         run: python -m unittest cyl_slicer_v2.tests.test_cooling_islands
       - name: Verify bounded extrusion feed ramps and exact E conservation
         run: python -m unittest cyl_slicer_v2.tests.test_extrusion_feed_ramp
+      - name: Verify material fan policy and bridge restoration
+        run: python -m unittest cyl_slicer_v2.tests.test_material_fan_policy
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests

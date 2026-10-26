@@ -140,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
     parser.add_argument("--travel-feed", type=float, default=None,
                         help="Target physical XY travel mm/min; radial Z moves retain native mm/min.")
+    parser.add_argument("--material-fan-policy", choices=("manual", "preset"), default=None,
+                        help="Manual fan PWM (default), or opt-in material cooling preset with a conservative cap.")
     parser.add_argument("--fan-speed", type=int, default=None,
                         help="Part-cooling PWM 0–255; 255 in quality profile.")
     parser.add_argument("--fan-start-height", type=float, default=None,
@@ -383,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),
         travel_mm_per_min=_profile_value(args, "travel_mm_per_min"),
         fan_speed=_profile_value(args, "fan_speed"),
+        material_fan_policy=_profile_value(args, "material_fan_policy"),
         fan_start_height=_profile_value(args, "fan_start_height"),
         fan_ramp_height_mm=_profile_value(args, "fan_ramp_height_mm"),
         cooling_min_layer_time_s=_profile_value(args, "cooling_min_layer_time_s"),
