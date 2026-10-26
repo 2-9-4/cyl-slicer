@@ -384,6 +384,7 @@ class GcodeTests(unittest.TestCase):
                     "SUPPORT",
                     "SUPPORT_INTERFACE",
                     "INFILL_RADIAL",
+                    "SOLID_INFILL",
                 }
             )
         )

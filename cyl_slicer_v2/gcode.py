@@ -21,7 +21,7 @@ from .wall_support import measure_wall_support
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
-BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL", "GAP_FILL"})
+BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL", "SOLID_INFILL", "GAP_FILL"})
 # Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
 # is 0.000244 degrees, below our 0.001-degree output resolution.
 MAX_MARLIN_Y_DEGREES = 3600.0
@@ -366,7 +366,7 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
         return False
     theta0, axial0 = path.points[0]
     return all(abs(point[0] - theta0) <= tol for point in path.points[1:]) or (
-        path.role == "INFILL_RADIAL"
+        path.role in {"INFILL_RADIAL", "SOLID_INFILL"}
         and all(abs(point[1] - axial0) <= tol for point in path.points[1:])
     )
 
@@ -382,7 +382,11 @@ def _orient_path_for_current_position(
     end_distance = _travel_distance_to_point(path, path.points[-1], state)
     if end_distance + 1e-9 >= start_distance:
         return path
-    return Toolpath(role=path.role, radius=path.radius, points=list(reversed(path.points)), closed=path.closed)
+    return replace(
+        path,
+        points=list(reversed(path.points)),
+        segment_widths=list(reversed(path.segment_widths)) if path.segment_widths is not None else None,
+    )
 
 
 def _rotate_closed_perimeter(

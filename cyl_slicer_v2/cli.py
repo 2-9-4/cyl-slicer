@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Legacy axial solid lines or alternate radial/axial lines by layer.")
     parser.add_argument("--monotonic-top-skin", action=argparse.BooleanOptionalAction,
                         default=None,
-                        help="One-way exposed top-surface passes (enabled in quality profile).")
+                        help="Opt-in one-way exposed top-surface passes; default top fill meanders.")
     parser.add_argument("--gap-fill-enabled", action=argparse.BooleanOptionalAction,
                         default=None, help="Recover thin features with variable-width centerlines (quality default on).")
     parser.add_argument("--gap-fill-min-width-mm", type=float, default=None)

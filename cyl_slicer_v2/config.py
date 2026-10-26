@@ -28,7 +28,7 @@ class SlicerConfig:
     infill_spacing: float = 1.5
     sparse_infill_pattern: str = "alternate"  # optional alternating single-grid layer.
     solid_infill_pattern: str = "alternate"  # optional alternating exposed fill angle.
-    monotonic_top_skin: bool = True  # One-way exposed top passes enabled for quality.
+    monotonic_top_skin: bool = False  # Opt-in one-way top passes; default fill meanders.
     gap_fill_enabled: bool = True
     gap_fill_min_width_mm: float = 0.22
     gap_fill_sample_step_mm: float = 0.35

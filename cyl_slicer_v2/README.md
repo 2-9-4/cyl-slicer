@@ -16,9 +16,9 @@ The default machine is a **30 mm radius mandrel, 0.4 mm physical nozzle,
 0.16 mm radial layers, 0.42 mm deposited line width and the rounded-bead
 area/spacing model. Walls: four, outer-first. Top/bottom shells: five each.
 Sparse grid: alternating directions at crosshatch-equivalent 1.5 mm spacing;
-solid: alternating direction; exposed top skin: monotonic. Small features
-are retained down to 0.1 mm and fine supports down to 0.25 mm². Support
-interface: three layers at 0.4 mm pitch and one-layer radial gap.
+solid: alternating direction with meandering passes, including exposed top
+surfaces. Small features are retained down to 0.1 mm and fine supports down to
+0.25 mm². Support interface: three layers at 0.4 mm pitch and one-layer radial gap.
 
 Printing targets 2700 mm/min (45 mm/s) physical print speed and
 9000 mm/min (150 mm/s) surface travel, 8 s minimum estimated deposition time
@@ -29,9 +29,9 @@ firmware acceleration and extrusion throughput may prevent reaching targets.
 Use `--profile legacy-cli` to reproduce previous **CLI** defaults (0.5 mm
 layers, rectangular flow, raster backend, 3 walls, etc.).
 `--profile library` remains an alias for the new quality profile.
-Explicit options override either profile; use `--no-monotonic-top-skin` to
-disable the default-on skin behavior. Python can directly override fields:
-`SlicerConfig(layer_backend="raster", monotonic_top_skin=False)`.
+Explicit options override either profile; use `--monotonic-top-skin` to
+enable one-way exposed top passes. Python can directly override fields:
+`SlicerConfig(layer_backend="raster", monotonic_top_skin=True)`.
 
 **Safety/calibration:** defaults represent the user's printer profile, not a
 universal PLA recipe. Verify bed radius, nozzle, material, temperatures,
@@ -192,12 +192,12 @@ ordering/seam tuning remains a separate task (#12/#13).
 
 ## Monotonic exposed top skin
 
-Enabled by default, `--monotonic-top-skin` separates the **exposed** upper-surface mask from
+The opt-in `--monotonic-top-skin` separates the **exposed** upper-surface mask from
 buried bottom solid infill, then prints its dense lines in a fixed physical
 direction, progressing in stripe order. Unlike nearest-path or serpentine
 printing, the nozzle never reverses during deposited top-skin stripes.
 The travel back to the next stripe remains non-extruding and uses the same
-island/seam-aware retract and Z-hop rules. Default behavior is unchanged.
+island/seam-aware retract and Z-hop rules. Default top fill meanders instead.
 
 Thin model regions marked both top and bottom use the top mask once; there
 is no intentional double-extrusion. The same calibrated bead area and dense
@@ -519,10 +519,11 @@ face/cylinder curves are sampled to a physical unwrapped chord-error budget:
 surface paths do not need intermediate curve samples. These are sampling
 controls, not a G-code block-length limit.
 
-Sparse radial infill can print in either rotary direction. Adjacent passes start
+Sparse radial and solid infill can print in either rotary direction. Adjacent passes start
 at the nearer endpoint, so they alternate positive and negative Y with a short
 axial travel between rows. Reversed moves retain their intended angular span,
 including across the periodic seam.
+Exposed monotonic top skin retains its one-way passes.
 
 Each model island is finished locally: external perimeter, internal perimeters,
 then its solid or sparse infill. The next island is chosen from the current

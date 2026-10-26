@@ -23,7 +23,7 @@ QUALITY_EXPECTED = {
     "infill_spacing": 1.5,
     "sparse_infill_pattern": "alternate",
     "solid_infill_pattern": "alternate",
-    "monotonic_top_skin": True,
+    "monotonic_top_skin": False,
     "min_path_length": 0.1,
     "intersection_curve_error_mm": 0.01,
     "support_min_island_area": 0.25,
@@ -115,6 +115,14 @@ class QualityDefaultTests(unittest.TestCase):
         self.assertIn(";MATERIAL_PROFILE:pla", code)
         self.assertIn(";NOZZLE_DIAMETER:0.4", code)
         self.assertNotIn("\nM900 K", code)
+
+    def test_monotonic_top_skin_remains_an_explicit_override(self):
+        for profile in ("quality", "legacy-cli", "library"):
+            for flag, expected in (("--monotonic-top-skin", True),
+                                   ("--no-monotonic-top-skin", False)):
+                with self.subTest(profile=profile, flag=flag):
+                    args = build_parser().parse_args(["--profile", profile, flag])
+                    self.assertEqual(_profile_value(args, "monotonic_top_skin"), expected)
 
 
 if __name__ == "__main__":
