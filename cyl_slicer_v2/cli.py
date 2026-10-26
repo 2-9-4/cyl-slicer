@@ -85,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", choices=("quality", "legacy-cli", "library"), default="quality",
                         help="Quality (default, same as SlicerConfig); library is its alias; legacy-cli reproduces previous CLI defaults.")
     parser.add_argument("--layer-height", type=float, default=None)
+    parser.add_argument("--radial-layer-mode", choices=("fixed", "complete-terminal"), default=None,
+                        help="Fixed midpoint slabs (default), or experimental complete-terminal slabs with bounded partial thickness.")
     parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
     parser.add_argument("--nozzle-diameter", type=float, default=None,
                         help="Physical nozzle orifice diameter in mm; independent of line width.")
@@ -349,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = SlicerConfig(
         layer_height=_profile_value(args, "layer_height"),
+        radial_layer_mode=_profile_value(args, "radial_layer_mode"),
         filament_diameter=args.filament_diameter,
         nozzle_diameter=_profile_value(args, "nozzle_diameter"),
         theta_step_deg=args.theta_step_deg,
