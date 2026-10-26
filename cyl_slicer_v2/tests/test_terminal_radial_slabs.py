@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 import unittest
 
 import trimesh
@@ -93,7 +92,9 @@ class TerminalRadialSlabTests(unittest.TestCase):
         self.assertIn(";SAMPLE_RADIUS:30.3025", code)
         self.assertIn(";DEPOSITED_THICKNESS:0.0950", code)
         self.assertIn(";Z:30.3500", code)
-        actual = float(re.search(r"(?m)^G1 X[^\\n]*? E(-?[0-9.]+)", code).group(1))
+        extrude = next(line for line in code.splitlines()
+                       if line.startswith("G1 X") and " E" in line)
+        actual = float(extrude.split(" E", 1)[1].split()[0])
         expected = 10 * cfg.for_deposited_thickness(.095).extrusion_per_mm
         self.assertAlmostEqual(actual, expected, places=4)
 
