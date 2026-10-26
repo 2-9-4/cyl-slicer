@@ -801,7 +801,8 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths,
                           travel_region=travel_region, island_paths=islands,
                           nozzle_radius=radius + config.layer_height * 0.5,
-                          deposited_thickness=config.layer_height)
+                          deposited_thickness=config.layer_height,
+                          previous_occupied=layer.previous_occupied)
 
 
 def _init_toolpath_worker(config: SlicerConfig) -> None:

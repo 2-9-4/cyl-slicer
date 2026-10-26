@@ -595,6 +595,7 @@ def slice_mesh(
                 theta_window=windows[i],
                 is_full_wrap=full_flags[i],
                 support_interface_target=interface_target,
+                previous_occupied=(prev if i > 0 else None),
                 deposited_thickness=(slabs[i][1] if config.radial_layer_mode == "complete-terminal" else None),
             )
         )

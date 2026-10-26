@@ -16,6 +16,7 @@ from .coordinates import coalesce_collinear_points, cylindrical_distance, unwrap
 from .models import GcodeState, LayerToolpaths, Toolpath
 from .periodic import periodic_copies
 from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_ROLES, ROLE_ORDER
+from .wall_support import measure_wall_support
 
 
 TWO_PI = 2.0 * math.pi
@@ -1091,6 +1092,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SEAM_END_RAMP_MM:{config.seam_end_ramp_mm:g}",
         f";SEAM_END_RAMP_FRACTION:{config.seam_end_ramp_fraction:g}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
+        f";WALL_SUPPORT_REPORT:{str(config.wall_support_report).lower()}",
         f";BRIDGE_MODE:{config.bridge_mode}",
         f";BRIDGE_MAX_SPAN_MM:{config.bridge_max_span_mm:g}",
         f";BRIDGE_FEED_MM_MIN:{config.bridge_print_feed_mm_per_min:g}",
@@ -1187,6 +1189,18 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             next_path = tagged_paths[index + 1][0] if index + 1 < len(tagged_paths) else None
             retract_after = _should_retract_after_path(path, next_path, state, path_config, travel_region)
             out.append(f";TYPE:{path.role}")
+            if (path_config.wall_support_report and path.role in PERIMETER_ROLES
+                    and layer.previous_occupied is not None):
+                # Diagnostics only: independent of travel ordering, print
+                # feed, E, seam policy, gravity and support generation.
+                wall = measure_wall_support(
+                    path, layer.previous_occupied, path_config.nozzle_width
+                )
+                out.append(
+                    f";WALL_SUPPORT:{wall.category} COVERED_FRACTION:{wall.covered_fraction:.4f}"
+                    f" MAX_UNSUPPORTED_MM:{wall.max_unsupported_run_mm:.4f}"
+                    f" TOTAL_MM:{wall.total_length_mm:.4f}"
+                )
             bridge_fan = (
                 path.role == "BRIDGE" and path_config.bridge_mode == "print"
                 and path_config.bridge_fan_pwm is not None

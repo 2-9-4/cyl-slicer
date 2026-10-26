@@ -225,6 +225,25 @@ segments must remain inside the printed island footprint. The router does
 not navigate disconnected islands, move at extrusion Z through empty air,
 or change E, perimeter winding, or part geometry.
 
+## Partial-wall bearing report (diagnostics only)
+
+Use `--wall-support-report` to emit `;WALL_SUPPORT:...` comments beside
+external/internal wall paths. For each printed wall it calculates the fraction
+of the physical R×theta/axial perimeter centerline supported by the preceding
+sampled layer (expanded by half a deposited line width), and the longest
+uncovered continuous span in physical millimeters. A partly supported path is
+marked `partial`; fully supported or entirely unsupported walls are reported
+separately. It accounts for winding across the 0/360° seam, including an
+uncovered span that straddles a closed loop's start/finish point.
+
+This does **not** change walls, material, E, support generation, or the
+`--bridge-mode` safety gate. A geometrically unsupported wall segment is not
+automatically a safe gravity-independent bridge on a spinning cylinder. First
+model layer diagnostics are omitted when the mandrel itself is the bearing.
+The report is off by default to avoid additional geometry processing and
+G-code noise. Print coupons at different rotary phases are still necessary
+before exploiting bearing diagnostics for speed, bridging or support removal.
+
 ## Two-anchor bridge printing (experimental opt-in)
 
 `--bridge-mode print` detects short, nearly straight **two-bearing**
