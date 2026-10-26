@@ -106,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Opt-in physical-mm feed reduction over the end of closed perimeter loops.")
     parser.add_argument("--seam-end-ramp-fraction", type=float, default=None,
                         help="Target final feed fraction at the seam; no filament is removed.")
+    parser.add_argument("--wall-support-report", action=argparse.BooleanOptionalAction,
+                        default=None, help="Annotate per-wall support fraction and longest unsupported span in physical mm.")
     parser.add_argument("--top-layers", type=int, default=None, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=None, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=None)
@@ -368,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),
         seam_end_ramp_mm=_profile_value(args, "seam_end_ramp_mm"),
         seam_end_ramp_fraction=_profile_value(args, "seam_end_ramp_fraction"),
+        wall_support_report=_profile_value(args, "wall_support_report"),
         top_layers=_profile_value(args, "top_layers"),
         bottom_layers=_profile_value(args, "bottom_layers"),
         infill_spacing=_profile_value(args, "infill_spacing"),

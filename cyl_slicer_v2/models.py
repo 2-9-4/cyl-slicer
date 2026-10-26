@@ -23,6 +23,8 @@ class LayerSlice:
     support_interface_target: BaseGeometry | None = None
     bridge_regions: dict[str, BaseGeometry] | None = None
     deposited_thickness: float | None = None
+    # Occupancy from the preceding radial layer, for opt-in wall diagnostics.
+    previous_occupied: BaseGeometry | None = None
 
 
 @dataclass
@@ -47,6 +49,7 @@ class LayerToolpaths:
     # sample + thickness/2]; default calculation uses config.layer_height.
     nozzle_radius: float | None = None
     deposited_thickness: float | None = None
+    previous_occupied: BaseGeometry | None = None
 
     def deposition_radius(self, configured_layer_height: float) -> float:
         if self.nozzle_radius is not None:

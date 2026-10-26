@@ -38,6 +38,7 @@ class SlicerConfig:
     infill_wall_overlap_fraction: float = 0.15
     # Bridging removes support and changes thermal behavior, opt-in until
     # calibrated for the rotating mandrel's gravity and phase.
+    wall_support_report: bool = False  # Annotate wall bearing, no print-path changes.
     bridge_mode: str = "off"  # off | print
     bridge_max_span_mm: float = 8.0
     bridge_anchor_overlap_mm: float = 0.2
@@ -243,6 +244,8 @@ class SlicerConfig:
             raise ValueError("gap_fill_min_length_mm must be finite and non-negative")
         if not math.isfinite(self.infill_wall_overlap_fraction) or not 0 <= self.infill_wall_overlap_fraction <= 0.5:
             raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
+        if not isinstance(self.wall_support_report, bool):
+            raise ValueError("wall_support_report must be bool")
         if self.bridge_mode not in {"off", "print"}:
             raise ValueError("bridge_mode must be 'off' or 'print'")
         if not math.isfinite(self.bridge_max_span_mm) or self.bridge_max_span_mm <= 0:
