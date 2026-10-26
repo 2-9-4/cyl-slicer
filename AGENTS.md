@@ -5,6 +5,11 @@
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
+- For cooling, estimate each island's deposited path lengths in physical
+  theta*radius/axial mm and respect role-specific maximum speeds and the
+  machine's configured minimum speed. Cooling timing estimates must be
+  conservative lower bounds (do not assume acceleration or travel time);
+  do not insert stationary hot-nozzle dwells to meet impossible targets.
 - Prefer quality-improving algorithms as defaults when they preserve geometry
   and do not require calibration. Keep firmware commands, machine-specific
   tuning and potentially topology-changing experimental recovery opt-in.
