@@ -57,6 +57,12 @@ class RoleAwareLayerCoolingTests(unittest.TestCase):
         self.assertEqual(speed, cfg.feed_mm_per_min)
         self.assertAlmostEqual(seconds, 3)
 
+    def test_empty_layer_does_not_spuriously_slow_down(self):
+        cfg = SlicerConfig(cooling_min_layer_time_s=8)
+        feed, duration = _cooling_print_speed(LayerToolpaths(0, 30, {}), cfg)
+        self.assertEqual(feed, cfg.feed_mm_per_min)
+        self.assertEqual(duration, 0)
+
     def test_unreachable_target_still_respects_minimum_speed_and_no_dwell(self):
         cfg = SlicerConfig(cooling_min_layer_time_s=100,
                            cooling_min_island_print_time_s=0,
