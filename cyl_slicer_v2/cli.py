@@ -100,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Cylinder angular phase target for aligned seams and corner tie-breaking.")
     parser.add_argument("--seam-exclude-deg", type=float, nargs=2, default=None, metavar=("START", "END"),
                         help="Exclude closed-loop starts in this angular window (wraps through zero if START>END).")
+    parser.add_argument("--seam-end-ramp-mm", type=float, default=None,
+                        help="Opt-in physical-mm feed reduction over the end of closed perimeter loops.")
+    parser.add_argument("--seam-end-ramp-fraction", type=float, default=None,
+                        help="Target final feed fraction at the seam; no filament is removed.")
     parser.add_argument("--top-layers", type=int, default=None, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=None, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=None)
@@ -359,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
         seam_policy=args.seam_policy,
         seam_angle_deg=args.seam_angle_deg,
         seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),
+        seam_end_ramp_mm=_profile_value(args, "seam_end_ramp_mm"),
+        seam_end_ramp_fraction=_profile_value(args, "seam_end_ramp_fraction"),
         top_layers=_profile_value(args, "top_layers"),
         bottom_layers=_profile_value(args, "bottom_layers"),
         infill_spacing=_profile_value(args, "infill_spacing"),

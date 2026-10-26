@@ -20,6 +20,8 @@ class SlicerConfig:
     seam_policy: str = "nearest"  # nearest | aligned | corner, for closed loops only.
     seam_angle_deg: float = 180.0  # Cylinder phase target for aligned/corner.
     seam_exclude_deg: tuple[float, float] | None = None
+    seam_end_ramp_mm: float = 0.0  # Opt-in closed-perimeter finish tuning.
+    seam_end_ramp_fraction: float = 0.65  # Requested feed fraction at seam exit.
     top_layers: int = 5
     bottom_layers: int = 5
     infill_spacing: float = 1.5
@@ -186,6 +188,11 @@ class SlicerConfig:
             if (len(pair) != 2 or any(not math.isfinite(x) or not 0 <= x < 360 for x in pair)
                     or pair[0] == pair[1]):
                 raise ValueError("seam_exclude_deg must contain two distinct angles in [0, 360)")
+        if not math.isfinite(self.seam_end_ramp_mm) or self.seam_end_ramp_mm < 0:
+            raise ValueError("seam_end_ramp_mm must be finite and nonnegative")
+        if (not math.isfinite(self.seam_end_ramp_fraction)
+                or not 0 < self.seam_end_ramp_fraction <= 1):
+            raise ValueError("seam_end_ramp_fraction must be within (0, 1]")
         if self.top_layers < 1:
             raise ValueError("top_layers must be at least 1")
         if self.bottom_layers < 1:
