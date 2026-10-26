@@ -34,5 +34,7 @@ jobs:
         run: python -m unittest cyl_slicer_v2.tests.test_gap_fill_variable_width
       - name: Verify physical support contact gaps
         run: python -m unittest cyl_slicer_v2.tests.test_support_contact_clearance
+      - name: Verify per-island speed and mixed-axis cooling conservation
+        run: python -m unittest cyl_slicer_v2.tests.test_cooling_islands
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests

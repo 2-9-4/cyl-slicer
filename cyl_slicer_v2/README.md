@@ -240,6 +240,28 @@ quality improvements. Validate physical support removal and underside finish
 before using non-default contact gaps. Future adaptive radial layers will
 require interval-accurate clearance rather than whole-layer rounding.
 
+## Cooling per connected island (quality default)
+
+The 8-second **layer** print-time target remains enabled. To avoid a tiny
+feature being printed quickly just because a different large island fills
+the layer, the quality profile additionally enables
+`--cooling-min-island-print-time-s 2`. Each island's print-only physical
+surface length and role-specific speed limits are used to set the
+**fastest** permissible feed that reaches at least the requested deposition
+time; other islands keep their existing layer-capped feed. A 300 mm/min
+minimum speed still takes priority if the target cannot be reached. It never
+adds stationary G4 commands over molten plastic and never modifies E,
+geometry, bridge-flow multipliers or the temporary bridge-fan override.
+
+`--cooling-min-island-print-time-s 0` disables per-island slowdown.
+`--profile legacy-cli` also disables it. The `;COOLING_ISLAND:` G-code
+annotations report conservative deposition-only duration estimates and
+effective physical speed. They **do not guarantee** a between-layer
+revisit/cooling interval: physical acceleration, motion blends, travel,
+retractions, material behavior and physical tests remain important. Island
+revisit scheduling and material-specific fan calibration remain open under
+issue #9.
+
 ## Run
 
 ```bash

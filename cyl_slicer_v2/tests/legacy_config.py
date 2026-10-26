@@ -38,6 +38,7 @@ class LegacySlicerConfig(SlicerConfig):
     fan_start_height: float = 2.0
     fan_ramp_height_mm: float = 0.0
     cooling_min_layer_time_s: float = 0.0
+    cooling_min_island_print_time_s: float = 0.0
     min_path_length: float = 0.6
     intersection_curve_error_mm: float = 0.025
     layer_backend: str = "raster"

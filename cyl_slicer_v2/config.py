@@ -91,6 +91,7 @@ class SlicerConfig:
     fan_start_height: float = 1.0
     fan_ramp_height_mm: float = 1.0  # 0 restores immediate fan step.
     cooling_min_layer_time_s: float = 8.0  # 0 disables conservative slowdown.
+    cooling_min_island_print_time_s: float = 2.0  # Each connected island, lower-bound print duration.
     cooling_min_print_speed_mm_per_min: float = 300.0
     min_path_length: float = 0.1
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
@@ -310,6 +311,9 @@ class SlicerConfig:
             raise ValueError("fan_ramp_height_mm must be finite and non-negative")
         if not math.isfinite(self.cooling_min_layer_time_s) or self.cooling_min_layer_time_s < 0:
             raise ValueError("cooling_min_layer_time_s must be finite and non-negative")
+        if (not math.isfinite(self.cooling_min_island_print_time_s)
+                or self.cooling_min_island_print_time_s < 0):
+            raise ValueError("cooling_min_island_print_time_s must be finite and non-negative")
         if (not math.isfinite(self.cooling_min_print_speed_mm_per_min)
                 or self.cooling_min_print_speed_mm_per_min <= 0):
             raise ValueError("cooling_min_print_speed_mm_per_min must be finite and positive")
