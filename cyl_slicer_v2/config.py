@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 from .calibration import RetractionSweep
@@ -9,6 +9,7 @@ from .calibration import RetractionSweep
 @dataclass(frozen=True)
 class SlicerConfig:
     layer_height: float = 0.16
+    radial_layer_mode: str = "fixed"  # fixed | complete-terminal (opt-in)
     nozzle_width: float = 0.42  # Deposited track width; not physical nozzle orifice.
     nozzle_diameter: float | None = 0.4
     # "rounded" is the calibrated quality approximation. "rectangular"
@@ -155,7 +156,26 @@ class SlicerConfig:
     def theta_step(self) -> float:
         return math.radians(self.theta_step_deg)
 
+    def for_deposited_thickness(self, height: float) -> "SlicerConfig":
+        """Couple a nonstandard slab height to bead area, pitch and filament E.
+
+        This preserves a calibrated extrusion_per_mm multiplier rather than
+        replacing it with an uncalibrated theoretical volume estimate.
+        """
+        if not math.isfinite(height) or height <= 0:
+            raise ValueError("Deposited thickness must be finite and positive")
+        if self.bead_model == "rounded" and height > self.nozzle_width:
+            raise ValueError("Rounded deposited thickness cannot exceed line width")
+        if abs(height - self.layer_height) <= 1e-12:
+            return self
+        area = (height * (self.nozzle_width - height) + math.pi * height**2 / 4.0
+                if self.bead_model == "rounded" else self.nozzle_width * height)
+        return replace(self, layer_height=height,
+                       extrusion_per_mm=self.extrusion_per_mm * area / self.bead_area)
+
     def validate(self) -> None:
+        if self.radial_layer_mode not in {"fixed", "complete-terminal"}:
+            raise ValueError("radial_layer_mode must be fixed or complete-terminal")
         if not math.isfinite(self.layer_height) or self.layer_height <= 0:
             raise ValueError("layer_height must be finite and positive")
         if not math.isfinite(self.nozzle_width) or self.nozzle_width <= 0:

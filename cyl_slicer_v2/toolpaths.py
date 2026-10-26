@@ -614,6 +614,8 @@ def meandered_radial_grid_paths(
 
 
 def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolpaths:
+    if layer.deposited_thickness is not None:
+        config = config.for_deposited_thickness(layer.deposited_thickness)
     paths: dict[str, list[Toolpath]] = defaultdict(list)
     model = layer.occupied
     radius = layer.radius

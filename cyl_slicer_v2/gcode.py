@@ -1113,7 +1113,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             raise ValueError("Deposited layer thickness must be finite and positive")
         height = nozzle_radius - config.bed_radius
         overrides = config.retraction_sweep.overrides(height) if config.retraction_sweep else {}
-        layer_config = replace(config, **overrides) if overrides else config
+        layer_config = config.for_deposited_thickness(deposited_thickness)
+        if overrides:
+            layer_config = replace(layer_config, **overrides)
         cooling_speed, estimated_print_time = _cooling_print_speed(layer, layer_config)
         if abs(cooling_speed - layer_config.feed_mm_per_min) > 1e-10:
             layer_config = replace(layer_config, feed_mm_per_min=cooling_speed)

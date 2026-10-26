@@ -426,18 +426,57 @@ def propagate_solid_surfaces(layers: list[LayerSlice], config: SlicerConfig) -> 
             target.bottom_surfaces = _safe_union([target.bottom_surfaces, carry])
 
 
-def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
+def layer_slabs(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[tuple[float, float]]:
+    """Sample midpoint radius and physical thickness for each radial slab.
+
+    The original fixed schedule remains byte-for-byte equivalent by default.
+    The opt-in complete-terminal schedule covers the exact requested radial
+    interval; its final two slabs share a tiny remainder rather than creating
+    an unreliable, arbitrarily thin extrusion.
+    """
     r_min_mesh, r_max_mesh = radial_bounds(mesh)
     r_min = config.min_radius if config.min_radius is not None else r_min_mesh
     r_max = config.max_radius if config.max_radius is not None else r_max_mesh
     r_min = max(r_min, config.bed_radius)
-    start = r_min + config.layer_height * 0.5
-    stop = r_max - config.layer_height * 0.5
-    if stop < start:
-        return []
-    count = int(np.floor((stop - start) / config.layer_height)) + 1
+    h = config.layer_height
     print(f"layer radii goes up {r_min:.2f}->{r_max:.2f}")
-    return [float(start + i * config.layer_height) for i in range(count)]
+    if config.radial_layer_mode == "fixed":
+        start = r_min + h * 0.5
+        stop = r_max - h * 0.5
+        if stop < start:
+            return []
+        count = int(np.floor((stop - start) / h)) + 1
+        return [(float(start + i * h), h) for i in range(count)]
+
+    span = r_max - r_min
+    if span <= 0:
+        return []
+    if span < h * 0.5 - 1e-9:
+        raise ValueError("Complete-terminal radial range is less than half a layer; "
+                         "reduce --layer-height")
+    full_count = int(math.floor(span / h + 1e-10))
+    remainder = span - full_count * h
+    if abs(remainder) < 1e-9:
+        remainder = 0.0
+    heights = [h] * full_count
+    if remainder > 0:
+        if not heights:
+            heights.append(remainder)
+        elif remainder < h * 0.5:
+            shared = (heights.pop() + remainder) * 0.5
+            heights.extend((shared, shared))
+        else:
+            heights.append(remainder)
+    edge = r_min
+    slabs = []
+    for height in heights:
+        slabs.append((float(edge + 0.5 * height), float(height)))
+        edge += height
+    return slabs
+
+
+def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
+    return [radius for radius, _ in layer_slabs(mesh, config)]
 
 
 def _init_slice_worker(backend: OccupancyBackend, config: SlicerConfig, t_edges: np.ndarray, z_edges: np.ndarray) -> None:
@@ -489,9 +528,10 @@ def slice_mesh(
 ) -> list[LayerSlice]:
     config.validate()
     backend = occupancy_backend or MeshContainsBackend(mesh)
-    radii = layer_radii(mesh, config)
+    slabs = layer_slabs(mesh, config)
     if max_layers is not None:
-        radii = radii[:max_layers]
+        slabs = slabs[:max_layers]
+    radii = [radius for radius, _ in slabs]
 
     occupied = [GeometryCollection() for _ in radii]
     windows = [(0.0, 0.0) for _ in radii]
@@ -526,6 +566,7 @@ def slice_mesh(
                 theta_window=windows[i],
                 is_full_wrap=full_flags[i],
                 support_interface_target=interface_target,
+                deposited_thickness=(slabs[i][1] if config.radial_layer_mode == "complete-terminal" else None),
             )
         )
 
