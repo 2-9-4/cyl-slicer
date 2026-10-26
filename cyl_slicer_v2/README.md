@@ -269,10 +269,20 @@ solver for complex curves or variable-width multiple walls.
 
 The default `--support-gap-layers 1` remains exactly as before. To specify a
 **physical radial** contact clearance instead, use
-`--support-contact-gap-mm N`. At fixed radial layer height, the slicer
-rounds upward to the next whole skipped radial layer (for 0.16 mm layers,
-0.17 mm requests two empty layers). Passing 0 explicitly requests contact
-without an empty support gap. If unset, the original integer gap controls.
+`--support-contact-gap-mm N`. The support generator now compares actual
+radial *faces*: it permits a support slab only if its outer deposited face
+is at least N mm below the originating model slab's inner face. This
+uses the individual recorded slab thickness, including a variable-thickness
+terminal layer, rather than converting N to nominal layer counts. The
+printed gap is quantized upward by the real intervening slabs, never below
+the requested clearance. At fixed 0.16 mm height, 0.17 mm still means two
+empty layers. Passing 0 requests no empty radial slab; if unset, the old
+integer `--support-gap-layers` setting controls.
+
+Independent overhangs retain their own contact limits as the support
+foundation propagates downward. This avoids prematurely printing one
+island because a nearby overhang originates at a different radial height.
+Clearance is radial-only; physical removability still requires print coupons.
 
 `--support-lateral-gap-mm N` optionally removes ordinary support tracks
 from an additional same-layer physical-mm buffer around model material,
@@ -281,8 +291,9 @@ printed support contact near model sidewalls, **not** the carried foundation
 footprint on earlier layers; zero is the default and preserves geometry.
 These are material/removability parameters, not universally safe automatic
 quality improvements. Validate physical support removal and underside finish
-before using non-default contact gaps. Future adaptive radial layers will
-require interval-accurate clearance rather than whole-layer rounding.
+before using non-default contact gaps. Fully adaptive radial sampling, variable-thickness gap-support/raft foundations,
+bottom-interface patterns and printed underside contact validation remain
+separate engineering tasks.
 
 ## Cooling per connected island (quality default)
 
