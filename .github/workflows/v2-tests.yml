@@ -36,5 +36,7 @@ jobs:
         run: python -m unittest cyl_slicer_v2.tests.test_support_contact_clearance
       - name: Verify per-island speed and mixed-axis cooling conservation
         run: python -m unittest cyl_slicer_v2.tests.test_cooling_islands
+      - name: Verify bounded extrusion feed ramps and exact E conservation
+        run: python -m unittest cyl_slicer_v2.tests.test_extrusion_feed_ramp
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests

@@ -73,6 +73,8 @@ class SlicerConfig:
     material_profile: str = "pla"  # Metadata; never guesses a material's K.
     linear_advance_k: float | None = None
     linear_advance_firmware: str | None = None  # Explicit firmware build declaration.
+    extrusion_feed_ramp_mm: float = 0.0  # Optional physical-mm feed shaping.
+    extrusion_feed_ramp_start_fraction: float = 0.65
     travel_mm_per_min: float = 9000.0
     extrusion_per_mm: float | None = None
     retraction_sweep: RetractionSweep | None = None
@@ -295,6 +297,11 @@ class SlicerConfig:
                 raise ValueError("linear_advance_k requires explicit Marlin M900 firmware support")
         elif self.linear_advance_firmware is not None:
             raise ValueError("linear_advance_firmware requires an explicit K value")
+        if not math.isfinite(self.extrusion_feed_ramp_mm) or self.extrusion_feed_ramp_mm < 0:
+            raise ValueError("extrusion_feed_ramp_mm must be finite and nonnegative")
+        if (not math.isfinite(self.extrusion_feed_ramp_start_fraction)
+                or not 0 < self.extrusion_feed_ramp_start_fraction <= 1):
+            raise ValueError("extrusion_feed_ramp_start_fraction must be in (0, 1]")
         if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
             raise ValueError("feed_mm_per_min must be finite and positive")
         if not math.isfinite(self.travel_mm_per_min) or self.travel_mm_per_min <= 0:

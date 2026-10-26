@@ -779,6 +779,60 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
     return config.feed_mm_per_min, 1.0
 
 
+def _ramped_extrusion_steps(
+    pts: list[tuple[float, float]], radius: float, config: SlicerConfig
+) -> list[tuple[tuple[float, float], int, float]]:
+    """Return emitted endpoint, source segment index, physical feed multiplier.
+
+    Splitting geometry at longitudinal physical-mm ramp boundaries preserves
+    a source segment's variable-width bead and the exact total E. The
+    original X/theta endpoint is always included; a disabled ramp does not
+    add or modify any G-code segment.
+    """
+    lengths = [
+        cylindrical_distance(a, b, radius)
+        for a, b in zip(pts, pts[1:])
+    ]
+    total = sum(lengths)
+    if config.extrusion_feed_ramp_mm <= 0 or total <= MIN_GEOMETRY_LENGTH:
+        return [(pt, i, 1.0) for i, pt in enumerate(pts[1:])]
+
+    span = min(total, config.extrusion_feed_ramp_mm)
+    # At most four ramp stages; avoid increasing planner block count with
+    # numerous submillimeter speed changes on small geometry.
+    stages = max(1, min(4, int(span / 0.8)))
+    edges = [span * j / stages for j in range(1, stages + 1)]
+    result = []
+    traversed = 0.0
+    eps = 1e-9
+    for i, ((theta0, x0), (theta1, x1)) in enumerate(zip(pts, pts[1:])):
+        length = lengths[i]
+        if length <= MIN_GEOMETRY_LENGTH:
+            result.append(((theta1, x1), i, 1.0))
+            traversed += length
+            continue
+        splits = [
+            boundary for boundary in edges
+            if traversed + eps < boundary < traversed + length - eps
+        ]
+        cumulative = [0.0, *[p - traversed for p in splits], length]
+        for start, finish in zip(cumulative, cumulative[1:]):
+            fraction = finish / length
+            point = (
+                theta0 + (theta1-theta0)*fraction,
+                x0 + (x1-x0)*fraction,
+            )
+            midpoint = traversed + (start+finish)*0.5
+            progress = min(1.0, midpoint/span)
+            speed_fraction = (
+                config.extrusion_feed_ramp_start_fraction +
+                (1.0-config.extrusion_feed_ramp_start_fraction)*progress
+            )
+            result.append((point, i, speed_fraction))
+        traversed += length
+    return result
+
+
 def emit_toolpath(
     path: Toolpath,
     state: GcodeState,
@@ -852,7 +906,7 @@ def emit_toolpath(
 
     extruded = False
     role_feed, role_flow = _role_print_settings(path.role, config)
-    for index, ((t_prev, x_prev), (t, x)) in enumerate(zip(pts[:-1], pts[1:])):
+    for (t, x), index, ramp_factor in _ramped_extrusion_steps(pts, path.radius, config):
         # E must describe the move that will ACTUALLY be emitted. If a tiny
         # numerical segment is omitted, the next move starts at the last
         # emitted endpoint, not at the skipped point.
@@ -879,7 +933,8 @@ def emit_toolpath(
                 y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
                 f=_surface_feed_for_marlin(
-                    x - state.axial, t - state.theta_accum, path.radius, role_feed
+                    x - state.axial, t - state.theta_accum, path.radius,
+                    role_feed * ramp_factor
                 ),
             )
         )
@@ -980,6 +1035,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";LINE_WIDTH:{config.nozzle_width}",
         f";MATERIAL_PROFILE:{config.material_profile}",
         f";LINEAR_ADVANCE:{('Marlin M900 K' + f'{config.linear_advance_k:g}') if config.linear_advance_k is not None else 'disabled'}",
+        f";EXTRUSION_FEED_RAMP_MM:{config.extrusion_feed_ramp_mm:g}",
+        f";EXTRUSION_FEED_RAMP_START_FRACTION:{config.extrusion_feed_ramp_start_fraction:g}",
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",

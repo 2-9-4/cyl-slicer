@@ -132,6 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Explicitly declare flashed firmware supports Marlin LIN_ADVANCE M900.")
     parser.add_argument("--linear-advance-k", type=float, default=None,
                         help="Calibrated Marlin K, 0..10; requires --marlin-linear-advance.")
+    parser.add_argument("--extrusion-feed-ramp-mm", type=float, default=None,
+                        help="Optional physical-mm path-start commanded feed ramp (default disabled).")
+    parser.add_argument("--extrusion-feed-ramp-start-fraction", type=float, default=None,
+                        help="Start/feed fraction for opt-in ramp, in (0,1], default 0.65.")
     parser.add_argument("--print-feed", type=float, default=None,
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
     parser.add_argument("--travel-feed", type=float, default=None,
@@ -374,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         feed_mm_per_min=_profile_value(args, "feed_mm_per_min"),
         material_profile=_profile_value(args, "material_profile"),
         linear_advance_k=args.linear_advance_k,
+        extrusion_feed_ramp_mm=_profile_value(args, "extrusion_feed_ramp_mm"),
+        extrusion_feed_ramp_start_fraction=_profile_value(args, "extrusion_feed_ramp_start_fraction"),
         linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),
         travel_mm_per_min=_profile_value(args, "travel_mm_per_min"),
         fan_speed=_profile_value(args, "fan_speed"),

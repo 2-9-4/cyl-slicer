@@ -10,6 +10,7 @@
   machine's configured minimum speed. Cooling timing estimates must be
   conservative lower bounds (do not assume acceleration or travel time);
   do not insert stationary hot-nozzle dwells to meet impossible targets.
+- Never change deposited filament E to smooth extrusion rate: when splitting an extrusion command, preserve physical endpoints, width-area metadata, and cumulative E. Hardware-dependent feed ramps remain opt-in.
 - Prefer quality-improving algorithms as defaults when they preserve geometry
   and do not require calibration. Keep firmware commands, machine-specific
   tuning and potentially topology-changing experimental recovery opt-in.
