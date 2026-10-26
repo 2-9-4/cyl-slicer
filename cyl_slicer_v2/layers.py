@@ -270,22 +270,35 @@ def _needs_support_from_previous(geom, previous, radius: float, config: SlicerCo
     return _support_regions(_unsupported_from_previous(geom, previous, radius, config), radius, config)
 
 
+def _layer_radial_faces(layer: LayerSlice, config: SlicerConfig) -> tuple[float, float]:
+    """Physical inner/outer deposited faces, not the sample midpoint."""
+    thickness = (layer.deposited_thickness if layer.deposited_thickness is not None
+                 else config.layer_height)
+    if not math.isfinite(thickness) or thickness <= 0:
+        raise ValueError("Support slab thickness must be finite and positive")
+    return layer.radius - 0.5 * thickness, layer.radius + 0.5 * thickness
+
+
 def _merge_support_carry(items, radius: float, config: SlicerConfig):
     grouped = {}
-    for geom, interface_target, gap_layers, interface_layers in items:
+    # The last key is the *physical* support-top radius limit inherited from
+    # the originating model underside. Never merge supports with different
+    # contact planes merely because their layer counters are equal.
+    for geom, interface_target, gap_layers, interface_layers, contact_limit in items:
         if geom is None or geom.is_empty:
             continue
-        grouped.setdefault((gap_layers, interface_layers), []).append((geom, interface_target))
+        key = (gap_layers, interface_layers, contact_limit)
+        grouped.setdefault(key, []).append((geom, interface_target))
 
     merged = []
-    for (gap_layers, interface_layers), items in grouped.items():
+    for (gap_layers, interface_layers, contact_limit), items in grouped.items():
         geoms = [geom for geom, _ in items]
         geom = _support_regions(_safe_union(geoms), radius, config, promote=False)
         if not geom.is_empty:
             interface_target = _safe_union(
                 target for _, target in items if target is not None and not target.is_empty
             )
-            merged.append((geom, interface_target, gap_layers, interface_layers))
+            merged.append((geom, interface_target, gap_layers, interface_layers, contact_limit))
     return merged
 
 
@@ -296,7 +309,13 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
         interface_pieces = []
         interface_direction = None
         next_carry = []
-        for carried_geom, interface_target, gap_layers, interface_layers in carry:
+        _, layer_outer = _layer_radial_faces(layer, config)
+        for carried_geom, interface_target, gap_layers, interface_layers, contact_limit in carry:
+            # Legacy implicit contact uses whole skipped layers. An explicitly
+            # requested physical gap instead compares actual deposited faces,
+            # including nonuniform terminal/adaptive layer thickness.
+            gap_blocked = (gap_layers > 0 if contact_limit is None
+                           else layer_outer > contact_limit + 1e-9)
             occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
             if occupied.is_empty:
                 ungrounded = carried_geom
@@ -323,14 +342,14 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                     printable_support, layer.radius, config, promote=False
                 )
 
-            if gap_layers <= 0 and not printable_support.is_empty:
+            if not gap_blocked and not printable_support.is_empty:
                 printable_contact = _safe_intersection(printable_support, interface_target)
                 printable_contact = _support_interface_regions(printable_contact, layer.radius, config)
                 if printable_contact.is_empty:
                     if not carried_support.is_empty:
                         next_gap = max(0, gap_layers - 1)
-                        next_interface = interface_layers if gap_layers > 0 else max(0, interface_layers - 1)
-                        next_carry.append((carried_support, interface_target, next_gap, next_interface))
+                        next_interface = interface_layers if gap_blocked else max(0, interface_layers - 1)
+                        next_carry.append((carried_support, interface_target, next_gap, next_interface, contact_limit))
                     continue
 
                 support_pieces.append(printable_support)
@@ -343,8 +362,8 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
 
             if not carried_support.is_empty:
                 next_gap = max(0, gap_layers - 1)
-                next_interface = interface_layers if gap_layers > 0 else max(0, interface_layers - 1)
-                next_carry.append((carried_support, interface_target, next_gap, next_interface))
+                next_interface = interface_layers if gap_blocked else max(0, interface_layers - 1)
+                next_carry.append((carried_support, interface_target, next_gap, next_interface, contact_limit))
 
         layer.support = _safe_union(support_pieces)
         layer.support_interface = _safe_union(interface_pieces)
@@ -356,12 +375,22 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 if layer.support_interface_target is not None and not layer.support_interface_target.is_empty
                 else layer.needs_support
             )
+            model_inner, _ = _layer_radial_faces(layer, config)
+            # With an explicit mm gap, a candidate lower support slab may
+            # print only when its outer face lies at least that far below the
+            # underside of the overhanging model slab. The same calculation
+            # works for regular and variable radial layer heights.
+            contact_limit = (
+                None if config.support_contact_gap_mm is None
+                else model_inner - config.support_contact_gap_mm
+            )
             next_carry.append(
                 (
                     layer.needs_support,
                     interface_target,
-                    config.effective_support_gap_layers,
+                    config.effective_support_gap_layers if contact_limit is None else 0,
                     config.support_interface_layers,
+                    contact_limit,
                 )
             )
         carry = _merge_support_carry(next_carry, layer.radius, config)
