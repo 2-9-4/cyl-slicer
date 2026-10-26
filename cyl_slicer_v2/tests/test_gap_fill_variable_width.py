@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
+from shapely import affinity
 from shapely.geometry import GeometryCollection, LineString, Polygon, box
 from shapely.ops import unary_union
 
@@ -66,6 +67,42 @@ class GapFillVariableWidthTests(unittest.TestCase):
         widths=[w for p in paths for w in p.segment_widths]
         self.assertGreater(max(widths)-min(widths),.025)
         self.assertTrue(all(self.c.gap_fill_min_width_mm <= w <= .42 for w in widths))
+
+    def test_gently_curved_narrow_strip_recovers_local_width_without_overshoot(self):
+        # The bounding rectangle is wider than a bead due to the bend,
+        # while the actual strand stays about 0.30 mm across everywhere.
+        spine = LineString([(3, 0), (3.1, 2), (3.45, 4), (3.55, 8)])
+        physical = spine.buffer(.15, cap_style="flat")
+        self.assertGreater(
+            min(math.dist(a, b) for a, b in zip(
+                list(physical.minimum_rotated_rectangle.exterior.coords)[:4],
+                list(physical.minimum_rotated_rectangle.exterior.coords)[1:5]
+            )), self.c.nozzle_width)
+        region = affinity.scale(physical, xfact=1/R, yfact=1, origin=(0, 0))
+        roles = build_layer_toolpaths(layer(region), self.c).paths_by_role
+        self.assertFalse(roles.get("EXTERNAL_PERIMETER"))
+        fills = roles.get("GAP_FILL", [])
+        self.assertTrue(fills)
+        self.assertGreater(sum(metric(p).length for p in fills), 3)
+        for path in fills:
+            self.assertEqual(len(path.segment_widths), len(path.points)-1)
+            for a,b,w in zip(path.points, path.points[1:], path.segment_widths):
+                self.assertGreaterEqual(w, self.c.gap_fill_min_width_mm)
+                self.assertLessEqual(w, self.c.nozzle_width)
+                swept = LineString([(a[0]*R,a[1]),(b[0]*R,b[1])]).buffer(
+                    w*.5, cap_style="flat")
+                self.assertLessEqual(swept.difference(physical).area,
+                                     max(1e-8, swept.length*.006))
+
+    def test_wide_bent_region_remains_ineligible(self):
+        from cyl_slicer_v2.gap_fill import _narrow_polygon_paths
+        spine = LineString([(3, 0), (3.1, 2), (3.45, 4), (3.55, 8)])
+        wide = spine.buffer(.5, cap_style="flat")
+        self.assertEqual(_narrow_polygon_paths(
+            wide, R, self.c.nozzle_width,
+            self.c.gap_fill_min_width_mm, self.c.gap_fill_sample_step_mm,
+            self.c.gap_fill_min_length_mm,
+        ), [])
 
     def test_regular_walls_and_sparse_interior_do_not_become_gap_fill(self):
         region=box(.1,0,1.1,20)
