@@ -204,6 +204,23 @@ heuristics. Verify bridge strips at relevant rotary phases before enabling
 this in production. Partially supported walls, sag prediction, and variable
 bridge bead width remain outside the conservative detector.
 
+## Narrow-feature variable-width gap fill (quality default)
+
+The slicer recovers conservative thin strips and tapered serif-like edges
+whose fixed-width perimeter offsets disappear. It analyzes **unprinted
+edge-band** material rather than intentionally sparse infill, measures
+cross-section widths in physical R×theta/axial millimeters, and emits one
+GAP_FILL centerline with a calibrated width and E for every segment. Default
+minimum deposited gap width is 0.22 mm (at 0.16 mm layer height), bounded
+above by the 0.42 mm nominal bead. Short, branched, highly curved and
+sub-minimum features are rejected rather than fabricated across empty space.
+
+To reproduce the old slicer behavior use `--no-gap-fill-enabled` (also the
+explicit legacy profile). Tune `--gap-fill-min-width-mm`,
+`--gap-fill-sample-step-mm`, and `--gap-fill-min-length-mm`.
+This is a staged conservative gap recovery, not a full Arachne/medial-axis
+solver for complex curves or variable-width multiple walls.
+
 ## Run
 
 ```bash
