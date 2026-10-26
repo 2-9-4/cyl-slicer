@@ -967,72 +967,77 @@ def emit_toolpath(
     return lines
 
 
-def _cooling_print_speed(layer: LayerToolpaths, config: SlicerConfig) -> tuple[float, float]:
-    """Conservative print-only duration estimate using physical surface arcs.
+def _role_lengths(paths: list[Toolpath]) -> dict[str, float]:
+    """Count only deposited physical-mm lengths, grouped by actual speed cap."""
+    lengths: dict[str, float] = {}
+    for path in paths:
+        length = sum(
+            cylindrical_distance(a, b, path.radius)
+            for a, b in zip(path.points, path.points[1:])
+        )
+        if length > MIN_GEOMETRY_LENGTH:
+            lengths[path.role] = lengths.get(path.role, 0.0) + length
+    return lengths
 
-    Travel/retraction/acceleration only INCREASE elapsed layer duration,
-    so ignoring them never overestimates cooling time. At an unreachably short
-    layer, the configured minimum speed takes precedence over the target time.
+
+def _cooling_feed_for_target(
+    lengths: dict[str, float], config: SlicerConfig, target_seconds: float,
+) -> tuple[float, float]:
+    """Fastest base F meeting a conservative deposited-motion time target.
+
+    Actual role caps (bridge/support/interface) must already count toward
+    layer or island time. Ignoring them slows other features unnecessarily.
+    Travel, retract, acceleration and junction stalls are intentionally
+    excluded to maintain a conservative *lower bound* on elapsed time.
     """
-    total_length = sum(
-        cylindrical_distance(a, b, path.radius)
-        for paths in layer.paths_by_role.values()
-        for path in paths
-        for a, b in zip(path.points, path.points[1:])
-    )
-    if config.cooling_min_layer_time_s <= 0 or total_length <= MIN_GEOMETRY_LENGTH:
-        return config.feed_mm_per_min, total_length * 60.0 / config.feed_mm_per_min
-    requested = 60.0 * total_length / config.cooling_min_layer_time_s
-    speed = max(
-        config.cooling_min_print_speed_mm_per_min,
-        min(config.feed_mm_per_min, requested),
-    )
-    return speed, total_length * 60.0 / speed
+    ceiling = config.feed_mm_per_min
+    if not lengths:
+        return ceiling, 0.0
+
+    def duration(feed: float) -> float:
+        trial = replace(config, feed_mm_per_min=feed)
+        return sum(
+            length * 60.0 / _role_print_settings(role, trial)[0]
+            for role, length in lengths.items()
+        )
+
+    natural = duration(ceiling)
+    if target_seconds <= 0 or natural >= target_seconds:
+        return ceiling, natural
+    floor = min(ceiling, config.cooling_min_print_speed_mm_per_min)
+    maximum = duration(floor)
+    if maximum < target_seconds or floor >= ceiling:
+        return floor, maximum
+    low, high = floor, ceiling
+    for _ in range(35):
+        middle = (low + high) * 0.5
+        if duration(middle) >= target_seconds:
+            low = middle
+        else:
+            high = middle
+    return low, duration(low)
+
+
+def _cooling_print_speed(layer: LayerToolpaths, config: SlicerConfig) -> tuple[float, float]:
+    """Conservative layer print duration in physical cylindrical millimeters.
+
+    Role-limited bridge and support moves count at their actual ceiling, so
+    the unrestricted paths slow only when the whole layer needs it. No
+    stationary dwell or guessed firmware acceleration is included.
+    """
+    lengths = _role_lengths([
+        path for paths in layer.paths_by_role.values() for path in paths
+    ])
+    return _cooling_feed_for_target(lengths, config, config.cooling_min_layer_time_s)
 
 
 def _island_cooling_print_speed(
     paths: list[Toolpath], config: SlicerConfig
 ) -> tuple[float, float]:
-    """Bound tiny-island heat input without slowing already-cooled large islands.
-
-    Estimate the MINIMUM elapsed deposition time in physical surface-mm.
-    Independent role speed caps and the prior layer-wide cooling slowdown
-    are included; retractions, travels, acceleration and junction stalls are
-    intentionally ignored because they only add cooling time. Binary search
-    the fastest permitted island feed meeting the target. If the configured
-    floor makes that impossible, return the floor and actual lower bound,
-    never dwell at the freshly deposited nozzle position.
-    """
-    lengths: dict[str, float] = {}
-    for path in paths:
-        lengths[path.role] = lengths.get(path.role, 0.0) + sum(
-            cylindrical_distance(a, b, path.radius)
-            for a, b in zip(path.points, path.points[1:])
-        )
-    if not lengths:
-        return config.feed_mm_per_min, 0.0
-
-    def duration(base_feed: float) -> float:
-        trial = replace(config, feed_mm_per_min=base_feed)
-        return sum(length * 60.0 / _role_print_settings(role, trial)[0]
-                   for role, length in lengths.items())
-
-    ceiling = config.feed_mm_per_min
-    natural = duration(ceiling)
-    if config.cooling_min_island_print_time_s <= 0 or natural >= config.cooling_min_island_print_time_s:
-        return ceiling, natural
-    floor = min(ceiling, config.cooling_min_print_speed_mm_per_min)
-    maximum = duration(floor)
-    if maximum < config.cooling_min_island_print_time_s or floor >= ceiling:
-        return floor, maximum
-    low, high = floor, ceiling
-    for _ in range(35):
-        middle = (low + high) / 2.0
-        if duration(middle) >= config.cooling_min_island_print_time_s:
-            low = middle
-        else:
-            high = middle
-    return low, duration(low)
+    """Apply the same role-aware conservative timing to each connected island."""
+    return _cooling_feed_for_target(
+        _role_lengths(paths), config, config.cooling_min_island_print_time_s
+    )
 
 
 _MATERIAL_FAN_PWM_CEILING = {
