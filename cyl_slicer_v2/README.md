@@ -221,6 +221,25 @@ explicit legacy profile). Tune `--gap-fill-min-width-mm`,
 This is a staged conservative gap recovery, not a full Arachne/medial-axis
 solver for complex curves or variable-width multiple walls.
 
+## Physical support contact clearance (opt in)
+
+The default `--support-gap-layers 1` remains exactly as before. To specify a
+**physical radial** contact clearance instead, use
+`--support-contact-gap-mm N`. At fixed radial layer height, the slicer
+rounds upward to the next whole skipped radial layer (for 0.16 mm layers,
+0.17 mm requests two empty layers). Passing 0 explicitly requests contact
+without an empty support gap. If unset, the original integer gap controls.
+
+`--support-lateral-gap-mm N` optionally removes ordinary support tracks
+from an additional same-layer physical-mm buffer around model material,
+measured in the unwrapped cylindrical R×theta/axial plane. It changes
+printed support contact near model sidewalls, **not** the carried foundation
+footprint on earlier layers; zero is the default and preserves geometry.
+These are material/removability parameters, not universally safe automatic
+quality improvements. Validate physical support removal and underside finish
+before using non-default contact gaps. Future adaptive radial layers will
+require interval-accurate clearance rather than whole-layer rounding.
+
 ## Run
 
 ```bash

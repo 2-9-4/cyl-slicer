@@ -225,6 +225,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Merge support branches closer than this metric gap in mm.",
     )
+    parser.add_argument("--support-contact-gap-mm", type=float, default=None,
+                        help="Physical radial contact clearance mm, overrides --support-gap-layers.")
+    parser.add_argument("--support-lateral-gap-mm", type=float, default=None,
+                        help="Physical same-layer model/support clearance in R*theta/axial mm.")
     parser.add_argument(
         "--support-gap-layers",
         type=int,
@@ -398,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),
         support_merge_gap=_profile_value(args, "support_merge_gap"),
         support_gap_layers=_profile_value(args, "support_gap_layers"),
+        support_contact_gap_mm=_profile_value(args, "support_contact_gap_mm"),
+        support_lateral_gap_mm=_profile_value(args, "support_lateral_gap_mm"),
         support_interface_layers=_profile_value(args, "support_interface_layers"),
         support_interface_spacing=_profile_value(args, "support_interface_spacing"),
         support_meander_max_angle_deg=args.support_meander_max_angle_deg,
