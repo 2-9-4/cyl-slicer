@@ -22,6 +22,7 @@ class LayerSlice:
     support_interface_direction: str | None = None
     support_interface_target: BaseGeometry | None = None
     bridge_regions: dict[str, BaseGeometry] | None = None
+    deposited_thickness: float | None = None
 
 
 @dataclass
