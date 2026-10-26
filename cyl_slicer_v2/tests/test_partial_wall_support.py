@@ -59,6 +59,13 @@ class PartialWallSupportTests(unittest.TestCase):
         self.assertEqual(stats.category, "unsupported")
         self.assertEqual(stats.max_unsupported_run_mm, 5.)
 
+    def test_closed_line_fully_uncovered_by_distant_nonempty_prior(self):
+        p = Toolpath("EXTERNAL_PERIMETER", 30,
+                     [(0, 0), (0, 8), (.1, 8), (.1, 0), (0, 0)], closed=True)
+        stats = measure_wall_support(p, box(1, 0, 1.1, 10), .4)
+        self.assertEqual(stats.category, "unsupported")
+        self.assertAlmostEqual(stats.max_unsupported_run_mm, stats.total_length_mm)
+
     def test_gcode_only_comments_opt_in_preserves_geometry_and_e(self):
         p = Toolpath("EXTERNAL_PERIMETER", 30.5, [(.1, 0), (.1, 10)])
         layer = LayerToolpaths(1, 30.5, {"EXTERNAL_PERIMETER": [p]},
