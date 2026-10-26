@@ -280,6 +280,21 @@ Test X-only, rotary-only, mixed-direction and restart coupons before
 enabling; Marlin M900 remains independently opt-in only when enabled in
 the flashed firmware.
 
+## Optional material fan ceilings
+
+`--material-fan-policy preset` caps the user-requested fan PWM by material,
+without increasing a user-specified value: PLA/unprofiled 255, PETG/TPU 180,
+ABS 0. The fan start height and radial ramp still apply. This is an
+**opt-in starting policy**, not a universally safe cooling recipe; enclosure
+conditions, printer air ducts, part geometry, and filament grade must be
+calibrated on the actual machine. The default `manual` policy preserves
+existing cooling behavior and the PLA quality profile.
+
+Example: `--material-profile petg --material-fan-policy preset`.
+Bridge-specific fan overrides remain independent and are restored to the
+material-capped baseline after each bridge. This change does not select
+pressure advance, change the filament E length, or insert waiting dwell.
+
 ## Run
 
 ```bash
