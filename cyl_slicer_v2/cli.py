@@ -337,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     sweep = sweep_from_args(args, parser)
+    if sweep is not None and sweep.parameter == "linear-advance-k" and not args.marlin_linear_advance:
+        parser.error("linear-advance-k calibration requires --marlin-linear-advance "
+                     "and verified flashed firmware M900 support")
 
     timings: list[tuple[str, float]] = []
 
@@ -388,7 +391,12 @@ def main(argv: list[str] | None = None) -> int:
         hotend_temp=_profile_value(args, "hotend_temp"),
         feed_mm_per_min=_profile_value(args, "feed_mm_per_min"),
         material_profile=_profile_value(args, "material_profile"),
-        linear_advance_k=args.linear_advance_k,
+        # For a K sweep, a known no-advance base (K0) is explicitly set.
+        # Every M900 remains gated by the verified firmware capability flag.
+        linear_advance_k=(0.0 if sweep is not None
+                          and sweep.parameter == "linear-advance-k"
+                          and args.linear_advance_k is None
+                          else args.linear_advance_k),
         extrusion_feed_ramp_mm=_profile_value(args, "extrusion_feed_ramp_mm"),
         extrusion_feed_ramp_start_fraction=_profile_value(args, "extrusion_feed_ramp_start_fraction"),
         linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),

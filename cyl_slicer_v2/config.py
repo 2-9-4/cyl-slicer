@@ -325,6 +325,11 @@ class SlicerConfig:
                 raise ValueError("linear_advance_k requires explicit Marlin M900 firmware support")
         elif self.linear_advance_firmware is not None:
             raise ValueError("linear_advance_firmware requires an explicit K value")
+        if (self.retraction_sweep is not None
+                and self.retraction_sweep.parameter == "linear-advance-k"
+                and (self.linear_advance_firmware != "marlin-m900"
+                     or self.linear_advance_k is None)):
+            raise ValueError("linear-advance-k calibration requires explicit Marlin M900 firmware and base K")
         if not math.isfinite(self.extrusion_feed_ramp_mm) or self.extrusion_feed_ramp_mm < 0:
             raise ValueError("extrusion_feed_ramp_mm must be finite and nonnegative")
         if (not math.isfinite(self.extrusion_feed_ramp_start_fraction)

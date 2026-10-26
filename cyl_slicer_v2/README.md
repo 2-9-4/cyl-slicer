@@ -103,7 +103,34 @@ or the physical X/Y travel-speed correction.
 
 `--material-profile pla|petg|abs|tpu|unprofiled` records the identity in
 G-code; it deliberately assigns **no guessed** K factor, nozzle temperature,
-fan override, or acceleration. Calibrate K separately for X-only, rotary-only,
+fan override, or acceleration.
+
+### Optional M900 K radial-band calibration
+
+After verifying that **the flashed firmware** enables Marlin `LIN_ADVANCE`,
+you can slice a repetitive sharp-corner coupon with:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli calibration/retraction_posts.stl \
+  --out /tmp/linear_advance_sweep.gcode --marlin-linear-advance \
+  --calibration linear-advance-k --calibration-values 0,0.04,0.08,0.12,0.16 \
+  --calibration-base-height 2 --calibration-band-height 3
+```
+
+The example coupon reuses the existing radial bands, but compare a dedicated
+corner/acceleration coupon before committing a K value. The five K values are
+**illustrative**, not material presets. A verified firmware capability flag is
+mandatory, even for all-zero sweeps. Without `--linear-advance-k`, the
+calibration sets explicit base K0, emits the next M900 only when the radial
+band changes, then resets to K0 at the end of the print. An explicitly set
+base K can also be supplied. Retraction sweeps remain separate.
+
+Keep material, nozzle, temperature, path width, feed, cooling, retraction,
+pressure transient layout and mandrel phase unchanged between compared
+bands; print axial, rotary and mixed-axis features at realistic speeds.
+M900 commands never adjust filament E, XY geometry or Marlin feed scaling.
+Do **not** use this on firmware that lacks M900 support; the slicer cannot
+inspect the controller or verify what was flashed. Calibrate K separately for X-only, rotary-only,
 and mixed axial/rotary moves at real print speeds on the actual firmware,
 and confirm retract behavior. Extrusion-rate smoothing, if needed, requires
 a separate volume-conserving motion planner and is not enabled here.
