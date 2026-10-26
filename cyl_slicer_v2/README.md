@@ -40,6 +40,28 @@ Pressure advance (M900), strict intersection recovery, and fixed-position
 seams remain opt-in because they require firmware calibration or depend on
 the model. Support flow multipliers remain unity pending printed coupons.
 
+## Experimental complete-terminal radial slabs
+
+The optional `--radial-layer-mode complete-terminal` covers the requested mesh
+radial range, including a fractional final layer ordinarily dropped by the
+fixed-height scheduler. If the remainder is less than half the nominal layer
+height, the final full slab and remainder are split into two equal-thickness
+slabs, ensuring that the minimum printed slab is at least half-height. An
+entire radial feature narrower than half a nominal layer is rejected rather
+than silently depositing an unprintable sliver. The default remains
+`--radial-layer-mode fixed` and preserves the previous sample locations.
+
+Each slab is intersected at its own midpoint while the nozzle moves to its
+outer radial face. Bead area, dense wall/skin spacing, variable-width paths,
+and calibrated filament E scale consistently with that slab's actual height.
+This is an **experimental prerequisite to adaptive layer selection**, not
+slope-adaptive slicing yet. The approximate surface cross-section and contact
+behavior still require real prints before promoting this mode to the default.
+Radial support gaps remain discretized in nominal layer units and need a
+separate variable-thickness integration before adaptive heights can be used
+for supported geometries. Avoid using this mode for complex support models
+until that integration is validated.
+
 ## Perimeter wall order
 
 The default `--wall-order outer-first` preserves the historical dimensional
