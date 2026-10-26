@@ -43,6 +43,7 @@ CLI_PROFILE_OVERRIDES = {
     "feed_mm_per_min": 1800.0,
     "travel_mm_per_min": 3000.0,
     "cooling_min_layer_time_s": 0.0,
+    "cooling_min_island_print_time_s": 0.0,
     "cooling_min_print_speed_mm_per_min": 300.0,
     "fan_speed": 255,
     "fan_start_height": 2.0,
@@ -143,6 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Ramp fan PWM from 0 to --fan-speed over this radial height; 0 is an immediate step.")
     parser.add_argument("--cooling-min-layer-time-s", type=float, default=None,
                         help="Conservatively slow extrusions to this minimum estimated printing time per layer; 0 disables.")
+    parser.add_argument("--cooling-min-island-print-time-s", type=float, default=None,
+                        help="Target minimum print duration per connected island (default 2 s; 0 disables, no dwell).")
     parser.add_argument("--cooling-min-print-speed", type=float, default=None,
                         help="Physical mm/min floor on cooling slowdown (default 300); never adds dwell.")
     parser.add_argument("--retract-mm", type=float, default=None, help="Filament retraction distance in mm between paths.")
@@ -377,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         fan_start_height=_profile_value(args, "fan_start_height"),
         fan_ramp_height_mm=_profile_value(args, "fan_ramp_height_mm"),
         cooling_min_layer_time_s=_profile_value(args, "cooling_min_layer_time_s"),
+        cooling_min_island_print_time_s=_profile_value(args, "cooling_min_island_print_time_s"),
         cooling_min_print_speed_mm_per_min=_profile_value(args, "cooling_min_print_speed_mm_per_min"),
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
