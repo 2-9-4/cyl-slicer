@@ -57,10 +57,19 @@ and calibrated filament E scale consistently with that slab's actual height.
 This is an **experimental prerequisite to adaptive layer selection**, not
 slope-adaptive slicing yet. The approximate surface cross-section and contact
 behavior still require real prints before promoting this mode to the default.
-Radial support gaps remain discretized in nominal layer units and need a
-separate variable-thickness integration before adaptive heights can be used
-for supported geometries. Avoid using this mode for complex support models
-until that integration is validated.
+When a model floats above the mandrel, generated gap-support and raft
+foundation slabs in this mode now partition the **actual free radial interval**
+from the bed to the first occupied model slab's inner deposited face. They
+rebalance sub-half-height remainders and carry individual physical thickness
+through support toolpaths, nozzle positions, bead spacing and E. The foundation
+ends at (but does not overlap) the model's inner face. An off-bed gap thinner
+than half the nominal height is rejected rather than printed as an unsafe
+sliver. The legacy fixed mode retains its original foundation scheduler.
+
+This solves foundation overlap and terminal print-volume accounting, but
+does not make arbitrary overhangs self-supporting. Independent model/support
+contact gaps and material separation still require physical coupons, and
+variable-height slope optimization remains experimental.
 
 ## Perimeter wall order
 
