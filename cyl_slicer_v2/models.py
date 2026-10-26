@@ -30,6 +30,8 @@ class Toolpath:
     radius: float
     points: list[tuple[float, float]]
     closed: bool = False
+    # Each segment may carry its own physical bead width in mm.
+    segment_widths: list[float] | None = None
 
 
 @dataclass
