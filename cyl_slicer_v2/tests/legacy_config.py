@@ -24,6 +24,7 @@ class LegacySlicerConfig(SlicerConfig):
     sparse_infill_pattern: str = "both"
     solid_infill_pattern: str = "axial"
     monotonic_top_skin: bool = False
+    gap_fill_enabled: bool = False
     support_min_island_area: float = 0.05
     support_interface_layers: int = 2
     support_interface_spacing: float | None = None

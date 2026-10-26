@@ -20,7 +20,7 @@ from .toolpaths import MIN_GEOMETRY_LENGTH, MIN_OUTPUT_LENGTH_GUARD, PERIMETER_R
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
-BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL"})
+BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL", "GAP_FILL"})
 # Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
 # is 0.000244 degrees, below our 0.001-degree output resolution.
 MAX_MARLIN_Y_DEGREES = 3600.0
@@ -359,7 +359,7 @@ def _should_z_hop_to_path(
 
 
 def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
-    if path.role in PERIMETER_ROLES or path.role == "TOP_SKIN":
+    if path.role in PERIMETER_ROLES or path.role in {"TOP_SKIN", "GAP_FILL"}:
         return False
     if path.closed or len(path.points) < 2:
         return False
@@ -785,7 +785,12 @@ def emit_toolpath(
         return []
     accum = _unwrap_toolpath_thetas(path, state.theta_accum)
     pts = list(zip(accum, [p[1] for p in path.points]))
-    pts = coalesce_collinear_points(pts, path.radius)
+    if path.segment_widths is None:
+        pts = coalesce_collinear_points(pts, path.radius)
+    elif (len(path.segment_widths) != len(pts)-1
+          or any(not math.isfinite(w) or w < config.layer_height or w > config.nozzle_width
+                 for w in path.segment_widths)):
+        raise ValueError("Variable-width segments must be finite, printable, and match the path")
     if len(pts) < 2:
         return []
     total_length = sum(cylindrical_distance(a, b, path.radius) for a, b in zip(pts, pts[1:]))
@@ -839,7 +844,7 @@ def emit_toolpath(
 
     extruded = False
     role_feed, role_flow = _role_print_settings(path.role, config)
-    for (t_prev, x_prev), (t, x) in zip(pts[:-1], pts[1:]):
+    for index, ((t_prev, x_prev), (t, x)) in enumerate(zip(pts[:-1], pts[1:])):
         # E must describe the move that will ACTUALLY be emitted. If a tiny
         # numerical segment is omitted, the next move starts at the last
         # emitted endpoint, not at the skipped point.
@@ -847,7 +852,17 @@ def emit_toolpath(
         if dist <= MIN_GEOMETRY_LENGTH:
             continue
         lines.extend(_ensure_rotary_range(t, state))
-        state.extrusion += dist * config.extrusion_per_mm * role_flow
+        width_ratio = 1.0
+        if path.segment_widths is not None:
+            width = path.segment_widths[index]
+            if config.bead_model == "rounded":
+                bead_area = (width - config.layer_height)*config.layer_height + math.pi*config.layer_height**2/4
+            else:
+                bead_area = width*config.layer_height
+            # Use the ratio with nominal bead area so any custom calibrated
+            # extrusion_per_mm multiplier is preserved exactly.
+            width_ratio = bead_area/config.bead_area
+        state.extrusion += dist * config.extrusion_per_mm * role_flow * width_ratio
         extruded = True
         lines.append(
             _format_move(
@@ -919,6 +934,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";ROUTE_MAX_EXTRA_MM:{config.route_max_extra_mm:g}",
         f";ROUTE_MAX_FACTOR:{config.route_max_factor:g}",
         f";MONOTONIC_TOP_SKIN:{str(config.monotonic_top_skin).lower()}",
+        f";GAP_FILL_ENABLED:{str(config.gap_fill_enabled).lower()}",
+        f";GAP_FILL_MIN_WIDTH_MM:{config.gap_fill_min_width_mm:g}",
         f";SEAM_POLICY:{config.seam_policy}",
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
         f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",

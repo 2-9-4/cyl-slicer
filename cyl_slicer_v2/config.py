@@ -26,6 +26,10 @@ class SlicerConfig:
     sparse_infill_pattern: str = "alternate"  # optional alternating single-grid layer.
     solid_infill_pattern: str = "alternate"  # optional alternating exposed fill angle.
     monotonic_top_skin: bool = True  # One-way exposed top passes enabled for quality.
+    gap_fill_enabled: bool = True
+    gap_fill_min_width_mm: float = 0.22
+    gap_fill_sample_step_mm: float = 0.35
+    gap_fill_min_length_mm: float = 0.4
     # Fraction of line width that solid/sparse infill may enter the inner
     # perimeter bead, using the selected coupled bead cross-section model.
     infill_wall_overlap_fraction: float = 0.15
@@ -184,6 +188,19 @@ class SlicerConfig:
             raise ValueError("solid_infill_pattern must be 'axial' or 'alternate'")
         if not isinstance(self.monotonic_top_skin, bool):
             raise ValueError("monotonic_top_skin must be bool")
+        if not isinstance(self.gap_fill_enabled, bool):
+            raise ValueError("gap_fill_enabled must be bool")
+        if (not math.isfinite(self.gap_fill_min_width_mm)
+                or self.gap_fill_min_width_mm <= 0):
+            raise ValueError("gap_fill_min_width_mm must be positive and finite")
+        if self.gap_fill_enabled and not (
+            self.layer_height <= self.gap_fill_min_width_mm <= self.nozzle_width
+        ):
+            raise ValueError("gap_fill_min_width_mm must be between layer height and line width")
+        if not math.isfinite(self.gap_fill_sample_step_mm) or self.gap_fill_sample_step_mm <= 0:
+            raise ValueError("gap_fill_sample_step_mm must be positive and finite")
+        if not math.isfinite(self.gap_fill_min_length_mm) or self.gap_fill_min_length_mm < 0:
+            raise ValueError("gap_fill_min_length_mm must be finite and non-negative")
         if not math.isfinite(self.infill_wall_overlap_fraction) or not 0 <= self.infill_wall_overlap_fraction <= 0.5:
             raise ValueError("infill_wall_overlap_fraction must be finite and within [0, 0.5]")
         if self.bridge_mode not in {"off", "print"}:

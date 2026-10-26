@@ -10,6 +10,7 @@ from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
 from .config import SlicerConfig
+from .gap_fill import narrow_gap_fill_paths
 from .coordinates import TWO_PI, coalesce_collinear_points, cylindrical_distance
 from .models import LayerSlice, LayerToolpaths, Toolpath
 from .periodic import periodic_copies, translate_theta
@@ -17,6 +18,7 @@ from .periodic import periodic_copies, translate_theta
 ROLE_ORDER = [
     "EXTERNAL_PERIMETER",
     "INTERNAL_PERIMETER",
+    "GAP_FILL",
     "BRIDGE",
     "TOP_SKIN",
     "SOLID_INFILL",
@@ -506,6 +508,9 @@ def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
 
 def _postprocess_role_paths(paths: list[Toolpath], config: SlicerConfig) -> list[Toolpath]:
     kept = [path for path in paths if _path_length(path) >= _min_path_length_for_role(path.role, config)]
+    if kept and kept[0].segment_widths is not None:
+        # Never join or prune variable-E paths without updating width metadata.
+        return kept
     joined = _join_touching_paths(kept)
     if paths and paths[0].role in PERIMETER_ROLES:
         return joined
@@ -723,6 +728,10 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             paths["INFILL_AXIAL"].extend(
                 line_grid_paths(infill_source, "INFILL_AXIAL", radius, sparse_spacing, config, direction="axial")
             )
+
+    if config.gap_fill_enabled and not model.is_empty:
+        walls = [path for role in PERIMETER_ROLES for path in paths.get(role, [])]
+        paths["GAP_FILL"].extend(narrow_gap_fill_paths(model, walls, radius, config))
 
     support = _clean_polygonal(layer.support)
     interface_source = layer.support_interface if layer.support_interface is not None else GeometryCollection()

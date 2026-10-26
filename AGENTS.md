@@ -4,6 +4,7 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
 - Prefer quality-improving algorithms as defaults when they preserve geometry
   and do not require calibration. Keep firmware commands, machine-specific
   tuning and potentially topology-changing experimental recovery opt-in.
