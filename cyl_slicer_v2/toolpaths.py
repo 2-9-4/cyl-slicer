@@ -823,9 +823,54 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
     if first_model is None:
         return []
 
-    start = config.bed_radius + config.layer_height * 0.5
-    if start >= first_model.radius - 1e-9:
-        return []
+    if config.radial_layer_mode == "complete-terminal":
+        # The model itself is sampled at its slab midpoint, but the top of
+        # this foundation must touch the actual INNER DEPOSITED FACE. An
+        # ordinary fixed-height loop based on sample centers can overlap
+        # that face on partially filled terminal slabs.
+        model_height = (first_model.deposited_thickness
+                        if first_model.deposited_thickness is not None
+                        else config.layer_height)
+        model_inner = first_model.radius - model_height * 0.5
+        span = model_inner - config.bed_radius
+        if span <= 1e-9:
+            return []
+        if span < config.layer_height * 0.5 - 1e-9:
+            raise ValueError(
+                "Gap-support foundation is thinner than half the requested "
+                "radial layer height; decrease --layer-height or adjust model radius"
+            )
+        h = config.layer_height
+        full_count = int(math.floor(span / h + 1e-10))
+        remainder = span - full_count * h
+        if abs(remainder) < 1e-9:
+            remainder = 0.0
+        heights = [h] * full_count
+        if remainder > 0:
+            if not heights:
+                heights = [remainder]
+            elif remainder < h * 0.5:
+                # Rebalance the upper support layers rather than extruding
+                # a sliver or overlapping the first model slab.
+                shared = (heights.pop() + remainder) * 0.5
+                heights.extend((shared, shared))
+            else:
+                heights.append(remainder)
+        support_slabs = []
+        edge = config.bed_radius
+        for height in heights:
+            support_slabs.append((float(edge + 0.5 * height), float(height)))
+            edge += height
+    else:
+        # Preserve the original default fixed schedule exactly.
+        start = config.bed_radius + config.layer_height * 0.5
+        if start >= first_model.radius - 1e-9:
+            return []
+        support_slabs = []
+        radius = start
+        while radius < first_model.radius - 1e-9:
+            support_slabs.append((float(radius), None))
+            radius += config.layer_height
 
     pieces = []
     if not first_model.support.is_empty:
@@ -837,13 +882,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
         return []
     raft_footprint = _raft_footprint_with_axial_gap(footprint, config)
 
-    radii = []
-    radius = start
-    while radius < first_model.radius - 1e-9:
-        radii.append(float(radius))
-        radius += config.layer_height
-
-    count = len(radii)
+    count = len(support_slabs)
     empty = GeometryCollection()
     return [
         LayerSlice(
@@ -858,8 +897,9 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             is_full_wrap=first_model.is_full_wrap,
             is_raft=i < config.raft_layers,
             raft_direction=("radial" if i % 2 == 0 else "axial") if i < config.raft_layers else None,
+            deposited_thickness=thickness,
         )
-        for i, radius in enumerate(radii)
+        for i, (radius, thickness) in enumerate(support_slabs)
     ]
 
 
