@@ -30,6 +30,7 @@ CLI_PROFILE_OVERRIDES = {
     "sparse_infill_pattern": "both",
     "solid_infill_pattern": "axial",
     "monotonic_top_skin": False,
+    "gap_fill_enabled": False,
     "min_path_length": 0.6,
     "intersection_curve_error_mm": 0.025,
     "bed_radius": 30.0,
@@ -108,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--monotonic-top-skin", action=argparse.BooleanOptionalAction,
                         default=None,
                         help="One-way exposed top-surface passes (enabled in quality profile).")
+    parser.add_argument("--gap-fill-enabled", action=argparse.BooleanOptionalAction,
+                        default=None, help="Recover thin features with variable-width centerlines (quality default on).")
+    parser.add_argument("--gap-fill-min-width-mm", type=float, default=None)
+    parser.add_argument("--gap-fill-sample-step-mm", type=float, default=None)
+    parser.add_argument("--gap-fill-min-length-mm", type=float, default=None)
     parser.add_argument("--line-width", type=float, default=None,
                         help="Nominal deposited bead width in mm (not physical nozzle diameter).")
     parser.add_argument("--bead-model", choices=("rectangular", "rounded"), default=None,
@@ -346,6 +352,10 @@ def main(argv: list[str] | None = None) -> int:
         sparse_infill_pattern=_profile_value(args, "sparse_infill_pattern"),
         solid_infill_pattern=_profile_value(args, "solid_infill_pattern"),
         monotonic_top_skin=_profile_value(args, "monotonic_top_skin"),
+        gap_fill_enabled=_profile_value(args, "gap_fill_enabled"),
+        gap_fill_min_width_mm=_profile_value(args, "gap_fill_min_width_mm"),
+        gap_fill_sample_step_mm=_profile_value(args, "gap_fill_sample_step_mm"),
+        gap_fill_min_length_mm=_profile_value(args, "gap_fill_min_length_mm"),
         nozzle_width=_profile_value(args, "nozzle_width"),
         bead_model=_profile_value(args, "bead_model"),
         infill_wall_overlap_fraction=args.infill_wall_overlap_fraction,
