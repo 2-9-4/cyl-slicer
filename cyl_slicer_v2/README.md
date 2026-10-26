@@ -284,8 +284,12 @@ edge-band** material rather than intentionally sparse infill, measures
 cross-section widths in physical R×theta/axial millimeters, and emits one
 GAP_FILL centerline with a calibrated width and E for every segment. Default
 minimum deposited gap width is 0.22 mm (at 0.16 mm layer height), bounded
-above by the 0.42 mm nominal bead. Short, branched, highly curved and
+above by the 0.42 mm nominal bead. Short, branched, sharply curved and
 sub-minimum features are rejected rather than fabricated across empty space.
+Gently curving narrow strips can now pass the local chord/inside-swept-footprint
+checks even if their overall rotated bounding box is wider than a bead.
+An area bound excludes broad plates and folded centerlines before sampling;
+no extra plastic is generated across a separate island or sparse interior.
 
 To reproduce the old slicer behavior use `--no-gap-fill-enabled` (also the
 explicit legacy profile). Tune `--gap-fill-min-width-mm`,
