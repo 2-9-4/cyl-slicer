@@ -1133,6 +1133,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(config.retraction_sweep.header().rstrip())
 
     fan_pwm = 0
+    current_linear_advance_k = config.linear_advance_k
     for layer in layers:
         nozzle_radius = layer.deposition_radius(config.layer_height)
         if not math.isfinite(nozzle_radius) or nozzle_radius < config.bed_radius:
@@ -1156,6 +1157,15 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";SAMPLE_RADIUS:{layer.radius:.4f}")
         out.append(f";DEPOSITED_THICKNESS:{deposited_thickness:.4f}")
         out.append(f";Z:{nozzle_radius:.4f}")
+        if (config.retraction_sweep is not None
+                and config.retraction_sweep.parameter == "linear-advance-k"):
+            requested_k = layer_config.linear_advance_k
+            if requested_k != current_linear_advance_k:
+                # The swept K changes between layers only, after the base
+                # M900 has already been emitted on a declared-capable build.
+                # Filament E and feed are never modified by calibration.
+                out.append(f"M900 K{requested_k:g} ; calibrated linear advance radial band")
+                current_linear_advance_k = requested_k
         if config.retraction_sweep:
             out.append(config.retraction_sweep.comment(height).rstrip())
         desired_pwm = _layer_fan_pwm(height, layer_config)
