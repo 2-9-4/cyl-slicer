@@ -65,9 +65,14 @@ def _narrow_polygon_paths(poly, radius, nominal_width, minimum_width, sample_ste
     lengths = [math.dist(corners[i],corners[(i+1)%4]) for i in range(4)]
     major_index = max(range(4),key=lambda i:lengths[i])
     major, minor = lengths[major_index], min(lengths)
+    # A narrow, gently bending strip can occupy a rotated bounding box
+    # wider than one bead even though EVERY local transverse chord is thin.
+    # Do not reject it based on the box width alone. The area/long-axis
+    # bound rejects wide plates, folds and dense interiors before sampling;
+    # each sample and swept segment must still fit inside the original poly.
     if (major < max(minimum_length, nominal_width*2.5)
-            or minor > nominal_width*1.02
-            or minor < minimum_width*0.45):
+            or minor < minimum_width*0.45
+            or poly.area > nominal_width * major * 1.1):
         return []
     edge_start,edge_end = corners[major_index],corners[(major_index+1)%4]
     ux,uy = (edge_end[0]-edge_start[0])/major, (edge_end[1]-edge_start[1])/major
