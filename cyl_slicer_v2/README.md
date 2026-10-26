@@ -262,6 +262,24 @@ retractions, material behavior and physical tests remain important. Island
 revisit scheduling and material-specific fan calibration remain open under
 issue #9.
 
+## Opt-in extrusion feed ramp (issue #8)
+
+`--extrusion-feed-ramp-mm N` gradually raises commanded *physical speed*
+from `--extrusion-feed-ramp-start-fraction 0.65` to the existing print
+speed over the first N physical mm of each extrusion path. The slicer
+inserts no more than four bounded ramp stages without changing original
+path endpoints, winding, calibrated per-segment variable-width bead
+areas, or total commanded filament E. It continues converting physical
+feed to the Marlin X-mm/Y-degrees planner metric. Zero (default) leaves
+all deposition moves unchanged; layer/island cooling and bridge/support
+role caps still apply.
+
+This is feed shaping, **not** pressure compensation or an E-volume ramp.
+Firmware acceleration and junction blending may limit its impact.
+Test X-only, rotary-only, mixed-direction and restart coupons before
+enabling; Marlin M900 remains independently opt-in only when enabled in
+the flashed firmware.
+
 ## Run
 
 ```bash
