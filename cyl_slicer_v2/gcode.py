@@ -970,6 +970,8 @@ def _cooling_feed_for_target(
     excluded to maintain a conservative *lower bound* on elapsed time.
     """
     ceiling = config.feed_mm_per_min
+    if not lengths:
+        return ceiling, 0.0
 
     def duration(feed: float) -> float:
         trial = replace(config, feed_mm_per_min=feed)
