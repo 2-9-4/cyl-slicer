@@ -109,6 +109,7 @@ def _narrow_polygon_paths(poly, radius, nominal_width, minimum_width, sample_ste
     paths=[]
     current=[]
     widths=[]
+    previous_width=0.0
     def emit():
         if len(current)<2:
             return
@@ -132,16 +133,15 @@ def _narrow_polygon_paths(poly, radius, nominal_width, minimum_width, sample_ste
         point,width=item
         if not current:
             current=[point]
+            previous_width=width
             continue
         previous=current[-1]
-        proposed=0.5*(width+max(minimum_width, samples[samples.index(item)-1][1])) if False else width
         # The narrower of the neighboring local measurements bounds the
         # rectangular swept track conservatively; segment E uses this width.
-        # Explicitly evaluate the preceding sample rather than assuming
-        # a constant nozzle-width bead.
         # A width of zero never prints. Reject an entire suspect segment.
         segment=LineString([previous,point])
         if segment.length < 1e-8:
+            previous_width=width
             continue
         effective=min(width, previous_width)
         sweep=segment.buffer(effective*.5, cap_style="flat",join_style="mitre")
