@@ -96,7 +96,10 @@ Without options, the original fan step and full-speed motion are unchanged.
 cylindrical toolpath lengths in physical millimeters, then caps *that layer's*
 print speed to approach at least T seconds. This is conservative: travel,
 retraction and acceleration also consume time but are deliberately excluded
-from the estimate. `--cooling-min-print-speed` (default 300 mm/min) bounds
+from the estimate. Layer and connected-island timing use the **actual print-role speed
+ceilings** (bridge, support and support interface) so slower material is
+credited toward the cooling target instead of unnecessarily throttling all
+other paths. `--cooling-min-print-speed` (default 300 mm/min) bounds
 the slowdown and takes precedence if T is unattainable; **no stationary nozzle
 dwell is added**. G-code comments report chosen print speed and estimated
 deposition time. Per-motion Marlin F conversion still uses the existing
