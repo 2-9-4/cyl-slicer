@@ -32,5 +32,7 @@ jobs:
           python -m unittest cyl_slicer_v2.tests.test_bridge_output
       - name: Verify variable-width narrow-gap geometry and extrusion
         run: python -m unittest cyl_slicer_v2.tests.test_gap_fill_variable_width
+      - name: Verify physical support contact gaps
+        run: python -m unittest cyl_slicer_v2.tests.test_support_contact_clearance
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests

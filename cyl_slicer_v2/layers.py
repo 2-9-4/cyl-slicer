@@ -308,8 +308,20 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
 
             printable_support = carried_support
             if not occupied.is_empty and not carried_support.is_empty:
-                printable_support = _fold_metric_result(_safe_difference(carried_support, occupied))
-                printable_support = _support_regions(printable_support, layer.radius, config, promote=False)
+                # Same-layer support is removed inside the model, optionally
+                # with a physical-mm buffer for easy-release lateral clearance.
+                # Carry remains UNbuffered so lower support foundations are
+                # not eroded or silently disconnected.
+                clearance = (
+                    _metric_buffer(occupied, layer.radius, config.support_lateral_gap_mm)
+                    if config.support_lateral_gap_mm > 0 else occupied
+                )
+                printable_support = _fold_metric_result(
+                    _safe_difference(carried_support, clearance)
+                )
+                printable_support = _support_regions(
+                    printable_support, layer.radius, config, promote=False
+                )
 
             if gap_layers <= 0 and not printable_support.is_empty:
                 printable_contact = _safe_intersection(printable_support, interface_target)
@@ -348,7 +360,7 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 (
                     layer.needs_support,
                     interface_target,
-                    config.support_gap_layers,
+                    config.effective_support_gap_layers,
                     config.support_interface_layers,
                 )
             )

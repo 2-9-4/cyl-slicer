@@ -51,6 +51,8 @@ class SlicerConfig:
     support_bearing_min_area: float = 1.0
     support_merge_gap: float = 0.0
     support_gap_layers: int = 1
+    support_contact_gap_mm: float | None = None
+    support_lateral_gap_mm: float = 0.0
     support_interface_layers: int = 3
     support_interface_spacing: float | None = 0.4
     support_meander_max_angle_deg: float = 15.0
@@ -137,6 +139,13 @@ class SlicerConfig:
         if count < 1:
             raise ValueError("wall count must be at least one")
         return self.nozzle_width + (count - 1) * self.dense_line_spacing
+
+    @property
+    def effective_support_gap_layers(self) -> int:
+        """Round explicit mm contact clearance upward to whole radial slabs."""
+        if self.support_contact_gap_mm is None:
+            return self.support_gap_layers
+        return max(0, int(math.ceil(self.support_contact_gap_mm / self.layer_height - 1e-9)))
 
     @property
     def theta_step(self) -> float:
@@ -238,6 +247,12 @@ class SlicerConfig:
             raise ValueError("support_merge_gap must be non-negative")
         if self.support_gap_layers < 0:
             raise ValueError("support_gap_layers must be non-negative")
+        if self.support_contact_gap_mm is not None and (
+            not math.isfinite(self.support_contact_gap_mm) or self.support_contact_gap_mm < 0
+        ):
+            raise ValueError("support_contact_gap_mm must be finite and non-negative")
+        if not math.isfinite(self.support_lateral_gap_mm) or self.support_lateral_gap_mm < 0:
+            raise ValueError("support_lateral_gap_mm must be finite and non-negative")
         if self.support_interface_layers < 0:
             raise ValueError("support_interface_layers must be non-negative")
         if self.support_interface_spacing is not None and self.support_interface_spacing <= 0:
