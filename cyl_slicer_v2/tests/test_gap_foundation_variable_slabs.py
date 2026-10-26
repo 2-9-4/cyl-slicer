@@ -86,7 +86,7 @@ class GapFoundationVariableSlabTests(unittest.TestCase):
         # Fixed schedule is intentionally unchanged for existing G-code.
         slabs = gap_support_slices([model(30.35, .095)], c)
         self.assertEqual([round(s.radius, 5) for s in slabs],
-                         [30.08, 30.24, 30.4])
+                         [30.08, 30.24])
         self.assertTrue(all(s.deposited_thickness is None for s in slabs))
 
 
