@@ -72,6 +72,25 @@ slicer still completes each island before traveling to another. A one-wall
 model behaves identically under either setting. This does not change wall
 geometry, extrusion flow, winding, or the selected seam.
 
+## Optional seam finish feed ramp
+
+`--seam-end-ramp-mm MM --seam-end-ramp-fraction FRACTION` is an
+**opt-in** closed-perimeter speed-shaping control for tuning seam starts/ends.
+The default finish ramp length is zero (disabled), and ordinary open paths,
+infill, support and bridges never receive a finish ramp. A short series of
+Marlin mixed-axis speed-corrected G1 moves reduces commanded speed across
+the last MM of each closed wall, with the final speed approaching FRACTION of
+the normal role-limited feed. A configured start ramp may coexist with the
+finish ramp; on very short loops they share the available length.
+
+This does not coast, skip extrusion, offset E or change the selected seam,
+wall winding, or variable-width bead area. Because changing feed may alter
+nozzle pressure and thermal behavior, do not automatically enable it for
+other machines. Measure axial, rotary and mixed wall loops and tune with
+identical seam positions, material and temperature; pressure advance and
+end speed shaping can interact. A slower finish is not necessarily a better
+seam on every printer.
+
 ## Optional firmware linear advance
 
 The default G-code emits **no M900 commands**. The previously reviewed Marlin

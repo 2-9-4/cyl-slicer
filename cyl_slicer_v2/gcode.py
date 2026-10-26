@@ -780,28 +780,40 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
 
 
 def _ramped_extrusion_steps(
-    pts: list[tuple[float, float]], radius: float, config: SlicerConfig
+    pts: list[tuple[float, float]], radius: float, config: SlicerConfig,
+    *, seam_end: bool = False,
 ) -> list[tuple[tuple[float, float], int, float]]:
-    """Return emitted endpoint, source segment index, physical feed multiplier.
+    """Split only at bounded physical-mm feed ramps; preserve endpoints and E.
 
-    Splitting geometry at longitudinal physical-mm ramp boundaries preserves
-    a source segment's variable-width bead and the exact total E. The
-    original X/theta endpoint is always included; a disabled ramp does not
-    add or modify any G-code segment.
+    Start ramp applies to all extrusions when configured. End ramp applies
+    only to closed wall paths (caller sets seam_end). Feed changes do NOT
+    reduce deposited volume, path length or source segment-width metadata.
     """
     lengths = [
         cylindrical_distance(a, b, radius)
         for a, b in zip(pts, pts[1:])
     ]
     total = sum(lengths)
-    if config.extrusion_feed_ramp_mm <= 0 or total <= MIN_GEOMETRY_LENGTH:
+    start_span = min(total, config.extrusion_feed_ramp_mm)
+    end_span = min(total, config.seam_end_ramp_mm) if seam_end else 0.0
+    if total <= MIN_GEOMETRY_LENGTH or (start_span <= 0 and end_span <= 0):
         return [(pt, i, 1.0) for i, pt in enumerate(pts[1:])]
 
-    span = min(total, config.extrusion_feed_ramp_mm)
-    # At most four ramp stages; avoid increasing planner block count with
-    # numerous submillimeter speed changes on small geometry.
-    stages = max(1, min(4, int(span / 0.8)))
-    edges = [span * j / stages for j in range(1, stages + 1)]
+    if start_span + end_span > total:
+        # Both ramps remain monotonic; never overlay conflicting start and
+        # finish tuning on a too-short closed loop.
+        scale = total / (start_span + end_span)
+        start_span *= scale
+        end_span *= scale
+    edges = []
+    if start_span > 0:
+        stages = max(1, min(4, int(start_span / 0.8)))
+        edges.extend(start_span * j / stages for j in range(1, stages + 1))
+    if end_span > 0:
+        stages = max(1, min(4, int(end_span / 0.8)))
+        edges.extend(total - end_span + end_span * j / stages
+                     for j in range(stages))
+    edges = sorted(set(x for x in edges if 0 < x < total))
     result = []
     traversed = 0.0
     eps = 1e-9
@@ -816,18 +828,24 @@ def _ramped_extrusion_steps(
             if traversed + eps < boundary < traversed + length - eps
         ]
         cumulative = [0.0, *[p - traversed for p in splits], length]
-        for start, finish in zip(cumulative, cumulative[1:]):
+        for begin, finish in zip(cumulative, cumulative[1:]):
             fraction = finish / length
             point = (
                 theta0 + (theta1-theta0)*fraction,
                 x0 + (x1-x0)*fraction,
             )
-            midpoint = traversed + (start+finish)*0.5
-            progress = min(1.0, midpoint/span)
-            speed_fraction = (
-                config.extrusion_feed_ramp_start_fraction +
-                (1.0-config.extrusion_feed_ramp_start_fraction)*progress
-            )
+            midpoint = traversed + (begin+finish)*0.5
+            speed_fraction = 1.0
+            if start_span > 0 and midpoint < start_span:
+                progress = midpoint / start_span
+                speed_fraction = min(speed_fraction,
+                    config.extrusion_feed_ramp_start_fraction +
+                    (1.0-config.extrusion_feed_ramp_start_fraction)*progress)
+            if end_span > 0 and midpoint > total - end_span:
+                progress = (total - midpoint) / end_span
+                speed_fraction = min(speed_fraction,
+                    config.seam_end_ramp_fraction +
+                    (1.0-config.seam_end_ramp_fraction)*progress)
             result.append((point, i, speed_fraction))
         traversed += length
     return result
@@ -906,7 +924,10 @@ def emit_toolpath(
 
     extruded = False
     role_feed, role_flow = _role_print_settings(path.role, config)
-    for (t, x), index, ramp_factor in _ramped_extrusion_steps(pts, path.radius, config):
+    for (t, x), index, ramp_factor in _ramped_extrusion_steps(
+        pts, path.radius, config,
+        seam_end=path.closed and path.role in PERIMETER_ROLES,
+    ):
         # E must describe the move that will ACTUALLY be emitted. If a tiny
         # numerical segment is omitted, the next move starts at the last
         # emitted endpoint, not at the skipped point.
@@ -1062,6 +1083,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SEAM_POLICY:{config.seam_policy}",
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
         f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",
+        f";SEAM_END_RAMP_MM:{config.seam_end_ramp_mm:g}",
+        f";SEAM_END_RAMP_FRACTION:{config.seam_end_ramp_fraction:g}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",
         f";BRIDGE_MODE:{config.bridge_mode}",
         f";BRIDGE_MAX_SPAN_MM:{config.bridge_max_span_mm:g}",
