@@ -539,7 +539,8 @@ cells. `0` disables it and is the default.
 The emitted G-code preserves the current viewer convention:
 
 - `X`: axial position in millimeters, shifted so the minimum emitted X is `--axial-min`
-- `Y`: rotary degrees since the most recent Y reset (normally each layer)
+- `Y`: rotary degrees in the current continuous frame (rebased only when the
+  Marlin precision budget requires it)
 - `Z`: radial nozzle clearance from `bed_radius`, at the OUTER surface
   of each deposited slab (first layer: Z = configured layer height for a
   sample at bed radius + half a layer). A slice's internal radius is its
@@ -604,6 +605,16 @@ float32 workspace math and signed 32-bit planner steps at the configured
 large individual layers, reversals, small moves, existing workspace offsets,
 and oversized-move rejection. It models these numeric operations rather than
 executing a complete firmware image.
+
+To test a physical rotary return between layers on a bounded G-code file, run
+`.venv/bin/python -m cyl_slicer_v2.unwind_gcode input.gcode --out unwind.gcode`.
+The pass requires absolute Y coordinates, no Y reset after startup, and
+retracted filament at every layer end. It lifts the nozzle 0.8 mm, waits for
+the lift, moves the cylinder to logical `Y0` at 60 degrees/s, and waits for
+the return before the next layer. The original deposition and E commands stay
+unchanged. `--lift-mm` and `--rotary-feed-deg-per-min` set the diagnostic move.
+This return uses the existing coordinate zero; it does not home or measure the
+cylinder's physical phase.
 
 Z-hop defaults to 0.4 mm for travels of at least 5 mm or shorter travels crossing
 a perimeter. Traveling along a perimeter (such as the 0.4 mm step between adjacent
