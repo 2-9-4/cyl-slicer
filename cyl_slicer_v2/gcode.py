@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from functools import lru_cache
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 import heapq
 import math
 import re
 
-from shapely import affinity
+from shapely import affinity, prepare
 
 from shapely.geometry import LineString, Point, Polygon, MultiPolygon
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import substring
 from shapely.strtree import STRtree
 
 from .config import SlicerConfig
@@ -22,6 +23,8 @@ from .wall_support import measure_wall_support
 
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
+PATH_ORDER_ROUTE_CANDIDATES = 8
+SUPPORT_ROLES = frozenset({"SUPPORT", "SUPPORT_INTERFACE"})
 BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL", "SOLID_INFILL", "GAP_FILL"})
 # Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
 # is 0.000244 degrees, below our 0.001-degree output resolution.
@@ -252,18 +255,45 @@ def _travel_polygon_parts(geom: BaseGeometry):
             yield from _travel_polygon_parts(part)
 
 
-@lru_cache(maxsize=8)
+@dataclass
+class _TravelIsland:
+    surface: Polygon
+    clearance: BaseGeometry
+    rings: list[LineString]
+    vertices: list[tuple[float, float]]
+    routes: OrderedDict = field(default_factory=OrderedDict)
+
+
+_TRAVEL_REGION_CACHE: OrderedDict = OrderedDict()
+
+
 def _metric_travel_islands(travel_region: BaseGeometry, radius: float):
     """Reuse physical footprints for containment checks and visibility routing.
 
     Buffer each island separately so numerical boundary tolerance cannot join
     separate islands. Shapely geometries are immutable; bound the layer cache.
     """
+    # Retain the immutable source while its identity is cached. Looking up by
+    # identity avoids hashing the entire polygon for every travel candidate.
+    key = (id(travel_region), radius)
+    cached = _TRAVEL_REGION_CACHE.get(key)
+    if cached is not None and cached[0] is travel_region:
+        _TRAVEL_REGION_CACHE.move_to_end(key)
+        return cached[1]
     result = []
     for polygon in _travel_polygon_parts(travel_region):
         surface = affinity.scale(polygon, xfact=radius, yfact=1.0, origin=(0, 0))
-        result.append((surface, surface.buffer(TRAVEL_CONTAINMENT_TOLERANCE_MM)))
-    return tuple(result)
+        clearance = surface.buffer(TRAVEL_CONTAINMENT_TOLERANCE_MM)
+        prepare(clearance)
+        rings = [LineString(ring) for ring in (surface.exterior, *surface.interiors)]
+        vertices = [point for ring in rings
+                    for point in coalesce_collinear_points(list(ring.coords), 1.0)[:-1]]
+        result.append(_TravelIsland(surface, clearance, rings, vertices))
+    result = tuple(result)
+    _TRAVEL_REGION_CACHE[key] = (travel_region, result)
+    if len(_TRAVEL_REGION_CACHE) > 8:
+        _TRAVEL_REGION_CACHE.popitem(last=False)
+    return result
 
 
 def _local_travel_points(start, destination, radius):
@@ -277,8 +307,78 @@ def _local_travel_points(start, destination, radius):
 def _travel_is_contained(start, destination, radius, travel_region):
     _, start_mm, end_mm = _local_travel_points(start, destination, radius)
     travel = LineString([start_mm, end_mm])
-    return any(clearance.covers(travel)
-               for _, clearance in _metric_travel_islands(travel_region, radius))
+    return any(island.clearance.covers(travel)
+               for island in _metric_travel_islands(travel_region, radius))
+
+
+def _boundary_travel_route(island, start, end, max_length, max_vertices):
+    """Try the two arcs of each original ring, without changing its shape."""
+    best = None
+    for ring in island.rings:
+        d0, d1 = ring.project(Point(start)), ring.project(Point(end))
+        p0, p1 = ring.interpolate(d0), ring.interpolate(d1)
+        entry_exit = math.dist(start, p0.coords[0]) + math.dist(end, p1.coords[0])
+        lo, hi = sorted((d0, d1))
+        for wrap, arc_length in ((False, hi-lo), (True, ring.length-(hi-lo))):
+            length = entry_exit + arc_length
+            if length > max_length + 1e-8 or (best is not None and length >= best[0]):
+                continue
+            if wrap:
+                arc = [*substring(ring, hi, ring.length).coords,
+                       *substring(ring, 0, lo).coords]
+                if d0 <= d1:
+                    arc.reverse()
+            else:
+                arc = list(substring(ring, d0, d1).coords)
+            points = coalesce_collinear_points([start, *arc, end], 1.0)
+            if len(points) > max_vertices:
+                continue
+            if all(island.clearance.covers(LineString([a, b])) for a, b in zip(points, points[1:])):
+                best = (length, points[1:])
+    return best[1] if best is not None else None
+
+
+def _local_visibility_route(island, start, end, max_length, max_vertices):
+    # Any waypoint on a route within the distance budget must be inside this
+    # ellipse. Distant boundary detail cannot help and need not enter the graph.
+    coords = [point for point in island.vertices
+              if math.dist(start, point) + math.dist(point, end) <= max_length + 1e-8]
+    if len(coords) + 2 > max_vertices:
+        return None
+    nodes = [start, end, *coords]
+    n = len(nodes)
+    edges = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i+1, n):
+            dist = math.dist(nodes[i], nodes[j])
+            if dist > max_length + 1e-8:
+                continue
+            if not island.clearance.covers(LineString([nodes[i], nodes[j]])):
+                continue
+            edges[i].append((j, dist))
+            edges[j].append((i, dist))
+    distances = [math.inf] * n
+    distances[0] = 0.0
+    parents = [-1] * n
+    heap = [(0.0, 0)]
+    while heap:
+        distance, i = heapq.heappop(heap)
+        if distance > distances[i] + 1e-10 or distance > max_length + 1e-8:
+            continue
+        if i == 1:
+            order = []
+            while i != 0:
+                order.append(nodes[i])
+                i = parents[i]
+            order.reverse()
+            return order
+        for j, step in edges[i]:
+            candidate = distance + step
+            if candidate + 1e-10 < distances[j] and candidate <= max_length + 1e-8:
+                distances[j] = candidate
+                parents[j] = i
+                heapq.heappush(heap, (candidate, j))
+    return None
 
 
 def _safe_island_travel_route(
@@ -288,7 +388,7 @@ def _safe_island_travel_route(
     travel_region: BaseGeometry | None,
     config: SlicerConfig,
 ) -> list[tuple[float, float]] | None:
-    """Shortest bounded inside-island polyline, excluding the starting point.
+    """Verified bounded inside-island polyline, excluding the starting point.
 
     The theta coordinate is unwrapped and measured in radians. Search/limit
     lengths in physical (theta*radius, axial) millimeters; never connect two
@@ -306,60 +406,36 @@ def _safe_island_travel_route(
     s = Point(start_mm)
     e = Point(end_mm)
     straight = LineString([start_mm, end_mm])
-    for surface, clearance in _metric_travel_islands(travel_region, radius):
-        if not clearance.covers(s) or not clearance.covers(e):
+    for island in _metric_travel_islands(travel_region, radius):
+        if not island.clearance.covers(s) or not island.clearance.covers(e):
             continue
-        if clearance.covers(straight):
+        if island.clearance.covers(straight):
             return None  # Existing straight travel is already safe.
-        # Route around holes or concave cutouts by visible boundary vertices.
-        coords = list(surface.exterior.coords)[:-1]
-        for ring in surface.interiors:
-            coords.extend(list(ring.coords)[:-1])
-        if len(coords) + 2 > config.route_max_vertices:
-            return None
-        nodes = [start_mm, end_mm, *coords]
-        n = len(nodes)
         max_length = min(direct * config.route_max_factor,
                          direct + config.route_max_extra_mm)
-        edges = [[] for _ in range(n)]
-        for i in range(n):
-            for j in range(i+1, n):
-                dist = math.dist(nodes[i], nodes[j])
-                if dist > max_length + 1e-8:
-                    continue
-                if not clearance.covers(LineString([nodes[i], nodes[j]])):
-                    continue
-                edges[i].append((j, dist))
-                edges[j].append((i, dist))
-        distances = [math.inf] * n
-        distances[0] = 0.0
-        parents = [-1] * n
-        heap = [(0.0, 0)]
-        while heap:
-            distance, i = heapq.heappop(heap)
-            if distance > distances[i] + 1e-10 or distance > max_length + 1e-8:
-                continue
-            if i == 1:
-                order = []
-                while i != 0:
-                    order.append(i)
-                    i = parents[i]
-                order.reverse()
-                route = [(nodes[j][0]/radius + shift, nodes[j][1]) for j in order]
-                route[-1] = destination
-                # A tolerance buffer admits endpoints on the actual contour;
-                # never accept a segment crossing the actual empty space.
-                unwrapped = [start_mm, *[nodes[j] for j in order]]
-                if all(clearance.covers(LineString([a,b]))
-                       for a,b in zip(unwrapped, unwrapped[1:])):
-                    return route
-                return None
-            for j, step in edges[i]:
-                candidate = distance + step
-                if candidate + 1e-10 < distances[j] and candidate <= max_length + 1e-8:
-                    distances[j] = candidate
-                    parents[j] = i
-                    heapq.heappush(heap, (candidate, j))
+        key = (start_mm, end_mm, max_length, config.route_max_vertices)
+        if key in island.routes:
+            points = island.routes[key]
+            island.routes.move_to_end(key)
+        else:
+            points = _boundary_travel_route(island, start_mm, end_mm, max_length, config.route_max_vertices)
+            if points is None:
+                points = _local_visibility_route(island, start_mm, end_mm, max_length, config.route_max_vertices)
+            # Validate against the original physical footprint, never a
+            # simplified polygon, including every connection to a waypoint.
+            if points is not None:
+                chain = [start_mm, *points]
+                if (sum(math.dist(a, b) for a, b in zip(chain, chain[1:])) > max_length + 1e-8
+                        or not all(island.clearance.covers(LineString([a,b]))
+                                   for a,b in zip(chain, chain[1:]))):
+                    points = None
+            island.routes[key] = points
+            if len(island.routes) > 64:
+                island.routes.popitem(last=False)
+        if points is not None:
+            route = [(point[0]/radius + shift, point[1]) for point in points]
+            route[-1] = destination
+            return route
         return None
     return None
 
@@ -390,6 +466,8 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
         return False
     if path.closed or len(path.points) < 2:
         return False
+    if path.role in SUPPORT_ROLES:
+        return True
     theta0, axial0 = path.points[0]
     return all(abs(point[0] - theta0) <= tol for point in path.points[1:]) or (
         path.role in {"INFILL_RADIAL", "SOLID_INFILL", "SUPPORT", "SUPPORT_INTERFACE"}
@@ -601,7 +679,8 @@ def _monotonic_skin_paths(paths: list[Toolpath]) -> list[Toolpath]:
 
 
 def _ordered_paths_for_current_position(
-    paths: list[Toolpath], state: GcodeState, config: SlicerConfig | None = None
+    paths: list[Toolpath], state: GcodeState, config: SlicerConfig | None = None,
+    travel_region: BaseGeometry | None = None,
 ) -> list[Toolpath]:
     if len(paths) > PATH_ORDER_OPTIMIZE_LIMIT:
         return paths
@@ -620,16 +699,35 @@ def _ordered_paths_for_current_position(
         retracted_speed_mm_per_min=state.retracted_speed_mm_per_min,
     )
     while remaining:
-        best_index = 0
-        best_path = _orient_path_for_current_position(remaining[0], shadow, config)
-        best_distance = _travel_distance_to_point(best_path, best_path.points[0], shadow)
-        for index, path in enumerate(remaining[1:], start=1):
+        candidates = []
+        for index, path in enumerate(remaining):
             oriented = _orient_path_for_current_position(path, shadow, config)
             distance = _travel_distance_to_point(oriented, oriented.points[0], shadow)
-            if distance < best_distance:
-                best_index = index
-                best_path = oriented
-                best_distance = distance
+            candidates.append((distance, index, oriented))
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        best_distance, best_index, best_path = candidates[0]
+        if config is not None and travel_region is not None and best_path.role in SUPPORT_ROLES:
+            # Bound expensive reachability checks to nearby support entries.
+            # Prefer a short verified on-island move over a nearer void crossing.
+            reachable = []
+            for distance, index, path in candidates[:PATH_ORDER_ROUTE_CANDIDATES]:
+                if distance > min(config.route_max_unretracted_mm,
+                                  best_distance + config.route_max_extra_mm) + 1e-8:
+                    continue
+                start = (shadow.theta_accum, shadow.axial)
+                destination = (_nearest_theta(path.points[0][0], shadow.theta_accum), path.points[0][1])
+                if _travel_is_contained(start, destination, path.radius, travel_region):
+                    length = distance
+                else:
+                    route = _safe_island_travel_route(start, destination, path.radius, travel_region, config)
+                    if route is None:
+                        continue
+                    length = sum(cylindrical_distance(a,b,path.radius)
+                                 for a,b in zip([start,*route],route))
+                if length <= config.route_max_unretracted_mm + 1e-8:
+                    reachable.append((length, index, path))
+            if reachable:
+                _, best_index, best_path = min(reachable, key=lambda item: (item[0], item[1]))
         remaining.pop(best_index)
         ordered.append(best_path)
         shadow = _shadow_after_path(best_path, shadow)
@@ -676,6 +774,9 @@ def _should_retract_after_path(
             # A bounded in-island detour can remain primed for short moves,
             # but longer travel still retracts to avoid oozing.
             return route_length > config.route_max_unretracted_mm
+        if (inside and path.role in SUPPORT_ROLES and next_path.role in SUPPORT_ROLES
+                and travel_distance <= config.route_max_unretracted_mm + 1e-8):
+            return False
     if travel_distance < config.nozzle_width * 2.0:
         return False
     fill_spacing = {
@@ -700,7 +801,8 @@ def _should_retract_after_path(
 
 
 def _ordered_layer_paths_with_islands(
-    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None
+    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None,
+    travel_region: BaseGeometry | None = None,
 ) -> list[tuple[Toolpath, int]]:
     # Keep the existing default order for callers of this geometry helper;
     # the outer/inner swap happens *within each island*, not across islands.
@@ -711,6 +813,8 @@ def _ordered_layer_paths_with_islands(
         roles[external], roles[internal] = roles[internal], roles[external]
     ordered = []
     shadow = state
+    if travel_region is None and config is not None and layer.travel_region is not None:
+        travel_region = periodic_copies(layer.travel_region)
     groups = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
     remaining = list(enumerate(groups))
     while remaining:
@@ -728,7 +832,7 @@ def _ordered_layer_paths_with_islands(
             role_paths = (
                 _monotonic_skin_paths(group.get(role, []))
                 if role == "TOP_SKIN" and config is not None and config.monotonic_top_skin
-                else _ordered_paths_for_current_position(group.get(role, []), shadow, config)
+                else _ordered_paths_for_current_position(group.get(role, []), shadow, config, travel_region)
             )
             for path in role_paths:
                 path = _orient_path_for_current_position(path, shadow, config)
@@ -1219,7 +1323,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             else None
         )
         travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
-        tagged_paths = _ordered_layer_paths_with_islands(layer, state, layer_config)
+        tagged_paths = _ordered_layer_paths_with_islands(layer, state, layer_config, travel_region)
         groups_by_id: dict[int, list[Toolpath]] = {}
         for path, group_index in tagged_paths:
             groups_by_id.setdefault(group_index, []).append(path)

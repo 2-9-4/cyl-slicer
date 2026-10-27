@@ -243,15 +243,27 @@ cooling on the actual printer. Avoid exceeding nozzle volumetric flow capacity.
 
 The quality profile now enables `--route-travel-inside-island`. When a
 straight non-extruding move would cut across a model hole or leave a concave
-island, the planner tries a bounded visibility-graph detour along that same
-connected polygon in **physical** rotary/axial millimeters, including
-periodic seam copies. Routing is allowed only when both endpoints lie in
-the same island and the graph has at most 96 vertices. A detour must be at
+island, the planner first tries following a short arc of its original boundary,
+then a bounded local visibility graph in **physical** rotary/axial millimeters,
+including periodic seam copies. Routing is allowed only when both endpoints lie
+in the same island. Only vertices reachable within the travel distance budget
+enter the graph, so distant outline detail does not prevent local routing.
+The graph and returned boundary routes have at most 96 vertices, including the
+start and destination. Every segment is checked against the original footprint.
+A detour must be at
 most 1.65 times the direct distance and at most 6 mm longer. Above those
 limits, or with no verified inside route, the slicer retains its existing
 straight travel/retract/Z-hop safety behavior. A successfully routed short
 move may remain primed only if its full travel is ≤5 mm; longer detours
-still retract. These are deliberately bounded for performance and ooze.
+still retract. Straight support-to-support and support-interface connections
+within one footprint can also remain primed up to that 5 mm limit. These are
+deliberately bounded for performance and ooze.
+
+Within each support island and role, open meanders may reverse while retaining
+their segment widths and deposited filament. Ordering checks at most eight
+nearby entries, preferring short verified travel over a nearer move across a
+void. Model island order, wall winding, and configured perimeter seams remain
+unchanged.
 
 `--no-route-travel-inside-island` disables it, and
 `--route-max-extra-mm`, `--route-max-factor`,
@@ -267,6 +279,8 @@ A 0.0000001 mm boundary tolerance handles floating-point drift along edges;
 short connections must still fit inside a single island. Straight contained
 travel bypasses visibility routing. Physical footprints are cached with a
 bounded layer cache so repeated boundary passes do not rebuild the geometry.
+Each cached physical island also retains at most 64 routing results, shared by
+ordering, retraction checks, and emitted travel.
 
 ## Partial-wall bearing report (diagnostics only)
 
