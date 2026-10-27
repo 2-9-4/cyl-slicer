@@ -96,8 +96,9 @@ class RaftMergingTests(unittest.TestCase):
         self.assertEqual(len(merged.island_paths), 1)
         self.assertLess(len(merged.paths_by_role["SUPPORT"]), 100)
         self.assertTrue(raft_layers[config.raft_layers].support.equals(unmerged[config.raft_layers].support))
-        code = emit_gcode([merged], config)
-        self.assertLessEqual(code.count("; retract"), 2)
+        code = emit_gcode([build_layer_toolpaths(layer, config) for layer in raft_layers[:config.raft_layers]], config)
+        for block in code.split(";LAYER:")[1:]:
+            self.assertLessEqual(block.count("; retract"), 2)
         segments = parse_extrusion_segments(code)
         directions = [s[5] - s[3] for s in segments]
         self.assertTrue(any(delta > 0 for delta in directions))

@@ -261,6 +261,13 @@ segments must remain inside the printed island footprint. The router does
 not navigate disconnected islands, move at extrusion Z through empty air,
 or change E, perimeter winding, or part geometry.
 
+Retraction checks and emitted travel use the same physical island boundaries
+and rotary coordinate frame, including after negative turns or rotary resets.
+A 0.0000001 mm boundary tolerance handles floating-point drift along edges;
+short connections must still fit inside a single island. Straight contained
+travel bypasses visibility routing. Physical footprints are cached with a
+bounded layer cache so repeated boundary passes do not rebuild the geometry.
+
 ## Partial-wall bearing report (diagnostics only)
 
 Use `--wall-support-report` to emit `;WALL_SUPPORT:...` comments beside

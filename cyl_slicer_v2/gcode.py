@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 import heapq
 import math
 import re
@@ -25,6 +26,8 @@ BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_IN
 # Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
 # is 0.000244 degrees, below our 0.001-degree output resolution.
 MAX_MARLIN_Y_DEGREES = 3600.0
+# Numerical boundary tolerance in physical mm, far below output resolution.
+TRAVEL_CONTAINMENT_TOLERANCE_MM = 1e-7
 
 
 @dataclass(frozen=True)
@@ -249,6 +252,35 @@ def _travel_polygon_parts(geom: BaseGeometry):
             yield from _travel_polygon_parts(part)
 
 
+@lru_cache(maxsize=8)
+def _metric_travel_islands(travel_region: BaseGeometry, radius: float):
+    """Reuse physical footprints for containment checks and visibility routing.
+
+    Buffer each island separately so numerical boundary tolerance cannot join
+    separate islands. Shapely geometries are immutable; bound the layer cache.
+    """
+    result = []
+    for polygon in _travel_polygon_parts(travel_region):
+        surface = affinity.scale(polygon, xfact=radius, yfact=1.0, origin=(0, 0))
+        result.append((surface, surface.buffer(TRAVEL_CONTAINMENT_TOLERANCE_MM)))
+    return tuple(result)
+
+
+def _local_travel_points(start, destination, radius):
+    # Shift BOTH endpoints into the footprint's periodic neighborhood. Never
+    # combine a wrapped destination with an accumulated rotary start position.
+    shift = math.floor(start[0] / TWO_PI) * TWO_PI
+    return (shift, ((start[0] - shift) * radius, start[1]),
+            ((destination[0] - shift) * radius, destination[1]))
+
+
+def _travel_is_contained(start, destination, radius, travel_region):
+    _, start_mm, end_mm = _local_travel_points(start, destination, radius)
+    travel = LineString([start_mm, end_mm])
+    return any(clearance.covers(travel)
+               for _, clearance in _metric_travel_islands(travel_region, radius))
+
+
 def _safe_island_travel_route(
     start: tuple[float, float],
     destination: tuple[float, float],
@@ -270,33 +302,26 @@ def _safe_island_travel_route(
                         destination[1]-start[1])
     if direct < 1e-7:
         return None
-    # Keep the periodic copies near the accumulated native rotary phase;
-    # state.theta_accum may have traversed many revolutions.
-    shift = math.floor(start[0] / TWO_PI) * TWO_PI
-    shifted = affinity.translate(travel_region, xoff=shift)
-    s = Point(start)
-    e = Point(destination)
-    for polygon in _travel_polygon_parts(shifted):
-        if not polygon.buffer(1e-9).covers(s) or not polygon.buffer(1e-9).covers(e):
+    shift, start_mm, end_mm = _local_travel_points(start, destination, radius)
+    s = Point(start_mm)
+    e = Point(end_mm)
+    straight = LineString([start_mm, end_mm])
+    for surface, clearance in _metric_travel_islands(travel_region, radius):
+        if not clearance.covers(s) or not clearance.covers(e):
             continue
-        surface = affinity.scale(polygon, xfact=radius, yfact=1.0, origin=(0,0))
-        start_mm = (start[0]*radius, start[1])
-        end_mm = (destination[0]*radius, destination[1])
-        straight = LineString([start_mm, end_mm])
-        if surface.covers(straight):
+        if clearance.covers(straight):
             return None  # Existing straight travel is already safe.
         # Route around holes or concave cutouts by visible boundary vertices.
-        coords = list(polygon.exterior.coords)[:-1]
-        for ring in polygon.interiors:
+        coords = list(surface.exterior.coords)[:-1]
+        for ring in surface.interiors:
             coords.extend(list(ring.coords)[:-1])
         if len(coords) + 2 > config.route_max_vertices:
             return None
-        nodes = [start_mm, end_mm, *[(theta*radius, axial) for theta, axial in coords]]
+        nodes = [start_mm, end_mm, *coords]
         n = len(nodes)
         max_length = min(direct * config.route_max_factor,
                          direct + config.route_max_extra_mm)
         edges = [[] for _ in range(n)]
-        clearance = surface.buffer(1e-7)
         for i in range(n):
             for j in range(i+1, n):
                 dist = math.dist(nodes[i], nodes[j])
@@ -320,11 +345,12 @@ def _safe_island_travel_route(
                     order.append(i)
                     i = parents[i]
                 order.reverse()
-                route = [(nodes[j][0]/radius, nodes[j][1]) for j in order]
+                route = [(nodes[j][0]/radius + shift, nodes[j][1]) for j in order]
+                route[-1] = destination
                 # A tolerance buffer admits endpoints on the actual contour;
                 # never accept a segment crossing the actual empty space.
                 unwrapped = [start_mm, *[nodes[j] for j in order]]
-                if all(surface.buffer(1e-7).covers(LineString([a,b]))
+                if all(clearance.covers(LineString([a,b]))
                        for a,b in zip(unwrapped, unwrapped[1:])):
                     return route
                 return None
@@ -627,14 +653,15 @@ def _should_retract_after_path(
     travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
     inside = False
     if travel_region is not None and travel_distance > 1e-8:
-        theta = end_state.theta_accum % TWO_PI
-        target_theta = _nearest_theta(next_path.points[0][0], theta)
-        travel = LineString([(theta, end_state.axial), (target_theta, next_path.points[0][1])])
-        inside = travel_region.covers(travel) or travel.difference(travel_region).length <= 1e-8
+        start = (end_state.theta_accum, end_state.axial)
+        destination = (_nearest_theta(next_path.points[0][0], end_state.theta_accum),
+                       next_path.points[0][1])
+        inside = _travel_is_contained(start, destination, next_path.radius, travel_region)
         if not inside:
+            if travel_distance > config.route_max_unretracted_mm:
+                return True  # A detour cannot be shorter than direct travel.
             route = _safe_island_travel_route(
-                (end_state.theta_accum, end_state.axial),
-                (target_theta, next_path.points[0][1]),
+                start, destination,
                 next_path.radius, travel_region, config
             )
             if route is None:

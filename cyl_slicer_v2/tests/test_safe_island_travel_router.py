@@ -8,9 +8,9 @@ from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.gcode import (
-    _safe_island_travel_route, _should_retract_after_path, emit_toolpath,
+    _safe_island_travel_route, _should_retract_after_path, emit_gcode, emit_toolpath,
 )
-from cyl_slicer_v2.models import GcodeState, Toolpath
+from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 from cyl_slicer_v2.periodic import periodic_copies
 
 
@@ -87,6 +87,60 @@ class SafeIslandRoutingTests(unittest.TestCase):
         self.assertIsNone(_safe_island_travel_route((.1,1),(.9,1),10,
                           self.region,self.cfg))
 
+    def test_boundary_travel_is_primed_in_every_rotary_frame_and_role(self):
+        lo, hi = 2.844154778070864, 3.4390475507779064
+        region = periodic_copies(box(lo, 0, hi, 2))
+        config = SlicerConfig()
+        for role in ("SUPPORT", "SUPPORT_INTERFACE", "SOLID_INFILL", "INFILL_RADIAL",
+                     "EXTERNAL_PERIMETER"):
+            for turns in (-250000, -20, -3, -1, 0, 1, 7, 20, 250000):
+                with self.subTest(role=role, turns=turns):
+                    current = Toolpath(role, 30.4, [(hi, 1), (lo, 1)])
+                    following = Toolpath("SOLID_INFILL", 30.4, [(lo, 1.4), (hi, 1.4)])
+                    state = GcodeState(theta_accum=hi + turns * 2*math.pi, axial=1)
+                    self.assertFalse(_should_retract_after_path(
+                        current, following, state, config, region))
+
+    def test_short_boundary_travel_still_retracts_across_a_real_gap(self):
+        lo, hi = 2.844154778070864, 3.4390475507779064
+        # The 0.002 mm notch is much smaller than output travel spacing, but
+        # is a real opening, not numerical drift from a rotary winding.
+        region = periodic_copies(box(lo, 0, hi, 2).difference(box(lo-.1, 1.199, lo+.1, 1.201)))
+        for turns in (-7, 0, 7):
+            current = Toolpath("SUPPORT", 30.4, [(hi, 1), (lo, 1)])
+            following = Toolpath("SOLID_INFILL", 30.4, [(lo, 1.4), (hi, 1.4)])
+            state = GcodeState(theta_accum=hi + turns * 2*math.pi, axial=1)
+            self.assertTrue(_should_retract_after_path(
+                current, following, state, SlicerConfig(), region))
+
+    def test_numerical_boundary_travel_uses_no_visibility_graph_or_waypoints(self):
+        lo, hi = 2.844154778070864, 3.4390475507779064
+        region = periodic_copies(box(lo, 0, hi, 2))
+        for radius in (1, 30.4, 100):
+            for turns in (-20, -1, 0, 7):
+                shift = turns * 2*math.pi
+                # A physical 1e-9 mm error at the boundary is below the
+                # tolerance, independent of radius or accumulated turns.
+                start = (lo + shift - 1e-9/radius, 1)
+                end = (lo + shift, 1.4)
+                self.assertIsNone(_safe_island_travel_route(
+                    start, end, radius, region, SlicerConfig(route_max_vertices=4)))
+                path = Toolpath("SUPPORT", radius, [(lo, 1.4), (hi, 1.4)])
+                lines = emit_toolpath(path, GcodeState(theta_accum=start[0], axial=1),
+                                      SlicerConfig(), 0, travel_region=region, retract_after=False)
+                self.assertFalse(any(line.startswith(";ROUTED_TRAVEL:") for line in lines))
+
+    def test_repeated_bidirectional_layers_do_not_retract_between_boundary_passes(self):
+        lo, hi = 2.844154778070864, 3.4390475507779064
+        for role in ("SUPPORT", "SUPPORT_INTERFACE", "SOLID_INFILL", "INFILL_RADIAL"):
+            with self.subTest(role=role):
+                paths = [Toolpath(role, 30.4, [(lo, x), (hi, x)]) for x in (0, .4, .8, 1.2)]
+                layers = [LayerToolpaths(i, 30.4, {role: paths}, travel_region=box(lo, 0, hi, 1.2))
+                          for i in range(4)]
+                code = emit_gcode(layers, SlicerConfig())
+                for layer in code.split(";LAYER:")[1:]:
+                    self.assertEqual(layer.count("; retract"), 1, "Layer end only")
+
     def test_short_routed_travel_can_avoid_retraction_but_longer_still_retracts(self):
         current=Toolpath("SOLID_INFILL",10,[(.1,5),self.start])
         following=Toolpath("SOLID_INFILL",10,[self.end,(.9,5)])
@@ -99,6 +153,20 @@ class SafeIslandRoutingTests(unittest.TestCase):
         self.assertTrue(_should_retract_after_path(
             current, following, GcodeState(theta_accum=.1,axial=5),
             SlicerConfig(route_travel_inside_island=False),self.region))
+
+    def test_retraction_and_emitted_detour_agree_at_accumulated_rotary_positions(self):
+        current = Toolpath("SOLID_INFILL", 10, [(.1, 5), self.start])
+        following = Toolpath("SUPPORT", 10, [self.end, (.9, 5)])
+        for turns in (-250000, -7, 0, 7, 250000):
+            with self.subTest(turns=turns):
+                shift = turns * 2*math.pi
+                state = GcodeState(theta_accum=.1 + shift, axial=5)
+                self.assertFalse(_should_retract_after_path(
+                    current, following, state, self.cfg, self.region))
+                emitted = emit_toolpath(following,
+                    GcodeState(theta_accum=self.start[0] + shift, axial=5),
+                    self.cfg, 0, travel_region=self.region, retract_after=False)
+                self.assertTrue(any(line.startswith(";ROUTED_TRAVEL:") for line in emitted))
 
     def test_emitted_g0_waypoints_do_not_extrude_and_e_is_conserved(self):
         following=Toolpath("SOLID_INFILL",10,[self.end,(.8,8)])
