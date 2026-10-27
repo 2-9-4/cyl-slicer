@@ -470,8 +470,16 @@ Set the printer surface with `--build-cylinder-radius R` (`--bed-radius R` also
 works), or pass `--no-gap-support` to disable those foundation layers.
 The first four foundation layers default to a continuous raft envelope under the
 part. Raft layers alternate one grid direction per layer, radial first, with
-spacing defaulting to nozzle width. Change these with `--raft-layers N` and
-`--raft-grid-spacing S`.
+spacing defaulting to the selected bead model's dense line spacing. Change these
+with `--raft-layers N` and `--raft-grid-spacing S`. Small angular gaps between
+projected support strips merge into the raft when they measure at most 2 mm
+at the innermost raft sample radius. This reduces fragmented first-layer
+passes without filling larger angular cutouts or the configured axial relief
+gap. Set `--raft-merge-gap-mm D` to change this distance, or `0` to retain all
+angular gaps (`legacy-cli` defaults to `0`). Upper foundation/support layers
+retain their original footprint. Straight support and interface passes run
+back and forth, keeping adjacent passes primed when the whole connecting travel
+stays inside their footprint.
 
 Extrusion is derived from the selected bead cross-section and filament area.
 For the rounded default: `((w-h)*h + pi*h*h/4) /

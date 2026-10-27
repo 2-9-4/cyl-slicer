@@ -80,6 +80,36 @@ class SolidInfillMeanderTests(unittest.TestCase):
                 deposited = float(re.findall(r"\bE([0-9.]+)", code)[-1])
                 self.assertAlmostEqual(deposited, 2 * (end - start) * 30 * .1, places=5)
 
+    def test_rotary_support_passes_meander_without_changing_extrusion(self):
+        for role in ("SUPPORT", "SUPPORT_INTERFACE"):
+            for start, end in ((math.radians(350), math.radians(370)), (0, 4.5), (0, 2 * math.pi)):
+                with self.subTest(role=role, start=start, end=end):
+                    paths = [Toolpath(role, 30, [(start, x), (end, x)]) for x in (0, .4)]
+                    region = box(start, 0, end, .4)
+                    code = emit_gcode([LayerToolpaths(0, 30, {role: paths}, travel_region=region)],
+                                      SlicerConfig(extrusion_per_mm=.1))
+                    segments = parse_extrusion_segments(code)
+                    self.assertEqual(len(segments), 2)
+                    deltas = [s[5] - s[3] for s in segments]
+                    if end - start < 2 * math.pi:
+                        self.assertAlmostEqual(deltas[0], -deltas[1], places=3)
+                    for delta in deltas:
+                        self.assertAlmostEqual(abs(delta), math.degrees(end - start), places=3)
+                    self.assertEqual(code.count("; retract"), 1)  # Layer end only.
+                    e = float(re.findall(r"\bE([0-9.]+)", code)[-1])
+                    self.assertAlmostEqual(e + 1.4, 2 * (end - start) * 30 * .1, places=5)
+
+    def test_rotary_support_reversal_keeps_segment_widths(self):
+        for role in ("SUPPORT", "SUPPORT_INTERFACE"):
+            path = Toolpath(role, 30, [(0, 0), (.1, 0), (.3, 0)], segment_widths=[.25, .4])
+            oriented = _orient_path_for_current_position(path, GcodeState(theta_accum=.3))
+            self.assertEqual(oriented.points, list(reversed(path.points)))
+            self.assertEqual(oriented.segment_widths, [.4, .25])
+            config = SlicerConfig(retract_mm=0)
+            codes = [emit_gcode([LayerToolpaths(0, 30, {role: [p]})], config) for p in (path, oriented)]
+            amounts = [float(re.findall(r"\bE([0-9.]+)", code)[-1]) for code in codes]
+            self.assertAlmostEqual(*amounts, places=5)
+
     def test_default_retraction_coupon_layer_one_meanders(self):
         root = Path(__file__).resolve().parents[2]
         code = slice_to_gcode(load_mesh(root / "calibration/retraction_posts.stl"),

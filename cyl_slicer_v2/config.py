@@ -64,6 +64,7 @@ class SlicerConfig:
     raft_layers: int = 4
     raft_grid_spacing: float | None = None
     raft_axial_gap: float = 1.0
+    raft_merge_gap_mm: float = 2.0  # Close small angular gaps at the mandrel only.
     theta_step_deg: float = 5.0
     axial_step: float = 1.0
     guard_columns: int = 2
@@ -301,6 +302,8 @@ class SlicerConfig:
             raise ValueError("raft_grid_spacing must be positive when set")
         if self.raft_axial_gap < 0:
             raise ValueError("raft_axial_gap must be non-negative")
+        if not math.isfinite(self.raft_merge_gap_mm) or self.raft_merge_gap_mm < 0:
+            raise ValueError("raft_merge_gap_mm must be finite and non-negative")
         if self.theta_step_deg <= 0 or self.theta_step_deg > 90:
             raise ValueError("theta_step_deg must be in (0, 90]")
         if self.axial_step <= 0:

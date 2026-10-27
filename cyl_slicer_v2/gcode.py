@@ -366,7 +366,7 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
         return False
     theta0, axial0 = path.points[0]
     return all(abs(point[0] - theta0) <= tol for point in path.points[1:]) or (
-        path.role in {"INFILL_RADIAL", "SOLID_INFILL"}
+        path.role in {"INFILL_RADIAL", "SOLID_INFILL", "SUPPORT", "SUPPORT_INTERFACE"}
         and all(abs(point[1] - axial0) <= tol for point in path.points[1:])
     )
 

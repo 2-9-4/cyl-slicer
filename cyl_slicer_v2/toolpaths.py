@@ -181,15 +181,35 @@ def _merged_axial_intervals(geom, tol: float = 1e-8) -> list[tuple[float, float]
     return merged
 
 
-def _raft_footprint_with_axial_gap(footprint, config: SlicerConfig):
-    theta_min, z_min, theta_max, z_max = footprint.bounds
-    # Bridge axial gaps for adhesion, but retain angular gaps between islands
-    # (including a cutout crossing the periodic seam). A single bounding box
-    # turns a split ring footprint into a full turn of deposited material.
+def _raft_footprint_with_axial_gap(footprint, config: SlicerConfig, *, radius: float, theta_window=None):
+    _, z_min, _, z_max = footprint.bounds
+    # Bridge axial gaps for adhesion. Close only bounded angular gaps: a
+    # global bounding box would fill intentional cutouts in a split ring.
     raft = _clean_polygonal(unary_union([
         box(poly.bounds[0], z_min, poly.bounds[2], z_max)
         for poly in _polygon_parts(footprint)
     ]))
+    if config.raft_merge_gap_mm > 0:
+        angular_gap = config.raft_merge_gap_mm / radius
+        intervals = sorted((poly.bounds[0], poly.bounds[2]) for poly in _polygon_parts(raft))
+        bridges = [
+            box(left_hi, z_min, right_lo, z_max)
+            for (_, left_hi), (right_lo, _) in zip(intervals, intervals[1:])
+            if 0 < right_lo - left_hi <= angular_gap + 1e-10
+        ]
+        # The cut is a coordinate boundary, not an island boundary. Fill a
+        # small gap straddling it with two pieces in the same theta window.
+        if _is_full_theta_window(theta_window):
+            lower, upper = theta_window
+            first_lo, last_hi = intervals[0][0], intervals[-1][1]
+            seam_gap = first_lo + TWO_PI - last_hi
+            if (lower <= first_lo <= last_hi <= upper
+                    and 0 < seam_gap <= angular_gap + 1e-10):
+                if last_hi < upper:
+                    bridges.append(box(last_hi, z_min, upper, z_max))
+                if first_lo > lower:
+                    bridges.append(box(lower, z_min, first_lo, z_max))
+        raft = _clean_polygonal(unary_union([raft, *bridges]))
     gap = config.raft_axial_gap
     if gap <= 0 or z_max - z_min <= gap:
         return raft
@@ -209,7 +229,7 @@ def _raft_footprint_with_axial_gap(footprint, config: SlicerConfig):
         cut_lo = z_max - gap
         cut_hi = z_max
 
-    cut = box(theta_min, cut_lo, theta_max, cut_hi)
+    cut = box(raft.bounds[0], cut_lo, raft.bounds[2], cut_hi)
     relieved = _safe_polygon_difference(raft, cut)
     return relieved if not relieved.is_empty else raft
 
@@ -881,7 +901,9 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
     footprint = _clean_polygonal(unary_union(pieces)) if pieces else GeometryCollection()
     if footprint.is_empty:
         return []
-    raft_footprint = _raft_footprint_with_axial_gap(footprint, config)
+    raft_footprint = _raft_footprint_with_axial_gap(
+        footprint, config, radius=support_slabs[0][0], theta_window=first_model.theta_window,
+    )
 
     count = len(support_slabs)
     empty = GeometryCollection()

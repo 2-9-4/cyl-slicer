@@ -38,6 +38,7 @@ CLI_PROFILE_OVERRIDES = {
     "support_min_region_area": 10.0,
     "support_bearing_min_area": 25.0,
     "support_merge_gap": 10.0,
+    "raft_merge_gap_mm": 0.0,
     "support_interface_layers": 2,
     "support_interface_spacing": None,
     "feed_mm_per_min": 1800.0,
@@ -203,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--raft-layers",
         type=int,
-        default=4,
+        default=None,
         help="Number of bed-side gap support layers printed as a continuous raft.",
     )
     parser.add_argument(
@@ -215,8 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--raft-axial-gap",
         type=float,
-        default=1.0,
+        default=None,
         help="Axial relief gap kept in the bottom raft footprint in mm.",
+    )
+    parser.add_argument(
+        "--raft-merge-gap-mm", type=float, default=None,
+        help="Merge raft angular gaps up to this physical mm at the innermost raft radius (default 2; 0 disables).",
     )
     parser.add_argument(
         "--support-min-island-area",
@@ -441,9 +446,10 @@ def main(argv: list[str] | None = None) -> int:
         support_interface_spacing=_profile_value(args, "support_interface_spacing"),
         support_meander_max_angle_deg=args.support_meander_max_angle_deg,
         support_cross_spacing=args.support_cross_spacing,
-        raft_layers=args.raft_layers,
-        raft_grid_spacing=args.raft_grid_spacing,
-        raft_axial_gap=args.raft_axial_gap,
+        raft_layers=_profile_value(args, "raft_layers"),
+        raft_grid_spacing=_profile_value(args, "raft_grid_spacing"),
+        raft_axial_gap=_profile_value(args, "raft_axial_gap"),
+        raft_merge_gap_mm=_profile_value(args, "raft_merge_gap_mm"),
         bed_radius=_profile_value(args, "bed_radius"),
         generate_gap_support=args.generate_gap_support,
         slice_workers=args.slice_workers,

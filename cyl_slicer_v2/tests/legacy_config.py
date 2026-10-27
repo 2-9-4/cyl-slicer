@@ -28,6 +28,7 @@ class LegacySlicerConfig(SlicerConfig):
     support_min_island_area: float = 0.05
     support_interface_layers: int = 2
     support_interface_spacing: float | None = None
+    raft_merge_gap_mm: float = 0.0
     bed_radius: float = 0.0
     feed_mm_per_min: float = 1800.0
     travel_mm_per_min: float = 3000.0
