@@ -542,18 +542,21 @@ and layer ends still retract. Periodic copies of the footprint allow the same
 decision across the rotary seam.
 
 V2 targets the printer's Marlin 2.0.7 firmware with `POWER_LOSS_RECOVERY` enabled.
-At startup and each layer, `M400`, `G92.9 Y<wrapped phase>`, and `G92 E0 Y0`
-rebase the native rotary position by whole turns and reset logical Y without
-rotating the motor. Retaining the angular phase avoids accumulating fractional
-motor-step rounding at each layer's zero.
+At startup, `M400`, `G92.9 Y<wrapped phase>`, and `G92 E0 Y0` establish a
+bounded native rotary coordinate. Ordinary layer changes use `G92 E0` only;
+the Y frame remains continuous across layers. A Y reset is made only before a
+move that would exceed the ±3600° precision budget. That reset uses `M400`,
+`G92.9 Y<wrapped phase>`, and `G92 Y0` without rotating the motor. Retaining
+the angular phase avoids accumulating fractional motor-step rounding.
 Ordinary `G92 Y0` alone only changes the workspace in this firmware and does not
 bound its internal float32 planner position. See Marlin's
 [G92 implementation](https://github.com/MarlinFirmware/Marlin/blob/2.0.7.2/Marlin/src/gcode/geometry/G92.cpp).
 
-Additional Y-only resets happen inside large layers before the next command
-would exceed ±3600 degrees. At that magnitude float32 spacing is approximately
-0.000244 degrees, below the 0.001-degree output resolution. Moves too large to
-fit after a reset are rejected before writing G-code. Mid-layer resets preserve
+Additional Y-only resets happen before any command that would exceed ±3600
+degrees, whether within a layer or after a layer change. At that magnitude
+float32 spacing is approximately 0.000244 degrees, below the 0.001-degree
+output resolution. Moves too large to fit after a reset are rejected before
+writing G-code. Mid-layer resets preserve
 E, retraction state, and physical rotary winding. This requires `G92.9` support;
 it is not a generic profile for firmware that lacks that Marlin feature.
 

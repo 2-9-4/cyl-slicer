@@ -124,17 +124,14 @@ class SeamPolicyTests(unittest.TestCase):
                             for _, _, x0, y0, x1, y1 in items)
                 self.assertAlmostEqual(total, length(layers[layer_index].paths_by_role['EXTERNAL_PERIMETER'][0]), delta=.002)
         self.assertIn(";SEAM_POLICY:aligned", aligned)
-        # G92.9 rebases Marlin native phase and G92 sets a new logical Y0.
-        # A layer may therefore start at Y0 while still physically at 25 deg.
+        # The seam stays at 25 degrees in the continuous Y frame on each
+        # layer, with no layer-local rotary reset.
         for snippet in aligned.split(";LAYER:")[1:]:
-            phase_lines = [line for line in snippet.splitlines()
-                           if line.startswith("G92.9 Y")]
             travels = [line for line in snippet.splitlines() if line.startswith("G0 X")]
-            self.assertTrue(phase_lines)
             self.assertTrue(travels)
-            native_phase = float(phase_lines[0].split("Y", 1)[1].split()[0])
-            logical_y = float(travels[0].split("Y", 1)[1].split()[0])
-            self.assertAlmostEqual((native_phase + logical_y) % 360, 25, places=2)
+            self.assertFalse(any(line.startswith("G92.9 Y") for line in snippet.splitlines()))
+            y = float(travels[0].split("Y", 1)[1].split()[0])
+            self.assertAlmostEqual(y % 360, 25, places=2)
 
     def test_invalid_seam_inputs(self):
         cases = (

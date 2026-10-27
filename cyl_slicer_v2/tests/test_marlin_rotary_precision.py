@@ -83,6 +83,24 @@ class MarlinRotaryModel:
 
 
 class MarlinRotaryPrecisionTests(unittest.TestCase):
+    def test_compact_multilayer_print_keeps_one_rotary_coordinate_frame(self):
+        # The path revisits the same physical arc on every layer. Repeated
+        # G92.9/G92 Y rebases add a firmware dependency without bounding
+        # anything further, and can introduce a layer-to-layer phase jump.
+        layers = [LayerToolpaths(i, 30.0, {"EXTERNAL_PERIMETER": [
+            Toolpath("EXTERNAL_PERIMETER", 30.0, [
+                (math.radians(60), 0.0), (math.radians(120), 0.0),
+            ])
+        ]}) for i in range(100)]
+        code = emit_gcode(layers, SlicerConfig(retract_mm=0, z_hop_height=0))
+        marlin = MarlinRotaryModel().replay(code)
+
+        self.assertEqual(code.count("G92.9 Y"), 1)
+        self.assertEqual(code.count("G92 E0 Y0"), 1)
+        self.assertEqual(code.count("G92 E0 ; reset extrusion"), len(layers))
+        self.assertLess(marlin.max_native, 181)
+        self.assertAlmostEqual(marlin.physical_steps / float(marlin.steps_per_degree), 120, delta=0.02)
+
     def test_generated_program_uses_absolute_rotary_moves(self):
         layer = LayerToolpaths(0, 30.0, {"SUPPORT": [
             Toolpath("SUPPORT", 30.0, [(0.0, 0.0), (math.radians(10), 0.0)]),

@@ -337,11 +337,12 @@ class GcodeTests(unittest.TestCase):
         self.assertAlmostEqual(last_print_e, total_surface_length * config.extrusion_per_mm,
                                delta=0.1)
 
-    def test_layer_changes_reset_extrusion_and_rotary_axes(self):
+    def test_layer_changes_reset_extrusion_without_rebasing_rotary_axis(self):
         gcode = slice_to_gcode(make_fixture("solid_box"), SlicerConfig(theta_step_deg=15, axial_step=2.0, layer_height=1.0), max_layers=2)
         layer_count = len(re.findall(r"(?m)^;LAYER:", gcode))
-        reset_count = len(re.findall(r"(?m)^G92 E0 Y0 ; reset E/Y accumulators for layer$", gcode))
+        reset_count = len(re.findall(r"(?m)^G92 E0 ; reset extrusion accumulator for layer$", gcode))
         self.assertEqual(reset_count, layer_count)
+        self.assertNotIn("G92 E0 Y0 ; reset E/Y accumulators for layer", gcode)
 
     def test_parse_extrusion_segments_applies_g92_rotary_offsets(self):
         gcode = "\n".join(

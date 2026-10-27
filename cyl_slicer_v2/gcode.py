@@ -1178,7 +1178,13 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             out.append(f"M106 S{desired_pwm} ; {note}")
             fan_pwm = desired_pwm
         out.append(_format_move("G0", z=_emitted_z(nozzle_radius, layer_config), f=layer_config.travel_mm_per_min))
-        out.extend(_reset_rotary_axis(state, reset_extrusion=True, comment="reset E/Y accumulators for layer"))
+        # Reset E every layer, but leave Y in its current coordinate frame.
+        # Repeated native/workspace Y rebases are unnecessary for a compact
+        # rotary print and expose it to firmware-specific G92 behavior. The
+        # rotary frame is rebased by _ensure_rotary_range only when a move
+        # would otherwise exceed the Marlin precision budget.
+        state.extrusion = 0.0
+        out.append("G92 E0 ; reset extrusion accumulator for layer")
         state.radial = nozzle_radius
         perimeter_index = (
             _layer_perimeter_index(layer)

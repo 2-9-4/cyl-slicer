@@ -20,6 +20,7 @@ module subdivided_cube(size=1, center=false, dim=5) {
         }
     }
 }
+$fn=360;
 difference(){
 union(){
     for(i = [0:10:360]){
@@ -28,7 +29,7 @@ union(){
     translate([0,0,-10])
     difference(){
         cylinder(r=55,h=20);
-        translate([0,0,-1]) cylinder(r=45,h=50,$fn=30);
+        translate([0,0,-1]) cylinder(r=45,h=50);
     }
 }
 translate([0,0,-20])
