@@ -254,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--support-gap-layers",
         type=int,
-        default=1,
+        default=None,
         help="Empty radial layers between top support interface and supported model surface.",
     )
     parser.add_argument(

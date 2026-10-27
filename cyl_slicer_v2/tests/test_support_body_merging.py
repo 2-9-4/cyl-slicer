@@ -104,7 +104,10 @@ class SupportBodyMergingTests(unittest.TestCase):
         unmerged = gap_support_slices(baseline, separate)
         target = foundation[config.raft_layers]
         before = unmerged[config.raft_layers]
-        self.assertEqual(target.index, -90)
+        # Contact clearance may alter the number of foundation slabs; support
+        # merging must not make the two schedules disagree.
+        self.assertEqual(target.index, before.index)
+        self.assertLess(target.index, 0)
         self.assertEqual(target.support.geom_type, "Polygon")
         self.assertGreater(len(before.support.geoms), 10)
         self.assertLess(before.support.difference(target.support).area * target.radius, 1e-7)

@@ -59,12 +59,13 @@ slope-adaptive slicing yet. The approximate surface cross-section and contact
 behavior still require real prints before promoting this mode to the default.
 When a model floats above the mandrel, generated gap-support and raft
 foundation slabs in this mode now partition the **actual free radial interval**
-from the bed to the first occupied model slab's inner deposited face. They
-rebalance sub-half-height remainders and carry individual physical thickness
-through support toolpaths, nozzle positions, bead spacing and E. The foundation
-ends at (but does not overlap) the model's inner face. An off-bed gap thinner
-than half the nominal height is rejected rather than printed as an unsafe
-sliver. The legacy fixed mode retains its original foundation scheduler.
+from the bed to the configured support-contact limit below the first occupied
+model slab. They rebalance sub-half-height remainders and carry individual
+physical thickness through support toolpaths, nozzle positions, bead spacing
+and E. The foundation ends at the requested contact gap below the model's inner
+face. An off-bed gap thinner than half the nominal height is rejected rather
+than printed as an unsafe sliver. The legacy fixed mode retains its
+bed-anchored scheduler while observing the same minimum clearance.
 
 This solves foundation overlap and terminal print-volume accounting, but
 does not make arbitrary overhangs self-supporting. Independent model/support
@@ -357,7 +358,10 @@ terminal layer, rather than converting N to nominal layer counts. The
 printed gap is quantized upward by the real intervening slabs, never below
 the requested clearance. At fixed 0.16 mm height, 0.17 mm still means two
 empty layers. Passing 0 requests no empty radial slab; if unset, the old
-integer `--support-gap-layers` setting controls.
+integer `--support-gap-layers` setting controls. The same contact clearance
+also applies when a model starts above the build cylinder: its generated
+raft/foundation stops below the requested gap rather than touching the first
+model slab.
 
 Independent overhangs retain their own contact limits as the support
 foundation propagates downward. This avoids prematurely printing one

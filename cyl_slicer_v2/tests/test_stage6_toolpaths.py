@@ -427,7 +427,9 @@ class ToolpathTests(unittest.TestCase):
             theta_window=(0.0, 2.0 * math.pi),
             is_full_wrap=True,
         )
-        config = SlicerConfig(layer_height=0.5, bed_radius=10.0, raft_layers=2, nozzle_width=1.0, raft_grid_spacing=2.0)
+        config = SlicerConfig(layer_height=0.5, bed_radius=10.0, raft_layers=2,
+                              nozzle_width=1.0, raft_grid_spacing=2.0,
+                              support_gap_layers=0)
 
         gap_layers = gap_support_slices([first_model], config)
 

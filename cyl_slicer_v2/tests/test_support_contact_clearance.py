@@ -78,6 +78,9 @@ class SupportContactClearanceTests(unittest.TestCase):
     def test_cli_resolves_defaults_and_explicit_zero_for_both_profiles(self):
         for profile in ("quality","legacy-cli","library"):
             args=build_parser().parse_args(["--profile",profile])
+            self.assertIsNone(args.support_gap_layers)
+            self.assertEqual(_profile_value(args,"support_gap_layers"),
+                             SlicerConfig().support_gap_layers)
             self.assertIsNone(_profile_value(args,"support_contact_gap_mm"))
             self.assertEqual(_profile_value(args,"support_lateral_gap_mm"),0)
             args=build_parser().parse_args(["--profile",profile,

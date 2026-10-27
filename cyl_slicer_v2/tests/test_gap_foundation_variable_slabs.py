@@ -24,7 +24,7 @@ class GapFoundationVariableSlabTests(unittest.TestCase):
     def cfg(self):
         return SlicerConfig(
             bed_radius=30, layer_height=.16, radial_layer_mode="complete-terminal",
-            raft_layers=2, generate_gap_support=True
+            raft_layers=2, generate_gap_support=True, support_gap_layers=0
         )
 
     def test_rebalance_small_remainder_and_touch_model_inner_face(self):
@@ -82,12 +82,35 @@ class GapFoundationVariableSlabTests(unittest.TestCase):
 
     def test_fixed_mode_keeps_old_center_schedule(self):
         c = SlicerConfig(bed_radius=30, layer_height=.16,
-                         radial_layer_mode="fixed")
+                         radial_layer_mode="fixed", support_gap_layers=0)
         # Fixed schedule is intentionally unchanged for existing G-code.
         slabs = gap_support_slices([model(30.35, .095)], c)
         self.assertEqual([round(s.radius, 5) for s in slabs],
                          [30.08, 30.24])
         self.assertTrue(all(s.deposited_thickness is None for s in slabs))
+
+    def test_foundation_honors_integer_contact_gap(self):
+        c = SlicerConfig(bed_radius=30, layer_height=.16,
+                         radial_layer_mode="complete-terminal",
+                         support_gap_layers=2, raft_layers=0)
+        first = model(31.0, .16)
+        support = gap_support_slices([first], c)
+        self.assertTrue(support)
+        model_inner = first.radius - first.deposited_thickness / 2
+        support_outer = support[-1].radius + support[-1].deposited_thickness / 2
+        self.assertAlmostEqual(model_inner - support_outer, .32)
+
+    def test_foundation_honors_physical_contact_gap(self):
+        c = SlicerConfig(bed_radius=30, layer_height=.16,
+                         radial_layer_mode="complete-terminal",
+                         support_gap_layers=0, support_contact_gap_mm=.25,
+                         raft_layers=0)
+        first = model(31.0, .16)
+        support = gap_support_slices([first], c)
+        self.assertTrue(support)
+        model_inner = first.radius - first.deposited_thickness / 2
+        support_outer = support[-1].radius + support[-1].deposited_thickness / 2
+        self.assertAlmostEqual(model_inner - support_outer, .25)
 
 
 if __name__ == "__main__":

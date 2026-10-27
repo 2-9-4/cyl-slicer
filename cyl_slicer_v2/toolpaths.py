@@ -845,23 +845,40 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
     if first_model is None:
         return []
 
+    # The off-bed foundation is support just as much as a column below an
+    # overhang.  In particular, it must not silently bypass the configured
+    # contact clearance merely because the first model layer has no preceding
+    # model slice.  Compare deposited faces here, as propagate_support() does
+    # for ordinary supports.  The legacy layer count is expressed in nominal
+    # radial slabs; an explicit physical clearance takes precedence.
+    model_height = (first_model.deposited_thickness
+                    if first_model.deposited_thickness is not None
+                    else config.layer_height)
+    model_inner = first_model.radius - model_height * 0.5
+    requested_gap = (config.support_contact_gap_mm
+                     if config.support_contact_gap_mm is not None
+                     else config.effective_support_gap_layers * config.layer_height)
+    support_outer_limit = model_inner - requested_gap
+
     if config.radial_layer_mode == "complete-terminal":
-        # The model itself is sampled at its slab midpoint, but the top of
-        # this foundation must touch the actual INNER DEPOSITED FACE. An
-        # ordinary fixed-height loop based on sample centers can overlap
-        # that face on partially filled terminal slabs.
-        model_height = (first_model.deposited_thickness
-                        if first_model.deposited_thickness is not None
-                        else config.layer_height)
-        model_inner = first_model.radius - model_height * 0.5
-        span = model_inner - config.bed_radius
-        if span <= 1e-9:
+        # The model is sampled at its slab midpoint, so foundation slabs must
+        # stop at the physical contact limit derived from its INNER DEPOSITED
+        # FACE. An ordinary fixed-height loop based on sample centers can
+        # overlap that limit on partially filled terminal slabs.
+        raw_span = model_inner - config.bed_radius
+        if raw_span <= 1e-9:
             return []
-        if span < config.layer_height * 0.5 - 1e-9:
+        if raw_span < config.layer_height * 0.5 - 1e-9:
             raise ValueError(
                 "Gap-support foundation is thinner than half the requested "
                 "radial layer height; decrease --layer-height or adjust model radius"
             )
+        span = support_outer_limit - config.bed_radius
+        # A deliberately requested contact gap can consume all, or all but a
+        # sub-half-height sliver, of the available foundation.  Do not turn
+        # that request into an unsafe thin support bead.
+        if span < config.layer_height * 0.5 - 1e-9:
+            return []
         h = config.layer_height
         full_count = int(math.floor(span / h + 1e-10))
         remainder = span - full_count * h
@@ -884,13 +901,16 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             support_slabs.append((float(edge + 0.5 * height), float(height)))
             edge += height
     else:
-        # Preserve the original default fixed schedule exactly.
+        # Fixed-height foundations keep their bed-anchored schedule, but only
+        # emit slabs whose outer deposited face is below the required contact
+        # limit.  This can leave a little more than the requested clearance
+        # when the model and bed schedules are not phase-aligned, never less.
         start = config.bed_radius + config.layer_height * 0.5
-        if start >= first_model.radius - 1e-9:
+        if start + config.layer_height * 0.5 > support_outer_limit + 1e-9:
             return []
         support_slabs = []
         radius = start
-        while radius < first_model.radius - 1e-9:
+        while radius + config.layer_height * 0.5 <= support_outer_limit + 1e-9:
             support_slabs.append((float(radius), None))
             radius += config.layer_height
 
