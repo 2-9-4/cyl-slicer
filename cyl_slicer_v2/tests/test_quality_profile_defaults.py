@@ -29,7 +29,7 @@ QUALITY_EXPECTED = {
     "support_min_island_area": 0.25,
     "support_min_region_area": 1.0,
     "support_bearing_min_area": 1.0,
-    "support_merge_gap": 0,
+    "support_merge_gap": 2.0,
     "raft_layers": 4,
     "raft_grid_spacing": None,
     "raft_axial_gap": 1.0,
@@ -91,13 +91,14 @@ class QualityDefaultTests(unittest.TestCase):
                    "--travel-feed", "4321", "--retract-speed", "12",
                    "--retract-mm", "0", "--no-monotonic-top-skin",
                    "--fan-speed", "0", "--cooling-min-layer-time-s", "0",
-                   "--sparse-infill-pattern", "both", "--raft-merge-gap-mm", "0"]
+                   "--sparse-infill-pattern", "both", "--raft-merge-gap-mm", "0",
+                   "--support-merge-gap", "0"]
         want = dict(layer_backend="raster", layer_height=.2, nozzle_width=.5,
                     nozzle_diameter=.6, bed_radius=42, feed_mm_per_min=1234,
                     travel_mm_per_min=4321, retract_speed_mm_per_min=720,
                     retract_mm=0, monotonic_top_skin=False, fan_speed=0,
                     cooling_min_layer_time_s=0, sparse_infill_pattern="both",
-                    raft_merge_gap_mm=0)
+                    raft_merge_gap_mm=0, support_merge_gap=0)
         for profile in ("quality", "legacy-cli", "library"):
             args = build_parser().parse_args(["--profile", profile, *options])
             for field, value in want.items():

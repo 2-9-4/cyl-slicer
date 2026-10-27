@@ -11,6 +11,7 @@ from shapely.strtree import STRtree
 
 from .config import SlicerConfig
 from .gap_fill import narrow_gap_fill_paths
+from .layers import merge_support_body
 from .coordinates import TWO_PI, coalesce_collinear_points, cylindrical_distance
 from .models import LayerSlice, LayerToolpaths, Toolpath
 from .periodic import periodic_copies, translate_theta
@@ -915,7 +916,8 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             top_surfaces=empty,
             bottom_surfaces=empty,
             needs_support=empty,
-            support=raft_footprint if i < config.raft_layers else footprint,
+            support=(raft_footprint if i < config.raft_layers
+                     else merge_support_body(footprint, radius, config)),
             theta_window=first_model.theta_window,
             is_full_wrap=first_model.is_full_wrap,
             is_raft=i < config.raft_layers,

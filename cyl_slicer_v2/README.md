@@ -483,10 +483,19 @@ projected support strips merge into the raft when they measure at most 2 mm
 at the innermost raft sample radius. This reduces fragmented first-layer
 passes without filling larger angular cutouts or the configured axial relief
 gap. Set `--raft-merge-gap-mm D` to change this distance, or `0` to retain all
-angular gaps (`legacy-cli` defaults to `0`). Upper foundation/support layers
-retain their original footprint. Straight support and interface passes run
+angular gaps (`legacy-cli` defaults to `0`). Straight support and interface passes run
 back and forth, keeping adjacent passes primed when the whole connecting travel
 stays inside their footprint.
+
+Above the raft, nearby support branches also merge into shared sparse bodies
+instead of many separate columns with repeated meander walls. The quality
+default `--support-merge-gap 2` closes gaps in the combined support footprint
+in physical rotary/axial mm at each layer's radius. Set it to `0` to retain
+separate branches, or choose another distance explicitly. Larger openings
+remain open. The merge adds connecting material while retaining original
+branches; it does not make the sparse support fill fully dense. Model/lateral
+clearance and pending radial contact gaps are removed after merging. Dense
+interface pads and their independent contact heights keep their original masks.
 
 Extrusion is derived from the selected bead cross-section and filament area.
 For the rounded default: `((w-h)*h + pi*h*h/4) /

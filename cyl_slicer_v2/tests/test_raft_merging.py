@@ -27,7 +27,7 @@ def foundation(shape, config, lower=0):
 class RaftMergingTests(unittest.TestCase):
     def test_small_angular_gaps_merge_only_in_raft(self):
         shape = unary_union([box(1, 0, 1.1, 4), box(1.15, 0, 1.25, 4)])
-        config = SlicerConfig(raft_layers=2, raft_axial_gap=0)
+        config = SlicerConfig(raft_layers=2, raft_axial_gap=0, support_merge_gap=0)
         layers = foundation(shape, config)
         for layer in layers[:2]:
             self.assertEqual(layer.support.geom_type, "Polygon")
@@ -87,15 +87,19 @@ class RaftMergingTests(unittest.TestCase):
     def test_offset_cube_first_layer_is_one_raft_with_few_retractions(self):
         root = Path(__file__).resolve().parents[2]
         config = SlicerConfig(axial_min=30)
-        layers = slice_mesh(load_mesh(root / "offset_cube.stl"), config)
+        mesh = load_mesh(root / "offset_cube.stl")
+        layers = slice_mesh(mesh, config)
         raft_layers = gap_support_slices(layers, config)
-        unmerged = gap_support_slices(layers, replace(config, raft_merge_gap_mm=0))
+        separate = replace(config, raft_merge_gap_mm=0, support_merge_gap=0)
+        unmerged = gap_support_slices(slice_mesh(mesh, separate), separate)
         fragmented = build_layer_toolpaths(unmerged[0], config)
         merged = build_layer_toolpaths(raft_layers[0], config)
         self.assertGreater(len(fragmented.paths_by_role["SUPPORT"]), 500)
         self.assertEqual(len(merged.island_paths), 1)
         self.assertLess(len(merged.paths_by_role["SUPPORT"]), 100)
-        self.assertTrue(raft_layers[config.raft_layers].support.equals(unmerged[config.raft_layers].support))
+        body = raft_layers[config.raft_layers]
+        missing_area = unmerged[config.raft_layers].support.difference(body.support).area * body.radius
+        self.assertLess(missing_area, 1e-7)
         code = emit_gcode([build_layer_toolpaths(layer, config) for layer in raft_layers[:config.raft_layers]], config)
         for block in code.split(";LAYER:")[1:]:
             self.assertLessEqual(block.count("; retract"), 2)

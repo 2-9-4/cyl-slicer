@@ -53,7 +53,7 @@ class SlicerConfig:
     support_min_island_area: float = 0.25
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
-    support_merge_gap: float = 0.0
+    support_merge_gap: float = 2.0  # Physical-mm closing of the combined support body.
     support_gap_layers: int = 1
     support_contact_gap_mm: float | None = None
     support_lateral_gap_mm: float = 0.0
@@ -278,8 +278,8 @@ class SlicerConfig:
             raise ValueError("support_min_region_area must be non-negative")
         if self.support_bearing_min_area < 0:
             raise ValueError("support_bearing_min_area must be non-negative")
-        if self.support_merge_gap < 0:
-            raise ValueError("support_merge_gap must be non-negative")
+        if not math.isfinite(self.support_merge_gap) or self.support_merge_gap < 0:
+            raise ValueError("support_merge_gap must be finite and non-negative")
         if self.support_gap_layers < 0:
             raise ValueError("support_gap_layers must be non-negative")
         if self.support_contact_gap_mm is not None and (

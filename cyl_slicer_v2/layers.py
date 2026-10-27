@@ -169,7 +169,9 @@ def _metric_region_filter(
 
     distance_margin = max(
         float(np.sqrt(promote_area_mm2 / np.pi)) if promote_area_mm2 > 0 else 0.0,
-        merge_gap_mm * 0.5,
+        # One side of a mergeable seam gap may lie exactly on the cut;
+        # its neighbor can be the full merge distance away, not half.
+        merge_gap_mm,
     )
     theta_margin = distance_margin / max(radius, 1e-9) + 1e-9
     theta_min, _, theta_max, _ = geom.bounds
@@ -214,7 +216,10 @@ def _metric_region_filter(
 
     metric = _safe_union(kept)
     if merge_gap_mm > 0:
-        metric = _clean(metric.buffer(merge_gap_mm * 0.5).buffer(-merge_gap_mm * 0.5))
+        closed = _clean(metric.buffer(merge_gap_mm * 0.5).buffer(-merge_gap_mm * 0.5))
+        # Closing adds connecting material; numerical erosion must never
+        # discard original support tips, narrow branches, or sharp corners.
+        metric = _safe_union([metric, closed])
     if metric.is_empty:
         return GeometryCollection()
     raw = _from_metric(metric, radius)
@@ -235,8 +240,27 @@ def _support_regions(geom, radius: float, config: SlicerConfig, *, promote: bool
         radius,
         min_area_mm2=config.support_min_island_area,
         promote_area_mm2=config.support_min_region_area if promote else 0.0,
-        merge_gap_mm=config.support_merge_gap,
     )
+
+
+def merge_support_body(geom, radius: float, config: SlicerConfig):
+    """Join nearby printable branches, without changing contact/carry masks."""
+    if geom is None or geom.is_empty:
+        return GeometryCollection()
+    if config.support_merge_gap <= 0:
+        return _clean(geom)
+    source = (_fold_metric_result(geom) if geom.bounds[0] < 0 or geom.bounds[2] > TWO_PI
+              else _clean(geom))
+    merged = _metric_region_filter(
+        source, radius, min_area_mm2=0, merge_gap_mm=config.support_merge_gap,
+    )
+    # Give coincident original/closed edges a physical 1e-9 mm overlap,
+    # avoiding round-trip slivers without changing printable dimensions.
+    merged = _from_metric(_to_metric(merged, radius).buffer(1e-9, join_style="mitre"), radius)
+    merged = _fold_metric_result(merged)
+    # Preserve the original angular coordinates as well as the metric shape:
+    # multiplying/dividing by R can otherwise shave a few ulps off a branch.
+    return _safe_union([source, merged])
 
 
 def _support_interface_regions(geom, radius: float, config: SlicerConfig):
@@ -307,16 +331,21 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
     for layer in reversed(layers):
         support_pieces = []
         interface_pieces = []
+        blocked_pieces = []
         interface_direction = None
         next_carry = []
         _, layer_outer = _layer_radial_faces(layer, config)
+        occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
+        clearance = (
+            _metric_buffer(occupied, layer.radius, config.support_lateral_gap_mm)
+            if config.support_lateral_gap_mm > 0 else occupied
+        )
         for carried_geom, interface_target, gap_layers, interface_layers, contact_limit in carry:
             # Legacy implicit contact uses whole skipped layers. An explicitly
             # requested physical gap instead compares actual deposited faces,
             # including nonuniform terminal/adaptive layer thickness.
             gap_blocked = (gap_layers > 0 if contact_limit is None
                            else layer_outer > contact_limit + 1e-9)
-            occupied = _periodic_union(layer.occupied, turns=1) if not layer.occupied.is_empty else GeometryCollection()
             if occupied.is_empty:
                 ungrounded = carried_geom
             else:
@@ -324,6 +353,8 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 grounded = _bearing_regions(contact, layer.radius, config)
                 ungrounded = _safe_difference(carried_geom, grounded)
             carried_support = _support_regions(ungrounded, layer.radius, config, promote=False)
+            if gap_blocked:
+                blocked_pieces.append(carried_support)
 
             printable_support = carried_support
             if not occupied.is_empty and not carried_support.is_empty:
@@ -331,10 +362,6 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 # with a physical-mm buffer for easy-release lateral clearance.
                 # Carry remains UNbuffered so lower support foundations are
                 # not eroded or silently disconnected.
-                clearance = (
-                    _metric_buffer(occupied, layer.radius, config.support_lateral_gap_mm)
-                    if config.support_lateral_gap_mm > 0 else occupied
-                )
                 printable_support = _fold_metric_result(
                     _safe_difference(carried_support, clearance)
                 )
@@ -365,8 +392,15 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
                 next_interface = interface_layers if gap_blocked else max(0, interface_layers - 1)
                 next_carry.append((carried_support, interface_target, next_gap, next_interface, contact_limit))
 
-        layer.support = _safe_union(support_pieces)
-        layer.support_interface = _safe_union(interface_pieces)
+        # Merge the combined printable body, including branches with distinct
+        # contact planes. Keep those planes separate in carry and never close
+        # back across model clearance or a pending radial contact gap.
+        exclusions = _safe_union([clearance, *blocked_pieces])
+        layer.support = _safe_difference(
+            merge_support_body(_safe_union(support_pieces), layer.radius, config),
+            exclusions,
+        )
+        layer.support_interface = _safe_difference(_safe_union(interface_pieces), exclusions)
         layer.support_interface_direction = interface_direction
 
         if not layer.needs_support.is_empty:

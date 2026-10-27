@@ -245,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--support-merge-gap",
         type=float,
         default=None,
-        help="Merge support branches closer than this metric gap in mm.",
+        help="Merge combined support bodies across physical gaps up to this mm (default 2; 0 disables); preserve model/contact clearance.",
     )
     parser.add_argument("--support-contact-gap-mm", type=float, default=None,
                         help="Physical radial contact clearance mm, overrides --support-gap-layers.")
