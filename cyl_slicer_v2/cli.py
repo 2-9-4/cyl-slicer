@@ -147,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Start/feed fraction for opt-in ramp, in (0,1], default 0.65.")
     parser.add_argument("--print-feed", type=float, default=None,
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
+    parser.add_argument("--max-volumetric-flow", dest="max_volumetric_flow_mm3_s", type=float, default=None,
+                        help="Maximum deposited filament flow in mm³/s; caps speed, preserving E (0 disables).")
+    parser.add_argument("--print-accel", type=float, default=None,
+                        help="Opt-in Marlin M204 P in native mixed-axis planner units/s² (0 leaves firmware unchanged).")
+    parser.add_argument("--travel-accel", type=float, default=None,
+                        help="Opt-in Marlin M204 T in native mixed-axis planner units/s² (0 leaves firmware unchanged).")
     parser.add_argument("--travel-feed", type=float, default=None,
                         help="Target physical XY travel mm/min; radial Z moves retain native mm/min.")
     parser.add_argument("--material-fan-policy", choices=("manual", "preset"), default=None,
@@ -398,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
         retraction_sweep=sweep,
         hotend_temp=_profile_value(args, "hotend_temp"),
         feed_mm_per_min=_profile_value(args, "feed_mm_per_min"),
+        max_volumetric_flow_mm3_s=_profile_value(args, "max_volumetric_flow_mm3_s"),
+        print_accel=_profile_value(args, "print_accel"),
+        travel_accel=_profile_value(args, "travel_accel"),
         material_profile=_profile_value(args, "material_profile"),
         # For a K sweep, a known no-advance base (K0) is explicitly set.
         # Every M900 remains gated by the verified firmware capability flag.

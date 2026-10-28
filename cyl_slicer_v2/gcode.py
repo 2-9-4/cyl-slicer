@@ -915,6 +915,50 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
     return config.feed_mm_per_min, 1.0
 
 
+def _segment_width_ratio(width: float | None, config: SlicerConfig) -> float:
+    if width is None:
+        return 1.0
+    if config.bead_model == "rounded":
+        area = (width - config.layer_height)*config.layer_height + math.pi*config.layer_height**2/4
+    else:
+        area = width*config.layer_height
+    return area / config.bead_area
+
+
+def _flow_limited_feed(feed: float, extrusion_per_mm: float, config: SlicerConfig) -> float:
+    """Limit speed using actual filament volume, including calibration and role flow."""
+    if config.max_volumetric_flow_mm3_s <= 0 or extrusion_per_mm <= 0:
+        return feed
+    volume_per_mm = extrusion_per_mm * math.pi * (config.filament_diameter / 2)**2
+    return min(feed, config.max_volumetric_flow_mm3_s * 60 / volume_per_mm)
+
+
+def _flow_limited_output_feed(
+    feed: float, start: tuple[float, float, float], end: tuple[float, float, float],
+    config: SlicerConfig,
+) -> float:
+    """Also enforce the ceiling on the rounded X/Y/E numbers Marlin receives.
+
+    Tiny moves can become shorter at output precision while retaining their E.
+    Only feed is changed, including if the rounded move becomes E-only.
+    """
+    if config.max_volumetric_flow_mm3_s <= 0:
+        return feed
+    a = [float(f"{value:.{precision}f}") for value, precision in zip(start, (3, 3, 5))]
+    b = [float(f"{value:.{precision}f}") for value, precision in zip(end, (3, 3, 5))]
+    delta_e = b[2] - a[2]
+    if delta_e <= 0:
+        return feed
+    planner_length = math.hypot(b[0]-a[0], b[1]-a[1]) or delta_e
+    volume = delta_e * math.pi * (config.filament_diameter / 2)**2
+    ceiling = config.max_volumetric_flow_mm3_s * 60 * planner_length / volume
+    # F is emitted to one decimal: rounding upward must not exceed the ceiling.
+    rounded_ceiling = math.floor(ceiling * 10) / 10
+    if rounded_ceiling <= 0:
+        raise ValueError("Volumetric flow ceiling requires feed below G-code precision (0.1 units/min)")
+    return min(feed, rounded_ceiling)
+
+
 def _ramped_extrusion_steps(
     pts: list[tuple[float, float]], radius: float, config: SlicerConfig,
     *, seam_end: bool = False,
@@ -1071,17 +1115,25 @@ def emit_toolpath(
         if dist <= MIN_GEOMETRY_LENGTH:
             continue
         lines.extend(_ensure_rotary_range(t, state))
-        width_ratio = 1.0
-        if path.segment_widths is not None:
-            width = path.segment_widths[index]
-            if config.bead_model == "rounded":
-                bead_area = (width - config.layer_height)*config.layer_height + math.pi*config.layer_height**2/4
-            else:
-                bead_area = width*config.layer_height
-            # Use the ratio with nominal bead area so any custom calibrated
-            # extrusion_per_mm multiplier is preserved exactly.
-            width_ratio = bead_area/config.bead_area
+        width_ratio = _segment_width_ratio(
+            path.segment_widths[index] if path.segment_widths is not None else None, config
+        )
+        previous_e = state.extrusion
         state.extrusion += dist * config.extrusion_per_mm * role_flow * width_ratio
+        segment_feed = _flow_limited_feed(
+            role_feed * ramp_factor, config.extrusion_per_mm * role_flow * width_ratio, config
+        )
+        planner_feed = _surface_feed_for_marlin(
+            x - state.axial, t - state.theta_accum, path.radius, segment_feed
+        )
+        if config.max_volumetric_flow_mm3_s > 0:
+            planner_feed = _flow_limited_output_feed(
+                planner_feed,
+                (_emitted_x(state.axial, output_x_offset),
+                 _emitted_y_degrees(state.theta_accum, state), previous_e),
+                (_emitted_x(x, output_x_offset), _emitted_y_degrees(t, state), state.extrusion),
+                config,
+            )
         extruded = True
         lines.append(
             _format_move(
@@ -1089,10 +1141,7 @@ def emit_toolpath(
                 x=_emitted_x(x, output_x_offset),
                 y_deg=_emitted_y_degrees(t, state),
                 e=state.extrusion,
-                f=_surface_feed_for_marlin(
-                    x - state.axial, t - state.theta_accum, path.radius,
-                    role_feed * ramp_factor
-                ),
+                f=planner_feed,
             )
         )
         state.theta_accum = t
@@ -1103,21 +1152,30 @@ def emit_toolpath(
     return lines
 
 
-def _role_lengths(paths: list[Toolpath]) -> dict[str, float]:
-    """Count only deposited physical-mm lengths, grouped by actual speed cap."""
-    lengths: dict[str, float] = {}
+def _role_lengths(paths: list[Toolpath], config: SlicerConfig) -> dict[tuple[str, float], float]:
+    """Group deposited physical lengths by role and per-segment volume multiplier."""
+    lengths: dict[tuple[str, float], float] = {}
     for path in paths:
-        length = sum(
-            cylindrical_distance(a, b, path.radius)
-            for a, b in zip(path.points, path.points[1:])
-        )
-        if length > MIN_GEOMETRY_LENGTH:
-            lengths[path.role] = lengths.get(path.role, 0.0) + length
+        if path.segment_widths is None or config.max_volumetric_flow_mm3_s <= 0:
+            length = sum(cylindrical_distance(a, b, path.radius)
+                         for a, b in zip(path.points, path.points[1:]))
+            if length > MIN_GEOMETRY_LENGTH:
+                key = (path.role, 1.0)
+                lengths[key] = lengths.get(key, 0.0) + length
+            continue
+        for index, (a, b) in enumerate(zip(path.points, path.points[1:])):
+            length = cylindrical_distance(a, b, path.radius)
+            if length > MIN_GEOMETRY_LENGTH:
+                width_ratio = _segment_width_ratio(
+                    path.segment_widths[index] if path.segment_widths is not None else None, config
+                )
+                key = (path.role, width_ratio)
+                lengths[key] = lengths.get(key, 0.0) + length
     return lengths
 
 
 def _cooling_feed_for_target(
-    lengths: dict[str, float], config: SlicerConfig, target_seconds: float,
+    lengths: dict[tuple[str, float], float], config: SlicerConfig, target_seconds: float,
 ) -> tuple[float, float]:
     """Fastest base F meeting a conservative deposited-motion time target.
 
@@ -1132,10 +1190,14 @@ def _cooling_feed_for_target(
 
     def duration(feed: float) -> float:
         trial = replace(config, feed_mm_per_min=feed)
-        return sum(
-            length * 60.0 / _role_print_settings(role, trial)[0]
-            for role, length in lengths.items()
-        )
+        seconds = 0.0
+        for (role, width_ratio), length in lengths.items():
+            role_feed, role_flow = _role_print_settings(role, trial)
+            limited = _flow_limited_feed(
+                role_feed, trial.extrusion_per_mm * role_flow * width_ratio, trial
+            )
+            seconds += length * 60.0 / limited
+        return seconds
 
     natural = duration(ceiling)
     if target_seconds <= 0 or natural >= target_seconds:
@@ -1163,7 +1225,7 @@ def _cooling_print_speed(layer: LayerToolpaths, config: SlicerConfig) -> tuple[f
     """
     lengths = _role_lengths([
         path for paths in layer.paths_by_role.values() for path in paths
-    ])
+    ], config)
     return _cooling_feed_for_target(lengths, config, config.cooling_min_layer_time_s)
 
 
@@ -1172,7 +1234,7 @@ def _island_cooling_print_speed(
 ) -> tuple[float, float]:
     """Apply the same role-aware conservative timing to each connected island."""
     return _cooling_feed_for_target(
-        _role_lengths(paths), config, config.cooling_min_island_print_time_s
+        _role_lengths(paths, config), config, config.cooling_min_island_print_time_s
     )
 
 
@@ -1259,6 +1321,15 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f"M104 S{config.hotend_temp}",
         f"M109 S{config.hotend_temp}",
     ]
+    if config.max_volumetric_flow_mm3_s > 0:
+        out.append(f";MAX_VOLUMETRIC_FLOW_MM3_S:{config.max_volumetric_flow_mm3_s:g}")
+    acceleration = []
+    if config.print_accel > 0:
+        acceleration.append(f"P{config.print_accel:g}")
+    if config.travel_accel > 0:
+        acceleration.append(f"T{config.travel_accel:g}")
+    if acceleration:
+        out.append("M204 " + " ".join(acceleration) + " ; native planner acceleration, firmware axis limits apply")
     if config.linear_advance_k is not None:
         # Only an explicitly verified Marlin LIN_ADVANCE build may see M900.
         # This is a firmware-level pressure offset; absolute E accounting

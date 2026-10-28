@@ -3,3 +3,5 @@ __pycache__/
 frames/
 build/
 *.gcode
+!calibration/theta_one_turn.gcode
+!calibration/theta_five_turns.gcode

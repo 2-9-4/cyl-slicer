@@ -75,6 +75,11 @@ class SlicerConfig:
     axial_margin: float = 0.0
     axial_min: float = 15.0
     feed_mm_per_min: float = 2700.0
+    max_volumetric_flow_mm3_s: float = 0.0  # 0 disables the deposited-flow speed cap.
+    # Opt-in Marlin M204 requests in native mixed X-mm/Y-degree planner units/s².
+    # These are not constant physical surface accelerations on a rotary machine.
+    print_accel: float = 0.0
+    travel_accel: float = 0.0
     material_profile: str = "pla"  # Metadata; never guesses a material's K.
     linear_advance_k: float | None = None
     linear_advance_firmware: str | None = None  # Explicit firmware build declaration.
@@ -343,6 +348,10 @@ class SlicerConfig:
             raise ValueError("extrusion_feed_ramp_start_fraction must be in (0, 1]")
         if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
             raise ValueError("feed_mm_per_min must be finite and positive")
+        for name in ("max_volumetric_flow_mm3_s", "print_accel", "travel_accel"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative (0 disables)")
         if not math.isfinite(self.travel_mm_per_min) or self.travel_mm_per_min <= 0:
             raise ValueError("travel_mm_per_min must be finite and positive")
         if not math.isfinite(self.retract_speed_mm_per_min) or self.retract_speed_mm_per_min <= 0:

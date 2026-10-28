@@ -40,6 +40,86 @@ Pressure advance (M900), strict intersection recovery, and fixed-position
 seams remain opt-in because they require firmware calibration or depend on
 the model. Support flow multipliers remain unity pending printed coupons.
 
+## Fast Bowden starting profile
+
+Run the executable Bash wrapper from the repository root:
+
+```bash
+./slice_fast.sh cubeandring2.stl --out cubeandring2.fast.gcode
+# Trailing slicer flags override the script's recipe for this invocation.
+./slice_fast.sh part.stl --out part.fast.gcode --wall-count 3 --max-volumetric-flow 5
+```
+
+The wrapper uses the repository's `.venv/bin/python -m cyl_slicer_v2.cli`.
+It also works when called by absolute path from another directory, preserving
+input/output paths relative to that directory. Without `--out`, it writes
+`output_fast.gcode`. The base `SlicerConfig()` and ordinary CLI quality defaults
+remain the canonical quality profile; the faster recipe lives in the script.
+
+| Setting | Quality default | Fast script |
+| --- | --- | --- |
+| Radial layer height / line width | 0.16 / 0.42 mm | 0.28 / 0.48 mm |
+| Walls | 4 | 2 (about 0.90 mm total) |
+| Top / bottom shells | 5 each (0.80 mm) | 3 each (0.84 mm) |
+| Alternating sparse infill spacing | 1.5 mm | 4.8 mm |
+| Actual pitch in each alternating layer | 0.75 mm | 2.4 mm (about 17.5% fill) |
+| Sparse support spacing | 1.5 mm | 3.0 mm |
+| Support interface | 3 layers, 0.40 mm pitch | 2 layers, 0.42 mm pitch |
+| Dense raft layers | 4 | 2 |
+| Requested print / travel surface speed | 45 / 150 mm/s | 75 / 200 mm/s |
+| Maximum volumetric flow | Unset | 6 mm³/s |
+| Support / interface speed ceilings | Standard print speed | 50 / 35 mm/s |
+| Marlin M204 P / T | Firmware values | 1200 / 2000 native planner units/s² |
+| PLA hotend setpoint | 195°C | 205°C |
+
+Most of the time reduction comes from fewer layers and less wall/infill/support
+path length. The rounded 0.28 × 0.48 mm bead has an area of about 0.1176 mm²,
+so the 6 mm³/s ceiling limits ordinary printing to about 51 mm/s despite the
+75 mm/s request. Narrower beads can run faster. This is a conservative starting
+flow budget, not a measurement of this hotend: Bowden tube layout alone does
+not establish melt capacity. See [Prusa's volumetric-speed guide](https://help.prusa3d.com/article/max-volumetric-speed_127176)
+for how material, temperature and hotend affect that limit.
+Retraction stays at the existing 1.4 mm / 20 mm/s calibration; the script keeps
+8 s layer and 2 s island cooling targets, safe travel routing, Z-hop fallback,
+fine geometry sampling, variable-width gap fill and support generation.
+The tradeoff is coarser surfaces, thinner walls and less internal material.
+The PLA temperature and mechanical settings still need a real print check.
+
+On the repository's full `cubeandring2.stl`, this recipe reduces 208 layers to
+118 and deposited filament volume by about 43%. Summing commanded move durations
+in Marlin's mixed-axis metric gives about **8 h 28 min → 2 h 25 min** (3.49×).
+This is a motion-time lower bound, including commanded travel/retraction but
+excluding heating, acceleration, junction slowdowns and firmware axis limits;
+it is not a measured printer completion time.
+
+`--max-volumetric-flow Q` is also available directly on the v2 CLI. It limits
+each extrusion segment's speed using actual filament volume, including the
+rounded/rectangular area, per-segment widths, role flow multipliers, custom E
+calibration and actual deposited slab thickness. It never reduces deposited E,
+changes endpoints or limits E-only retractions. The cap also checks rounded
+output X/Y/E and rounds limited F downward so tiny moves cannot exceed the
+ceiling through decimal quantization. Cooling estimates include
+these flow ceilings in physical cylindrical millimeters; acceleration and
+travel remain excluded from timing. `0` disables this optional cap.
+
+`--print-accel A` and `--travel-accel A` explicitly request
+[Marlin M204 P / T](https://marlinfw.org/docs/gcode/M204.html).
+These are native planner accelerations: X uses mm and Y uses degrees, so
+they are **not constant surface accelerations in mm/s²**. Firmware axis limits
+still apply. Only the requested P/T fields are emitted; E-only retract
+acceleration, axis maxima, jerk, advance and EEPROM are not changed. M204 changes
+remain active in firmware RAM until changed or reset; there is no automatic
+restore because the slicer cannot read the previous values. To use the existing
+firmware acceleration settings instead:
+
+```bash
+./slice_fast.sh part.stl --out part.fast.gcode --print-accel 0 --travel-accel 0
+```
+
+If increasing layer height beyond 0.28 mm, also raise
+`--gap-fill-min-width-mm` to at least that height. Gap-fill width must stay
+between the layer height and the selected line width.
+
 ## Experimental complete-terminal radial slabs
 
 The optional `--radial-layer-mode complete-terminal` covers the requested mesh
