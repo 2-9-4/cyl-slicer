@@ -32,6 +32,10 @@ profile=(
     # The 6 mm³/s cap limits nominal beads to ~51 mm/s; thin beads may go faster.
     --print-feed 4500
     --travel-feed 12000
+    # First 10 deposited layers (including raft/support): 20 mm/s print, 80 travel.
+    --slow-start-layers 10
+    --slow-start-print-feed 1200
+    --slow-start-travel-feed 4800
     --max-volumetric-flow 6
     --support-print-feed 3000
     --support-interface-print-feed 2100
@@ -39,7 +43,7 @@ profile=(
     --print-accel 1200
     --travel-accel 2000
     --material-profile pla
-    --hotend-temp 205
+    --hotend-temp 200
     # Keep the existing retraction calibration and short-island cooling safeguards.
     --retract-mm 1.4
     --retract-speed 20

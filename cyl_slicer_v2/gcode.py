@@ -1323,6 +1323,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     ]
     if config.max_volumetric_flow_mm3_s > 0:
         out.append(f";MAX_VOLUMETRIC_FLOW_MM3_S:{config.max_volumetric_flow_mm3_s:g}")
+    if config.slow_start_layers > 0:
+        out.append(f";SLOW_START_LAYERS:{config.slow_start_layers}")
+        out.append(f";SLOW_START_PRINT_FEED_MM_MIN:{config.slow_start_print_feed_mm_per_min:g}")
+        out.append(f";SLOW_START_TRAVEL_FEED_MM_MIN:{config.slow_start_travel_feed_mm_per_min:g}")
     acceleration = []
     if config.print_accel > 0:
         acceleration.append(f"P{config.print_accel:g}")
@@ -1340,6 +1344,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
 
     fan_pwm = 0
     current_linear_advance_k = config.linear_advance_k
+    printed_layers = 0
     for layer in layers:
         nozzle_radius = layer.deposition_radius(config.layer_height)
         if not math.isfinite(nozzle_radius) or nozzle_radius < config.bed_radius:
@@ -1353,10 +1358,26 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         layer_config = config.for_deposited_thickness(deposited_thickness)
         if overrides:
             layer_config = replace(layer_config, **overrides)
+        has_paths = any(layer.paths_by_role.values())
+        slow_start = has_paths and printed_layers < config.slow_start_layers
+        if has_paths:
+            printed_layers += 1
+        if slow_start:
+            # Cap before cooling so layer/island timing uses the actual ceilings.
+            # Always start from the base config; normal speeds resume after N layers.
+            layer_config = replace(
+                layer_config,
+                feed_mm_per_min=min(layer_config.feed_mm_per_min,
+                                    layer_config.slow_start_print_feed_mm_per_min),
+                travel_mm_per_min=min(layer_config.travel_mm_per_min,
+                                      layer_config.slow_start_travel_feed_mm_per_min),
+            )
         cooling_speed, estimated_print_time = _cooling_print_speed(layer, layer_config)
         if abs(cooling_speed - layer_config.feed_mm_per_min) > 1e-10:
             layer_config = replace(layer_config, feed_mm_per_min=cooling_speed)
         out.append(f";LAYER:{layer.layer_index}")
+        if slow_start:
+            out.append(f";SLOW_START_LAYER:{printed_layers}/{config.slow_start_layers}")
         if config.cooling_min_layer_time_s > 0:
             out.append(f";COOLING_PRINT_DURATION_ESTIMATE_S:{estimated_print_time:.4f}")
             out.append(f";COOLING_PRINT_SPEED_MM_MIN:{cooling_speed:.4f}")

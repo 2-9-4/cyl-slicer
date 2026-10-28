@@ -165,19 +165,25 @@ class FastScriptTests(unittest.TestCase):
             code = (Path(tmp)/"fast output.gcode").read_text()
             for expected in (";LAYER_HEIGHT:0.28", ";LINE_WIDTH:0.48",
                              ";MAX_VOLUMETRIC_FLOW_MM3_S:6", "M204 P1200 T2000",
+                             ";SLOW_START_LAYERS:10", ";SLOW_START_LAYER:1/10",
                              ";PRINT_FEED:4500", ";TRAVEL_FEED:12000"):
                 self.assertIn(expected, code)
             self.assertTrue(print_moves(code.splitlines()))
             self.assertNotIn("\nM900", code)
             subprocess.run([*command, "--layer-height", "0.24", "--print-feed", "2400",
                             "--max-volumetric-flow", "4", "--print-accel", "0",
-                            "--travel-accel", "0"], cwd=tmp,
+                            "--travel-accel", "0", "--slow-start-layers", "1",
+                            "--slow-start-print-feed", "900", "--slow-start-travel-feed", "3600"], cwd=tmp,
                            check=True, capture_output=True, text=True)
             overridden = (Path(tmp)/"fast output.gcode").read_text()
             for expected in (";LAYER_HEIGHT:0.24", ";PRINT_FEED:2400",
                              ";MAX_VOLUMETRIC_FLOW_MM3_S:4"):
                 self.assertIn(expected, overridden)
             self.assertNotIn("\nM204", overridden)
+            self.assertIn(";SLOW_START_LAYER:1/1", overridden)
+            self.assertIn(";SLOW_START_PRINT_FEED_MM_MIN:900", overridden)
+            self.assertIn(";SLOW_START_TRAVEL_FEED_MM_MIN:3600", overridden)
+            self.assertRegex(overridden, r"(?m)^G0 Z[\d.]+ F3600\.0$")
 
 
 if __name__ == "__main__":

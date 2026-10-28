@@ -67,10 +67,29 @@ remain the canonical quality profile; the faster recipe lives in the script.
 | Support interface | 3 layers, 0.40 mm pitch | 2 layers, 0.42 mm pitch |
 | Dense raft layers | 4 | 2 |
 | Requested print / travel surface speed | 45 / 150 mm/s | 75 / 200 mm/s |
+| First 10 nonempty layers, including raft/support | Normal speeds | At most 20 mm/s print, 80 mm/s travel |
 | Maximum volumetric flow | Unset | 6 mm³/s |
 | Support / interface speed ceilings | Standard print speed | 50 / 35 mm/s |
 | Marlin M204 P / T | Firmware values | 1200 / 2000 native planner units/s² |
-| PLA hotend setpoint | 195°C | 205°C |
+| PLA hotend setpoint | 195°C | 200°C |
+
+The fast script caps printing at **20 mm/s** and travel at **80 mm/s** for the
+first **10 nonempty output layers**, including raft and support layers with
+negative layer indices. Normal speeds resume on the eleventh nonempty layer.
+Cooling, role-specific speeds and volumetric flow can still require slower
+printing. Adjust the count and physical speeds per invocation (feeds are mm/min):
+
+```bash
+# First 10 layers at 15 mm/s print and at most 60 mm/s travel.
+./slice_fast.sh part.stl --out part.fast.gcode \
+  --slow-start-layers 10 --slow-start-print-feed 900 --slow-start-travel-feed 3600
+# Disable slow start.
+./slice_fast.sh part.stl --out part.fast.gcode --slow-start-layers 0
+```
+
+These options also work directly with the v2 CLI. Slow start changes only move
+feedrates; coordinates, deposited E, retraction and acceleration settings are
+preserved. A ceiling above the normal configured speed never speeds up a move.
 
 Most of the time reduction comes from fewer layers and less wall/infill/support
 path length. The rounded 0.28 × 0.48 mm bead has an area of about 0.1176 mm²,
@@ -85,12 +104,13 @@ fine geometry sampling, variable-width gap fill and support generation.
 The tradeoff is coarser surfaces, thinner walls and less internal material.
 The PLA temperature and mechanical settings still need a real print check.
 
-On the repository's full `cubeandring2.stl`, this recipe reduces 208 layers to
+On the repository's full `cubeandring2.stl`, the recipe before adding slow start reduces 208 layers to
 118 and deposited filament volume by about 43%. Summing commanded move durations
 in Marlin's mixed-axis metric gives about **8 h 28 min → 2 h 25 min** (3.49×).
 This is a motion-time lower bound, including commanded travel/retraction but
 excluding heating, acceleration, junction slowdowns and firmware axis limits;
-it is not a measured printer completion time.
+it is not a measured printer completion time. The first-ten-layer slowdown adds
+time to that earlier benchmark.
 
 `--max-volumetric-flow Q` is also available directly on the v2 CLI. It limits
 each extrusion segment's speed using actual filament volume, including the
