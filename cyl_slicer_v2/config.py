@@ -76,6 +76,7 @@ class SlicerConfig:
     axial_min: float = 15.0
     feed_mm_per_min: float = 2700.0
     slow_start_layers: int = 0  # First N nonempty output layers, including raft/support.
+    one_direction_first_layers: int = 0  # Opt-in positive-Y printing AND travel.
     slow_start_print_feed_mm_per_min: float = 1200.0
     slow_start_travel_feed_mm_per_min: float = 4800.0
     max_volumetric_flow_mm3_s: float = 0.0  # 0 disables the deposited-flow speed cap.
@@ -351,9 +352,10 @@ class SlicerConfig:
             raise ValueError("extrusion_feed_ramp_start_fraction must be in (0, 1]")
         if not math.isfinite(self.feed_mm_per_min) or self.feed_mm_per_min <= 0:
             raise ValueError("feed_mm_per_min must be finite and positive")
-        if (not isinstance(self.slow_start_layers, int) or isinstance(self.slow_start_layers, bool)
-                or self.slow_start_layers < 0):
-            raise ValueError("slow_start_layers must be a non-negative integer")
+        for name in ("slow_start_layers", "one_direction_first_layers"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         for name in ("slow_start_print_feed_mm_per_min", "slow_start_travel_feed_mm_per_min"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:

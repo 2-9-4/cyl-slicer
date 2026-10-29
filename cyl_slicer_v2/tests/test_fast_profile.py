@@ -173,7 +173,8 @@ class FastScriptTests(unittest.TestCase):
             subprocess.run([*command, "--layer-height", "0.24", "--print-feed", "2400",
                             "--max-volumetric-flow", "4", "--print-accel", "0",
                             "--travel-accel", "0", "--slow-start-layers", "1",
-                            "--slow-start-print-feed", "900", "--slow-start-travel-feed", "3600"], cwd=tmp,
+                            "--slow-start-print-feed", "900", "--slow-start-travel-feed", "3600",
+                            "--one-direction-first-layers", "1"], cwd=tmp,
                            check=True, capture_output=True, text=True)
             overridden = (Path(tmp)/"fast output.gcode").read_text()
             for expected in (";LAYER_HEIGHT:0.24", ";PRINT_FEED:2400",
@@ -181,6 +182,7 @@ class FastScriptTests(unittest.TestCase):
                 self.assertIn(expected, overridden)
             self.assertNotIn("\nM204", overridden)
             self.assertIn(";SLOW_START_LAYER:1/1", overridden)
+            self.assertIn(";ONE_DIRECTION_LAYER:1/1 Y:positive", overridden)
             self.assertIn(";SLOW_START_PRINT_FEED_MM_MIN:900", overridden)
             self.assertIn(";SLOW_START_TRAVEL_FEED_MM_MIN:3600", overridden)
             self.assertRegex(overridden, r"(?m)^G0 Z[\d.]+ F3600\.0$")

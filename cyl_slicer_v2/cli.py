@@ -151,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Target physical surface printing speed (mm/min); Marlin F varies per move.")
     parser.add_argument("--slow-start-layers", type=int, default=None,
                         help="Slow the first N nonempty output layers, including raft/support (0 disables).")
+    parser.add_argument("--one-direction-first-layers", type=int, default=None,
+                        help="Opt-in positive-Y-only printing/travel for the first N nonempty layers, including raft/support; gaps are non-extruding (0 disables).")
     parser.add_argument("--slow-start-print-feed", type=float, default=None,
                         help="Physical print speed ceiling in mm/min during slow start (default 1200 = 20 mm/s).")
     parser.add_argument("--slow-start-travel-feed", type=float, default=None,
@@ -413,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         hotend_temp=_profile_value(args, "hotend_temp"),
         feed_mm_per_min=_profile_value(args, "feed_mm_per_min"),
         slow_start_layers=_profile_value(args, "slow_start_layers"),
+        one_direction_first_layers=_profile_value(args, "one_direction_first_layers"),
         slow_start_print_feed_mm_per_min=_profile_value(args, "slow_start_print_feed_mm_per_min"),
         slow_start_travel_feed_mm_per_min=_profile_value(args, "slow_start_travel_feed_mm_per_min"),
         max_volumetric_flow_mm3_s=_profile_value(args, "max_volumetric_flow_mm3_s"),

@@ -142,8 +142,20 @@ def _nearest_theta(theta: float, reference: float) -> float:
     return reference + delta
 
 
-def _travel_distance_to_point(path: Toolpath, point: tuple[float, float], state: GcodeState) -> float:
-    theta = _nearest_theta(point[0], state.theta_accum)
+def _entry_theta(theta: float, reference: float, config: SlicerConfig | None = None) -> float:
+    if config is None or config.one_direction_first_layers <= 0:
+        return _nearest_theta(theta, reference)
+    delta = (theta - reference) % TWO_PI
+    if min(delta, TWO_PI-delta) <= 1e-9:
+        delta = 0.0
+    return reference + delta
+
+
+def _travel_distance_to_point(
+    path: Toolpath, point: tuple[float, float], state: GcodeState,
+    config: SlicerConfig | None = None,
+) -> float:
+    theta = _entry_theta(point[0], state.theta_accum, config)
     return math.hypot((theta - state.theta_accum) * path.radius, point[1] - state.axial)
 
 
@@ -212,10 +224,11 @@ def _travel_crosses_perimeter(
     point: tuple[float, float],
     state: GcodeState,
     perimeter_index: PerimeterIndex,
+    config: SlicerConfig | None = None,
 ) -> bool:
     if not perimeter_index.segments:
         return False
-    target_theta = _nearest_theta(point[0], state.theta_accum)
+    target_theta = _entry_theta(point[0], state.theta_accum, config)
     start_xy = _metric_point(state.theta_accum, state.axial, path.radius)
     end_xy = _metric_point(target_theta, point[1], path.radius)
     tx, ty = end_xy[0] - start_xy[0], end_xy[1] - start_xy[1]
@@ -435,6 +448,9 @@ def _safe_island_travel_route(
         if points is not None:
             route = [(point[0]/radius + shift, point[1]) for point in points]
             route[-1] = destination
+            if (config.one_direction_first_layers > 0
+                    and any(b[0] < a[0] for a, b in zip([start, *route], route))):
+                return None  # Preserve retract/hop fallback instead of reversing on a detour.
             return route
         return None
     return None
@@ -449,7 +465,7 @@ def _should_z_hop_to_path(
     if config.z_hop_height <= 0 or len(path.points) < 1:
         return False
     target = path.points[0]
-    travel_distance = _travel_distance_to_point(path, target, state)
+    travel_distance = _travel_distance_to_point(path, target, state, config)
     if travel_distance <= 1e-8:
         return False
     if travel_distance >= config.z_hop_min_travel:
@@ -457,7 +473,7 @@ def _should_z_hop_to_path(
     return (
         config.z_hop_on_perimeter_crossing
         and perimeter_index is not None
-        and _travel_crosses_perimeter(path, target, state, perimeter_index)
+        and _travel_crosses_perimeter(path, target, state, perimeter_index, config)
     )
 
 
@@ -478,6 +494,8 @@ def _can_reverse_for_output(path: Toolpath, tol: float = 1e-8) -> bool:
 def _orient_path_for_current_position(
     path: Toolpath, state: GcodeState, config: SlicerConfig | None = None
 ) -> Toolpath:
+    if config is not None and config.one_direction_first_layers > 0:
+        return path  # Prepared monotone runs must never be reversed by nearest-entry ordering.
     if path.role in PERIMETER_ROLES and len(path.points) > 3 and cylindrical_distance(path.points[0], path.points[-1], path.radius) <= 1e-8:
         return _rotate_closed_perimeter(path, state, config)
     if not _can_reverse_for_output(path):
@@ -634,8 +652,10 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
     return replace(path, points=points)
 
 
-def _shadow_after_path(path: Toolpath, state: GcodeState) -> GcodeState:
-    accum = _unwrap_toolpath_thetas(path, state.theta_accum)
+def _shadow_after_path(
+    path: Toolpath, state: GcodeState, config: SlicerConfig | None = None,
+) -> GcodeState:
+    accum = _unwrap_toolpath_thetas(path, state.theta_accum, config)
     if not accum:
         return state
     return GcodeState(
@@ -666,11 +686,13 @@ def _monotonic_skin_paths(paths: list[Toolpath]) -> list[Toolpath]:
     output = []
     for path in paths:
         points = list(path.points)
+        widths = path.segment_widths
         start = points[0][1 if axial_direction else 0]
         end = points[-1][1 if axial_direction else 0]
         if start > end:
             points.reverse()
-        output.append(replace(path, points=points))
+            widths = list(reversed(widths)) if widths is not None else None
+        output.append(replace(path, points=points, segment_widths=widths))
     output.sort(key=lambda path: (
         round(path.points[0][0 if axial_direction else 1], 9),
         path.points[0][1 if axial_direction else 0],
@@ -702,7 +724,7 @@ def _ordered_paths_for_current_position(
         candidates = []
         for index, path in enumerate(remaining):
             oriented = _orient_path_for_current_position(path, shadow, config)
-            distance = _travel_distance_to_point(oriented, oriented.points[0], shadow)
+            distance = _travel_distance_to_point(oriented, oriented.points[0], shadow, config)
             candidates.append((distance, index, oriented))
         candidates.sort(key=lambda item: (item[0], item[1]))
         best_distance, best_index, best_path = candidates[0]
@@ -715,7 +737,7 @@ def _ordered_paths_for_current_position(
                                   best_distance + config.route_max_extra_mm) + 1e-8:
                     continue
                 start = (shadow.theta_accum, shadow.axial)
-                destination = (_nearest_theta(path.points[0][0], shadow.theta_accum), path.points[0][1])
+                destination = (_entry_theta(path.points[0][0], shadow.theta_accum, config), path.points[0][1])
                 if _travel_is_contained(start, destination, path.radius, travel_region):
                     length = distance
                 else:
@@ -730,7 +752,7 @@ def _ordered_paths_for_current_position(
                 _, best_index, best_path = min(reachable, key=lambda item: (item[0], item[1]))
         remaining.pop(best_index)
         ordered.append(best_path)
-        shadow = _shadow_after_path(best_path, shadow)
+        shadow = _shadow_after_path(best_path, shadow, config)
     return ordered
 
 
@@ -746,13 +768,13 @@ def _should_retract_after_path(
     if next_path is None:
         return True
 
-    end_state = _shadow_after_path(path, state)
+    end_state = _shadow_after_path(path, state, config)
     next_path = _orient_path_for_current_position(next_path, end_state, config)
-    travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state)
+    travel_distance = _travel_distance_to_point(next_path, next_path.points[0], end_state, config)
     inside = False
     if travel_region is not None and travel_distance > 1e-8:
         start = (end_state.theta_accum, end_state.axial)
-        destination = (_nearest_theta(next_path.points[0][0], end_state.theta_accum),
+        destination = (_entry_theta(next_path.points[0][0], end_state.theta_accum, config),
                        next_path.points[0][1])
         inside = _travel_is_contained(start, destination, next_path.radius, travel_region)
         if not inside:
@@ -777,6 +799,8 @@ def _should_retract_after_path(
         if (inside and path.role in SUPPORT_ROLES and next_path.role in SUPPORT_ROLES
                 and travel_distance <= config.route_max_unretracted_mm + 1e-8):
             return False
+    if config.one_direction_first_layers > 0 and travel_region is None and travel_distance > 1e-8:
+        return True  # A forward gap crossing without a footprint cannot be verified as primed.
     if travel_distance < config.nozzle_width * 2.0:
         return False
     fill_spacing = {
@@ -823,7 +847,7 @@ def _ordered_layer_paths_with_islands(
             if first_role is None:
                 return math.inf
             candidates = [_orient_path_for_current_position(path, shadow, config) for path in group[first_role]]
-            return min(_travel_distance_to_point(path, path.points[0], shadow) for path in candidates)
+            return min(_travel_distance_to_point(path, path.points[0], shadow, config) for path in candidates)
 
         nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i][1]))
                    if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
@@ -837,7 +861,7 @@ def _ordered_layer_paths_with_islands(
             for path in role_paths:
                 path = _orient_path_for_current_position(path, shadow, config)
                 ordered.append((path, group_index))
-                shadow = _shadow_after_path(path, shadow)
+                shadow = _shadow_after_path(path, shadow, config)
     return ordered
 
 
@@ -881,12 +905,78 @@ def _unwrap_bidirectional_path_from_current(thetas: list[float], current_accum: 
     return out
 
 
-def _unwrap_toolpath_thetas(path: Toolpath, current_accum: float) -> list[float]:
+def _unwrap_toolpath_thetas(
+    path: Toolpath, current_accum: float, config: SlicerConfig | None = None,
+) -> list[float]:
     raw_thetas = [point[0] for point in path.points]
+    if config is not None and config.one_direction_first_layers > 0 and raw_thetas:
+        if any(b < a for a, b in zip(raw_thetas, raw_thetas[1:])):
+            raise ValueError("One-direction toolpaths must be split into monotone runs before output")
+        first = _entry_theta(raw_thetas[0], current_accum, config)
+        return [first + theta - raw_thetas[0] for theta in raw_thetas]
     allows_reverse = path.role in BIDIRECTIONAL_OUTPUT_ROLES
     if allows_reverse and any(b < a - 1e-9 for a, b in zip(raw_thetas, raw_thetas[1:])):
         return _unwrap_bidirectional_path_from_current(raw_thetas, current_accum)
     return unwrap_path_from_current(raw_thetas, current_accum)
+
+
+def _one_direction_path_runs(path: Toolpath, config: SlicerConfig) -> list[Toolpath]:
+    """Keep every deposited segment, reversing negative runs rather than wrapping them.
+
+    A negative arc must not become its positive full-turn complement. Unwrap
+    with the ordinary role semantics first; retain widths alongside each edge.
+    """
+    if len(path.points) < 2:
+        return []
+    thetas = _unwrap_toolpath_thetas(path, path.points[0][0])
+    points = list(zip(thetas, [point[1] for point in path.points]))
+    if path.segment_widths is not None and len(path.segment_widths) != len(points)-1:
+        raise ValueError("Variable-width segments must match the path")
+    if path.segment_widths is None:
+        points = coalesce_collinear_points(points, path.radius)
+    length = sum(cylindrical_distance(a, b, path.radius) for a, b in zip(points, points[1:]))
+    if length < _min_emitted_path_length(path, config):
+        return []
+    runs = []
+    start = 0
+    sign = 0
+    for index, (a, b) in enumerate(zip(points, points[1:])):
+        delta = b[0]-a[0]
+        new_sign = 1 if delta > 0 else (-1 if delta < 0 else 0)
+        if new_sign and sign and new_sign != sign:
+            runs.append((start, index, sign))
+            start = index
+        if new_sign:
+            sign = new_sign
+    runs.append((start, len(points)-1, sign))
+    output = []
+    for start, end, sign in runs:
+        pts = points[start:end+1]
+        widths = path.segment_widths[start:end] if path.segment_widths is not None else None
+        if sign < 0:
+            pts = list(reversed(pts))
+            widths = list(reversed(widths)) if widths is not None else None
+        output.append(replace(path, points=pts, segment_widths=widths,
+                              closed=path.closed and len(runs) == 1))
+    return output
+
+
+def _one_direction_layer(layer: LayerToolpaths, config: SlicerConfig) -> LayerToolpaths:
+    # Both views must reference the same prepared paths, with island membership retained.
+    cache: dict[int, list[Toolpath]] = {}
+
+    def prepare(group):
+        result = {}
+        for role, paths in group.items():
+            result[role] = []
+            for path in paths:
+                if id(path) not in cache:
+                    cache[id(path)] = _one_direction_path_runs(path, config)
+                result[role].extend(cache[id(path)])
+        return result
+
+    return replace(layer, paths_by_role=prepare(layer.paths_by_role),
+                   island_paths=[prepare(group) for group in layer.island_paths])
 
 
 def _min_emitted_path_length(path: Toolpath, config: SlicerConfig) -> float:
@@ -1040,10 +1130,11 @@ def emit_toolpath(
     retract_after: bool = True,
     perimeter_index: PerimeterIndex | None = None,
     travel_region: BaseGeometry | None = None,
+    preserve_short_segments: bool = False,
 ) -> list[str]:
     if len(path.points) < 2:
         return []
-    accum = _unwrap_toolpath_thetas(path, state.theta_accum)
+    accum = _unwrap_toolpath_thetas(path, state.theta_accum, config)
     pts = list(zip(accum, [p[1] for p in path.points]))
     if path.segment_widths is None:
         pts = coalesce_collinear_points(pts, path.radius)
@@ -1054,7 +1145,7 @@ def emit_toolpath(
     if len(pts) < 2:
         return []
     total_length = sum(cylindrical_distance(a, b, path.radius) for a, b in zip(pts, pts[1:]))
-    if total_length < _min_emitted_path_length(path, config):
+    if total_length < (MIN_GEOMETRY_LENGTH if preserve_short_segments else _min_emitted_path_length(path, config)):
         return []
 
     lines = [";start of path"]
@@ -1327,6 +1418,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";SLOW_START_LAYERS:{config.slow_start_layers}")
         out.append(f";SLOW_START_PRINT_FEED_MM_MIN:{config.slow_start_print_feed_mm_per_min:g}")
         out.append(f";SLOW_START_TRAVEL_FEED_MM_MIN:{config.slow_start_travel_feed_mm_per_min:g}")
+    if config.one_direction_first_layers > 0:
+        out.append(f";ONE_DIRECTION_FIRST_LAYERS:{config.one_direction_first_layers}")
     acceleration = []
     if config.print_accel > 0:
         acceleration.append(f"P{config.print_accel:g}")
@@ -1362,6 +1455,11 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         slow_start = has_paths and printed_layers < config.slow_start_layers
         if has_paths:
             printed_layers += 1
+        one_direction = has_paths and printed_layers <= config.one_direction_first_layers
+        if one_direction:
+            layer = _one_direction_layer(layer, layer_config)
+        elif layer_config.one_direction_first_layers > 0:
+            layer_config = replace(layer_config, one_direction_first_layers=0)
         if slow_start:
             # Cap before cooling so layer/island timing uses the actual ceilings.
             # Always start from the base config; normal speeds resume after N layers.
@@ -1376,6 +1474,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         if abs(cooling_speed - layer_config.feed_mm_per_min) > 1e-10:
             layer_config = replace(layer_config, feed_mm_per_min=cooling_speed)
         out.append(f";LAYER:{layer.layer_index}")
+        if one_direction:
+            out.append(f";ONE_DIRECTION_LAYER:{printed_layers}/{config.one_direction_first_layers} Y:positive")
         if slow_start:
             out.append(f";SLOW_START_LAYER:{printed_layers}/{config.slow_start_layers}")
         if config.cooling_min_layer_time_s > 0:
@@ -1460,6 +1560,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                     retract_after=retract_after,
                     perimeter_index=perimeter_index,
                     travel_region=travel_region,
+                    preserve_short_segments=one_direction,
                 )
             )
             if bridge_fan:

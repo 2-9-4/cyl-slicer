@@ -91,6 +91,34 @@ These options also work directly with the v2 CLI. Slow start changes only move
 feedrates; coordinates, deposited E, retraction and acceleration settings are
 preserved. A ceiling above the normal configured speed never speeds up a move.
 
+For a slit ring whose first-layer reversal peels a newly deposited line, use:
+
+```bash
+./slice_fast.sh cubeandring2.stl --out cubeandring2.one-direction.gcode \
+  --one-direction-first-layers 10
+```
+
+This opt-in setting keeps **physical Y rotation positive** for printing and
+travel during the first N nonempty layers, including raft/support. It passes
+the slit with non-extruding travel instead of reversing back along the previous
+line. Gaps are not filled or bridged. Retraction and the configured Z-hop policy
+still apply; a gap crossing is not treated as safe primed travel merely because
+it is short. Pure axial moves can still reverse X while keeping Y stationary.
+The ordinary bidirectional strategy resumes after N printed layers. Set `0`
+to disable; the fast script leaves this option off until explicitly requested.
+It can be combined with `--slow-start-layers` and a volumetric flow ceiling.
+
+Meanders and closed contours that reverse theta are split into monotone runs;
+negative runs are reversed along the same physical segments, with matching
+per-segment widths and filament E. Even short fragments of a retained feature
+are kept. The planner preserves island/role grouping and crosses gaps with
+travel, never by extruding the complementary arc around the cylinder. This can
+add travel, retractions and open-run starts on closed contours, so closed-loop
+seam placement is superseded where a contour must be split. On-island detours
+that require reversing Y fall back to direct travel with the usual retract/hop
+guards. Native Marlin Y rebases remain bounded and preserve physical phase;
+coordinate resets may reduce the numeric Y value without rotating backward.
+
 Most of the time reduction comes from fewer layers and less wall/infill/support
 path length. The rounded 0.28 × 0.48 mm bead has an area of about 0.1176 mm²,
 so the 6 mm³/s ceiling limits ordinary printing to about 51 mm/s despite the

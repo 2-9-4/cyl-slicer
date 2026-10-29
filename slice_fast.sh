@@ -36,6 +36,8 @@ profile=(
     --slow-start-layers 10
     --slow-start-print-feed 1200
     --slow-start-travel-feed 4800
+    # Optional adhesion aid: pass --one-direction-first-layers 10 to avoid Y reversals.
+    --one-direction-first-layers 0
     --max-volumetric-flow 6
     --support-print-feed 3000
     --support-interface-print-feed 2100
