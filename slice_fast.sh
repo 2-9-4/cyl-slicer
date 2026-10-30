@@ -53,6 +53,13 @@ profile=(
     --cooling-min-layer-time-s 8
     --cooling-min-island-print-time-s 2
     --cooling-min-print-speed 300
+    --max-volumetric-flow 9 
+    --axial-min 30 
+    --support-gap-layers 2  
+    --slow-start-layers 2
+    --slow-start-print-feed 1200   
+    --slow-start-travel-feed 4800 
+    --one-direction-first-layers 1
 )
 
 # Keep input/output paths relative to the caller, even when invoked elsewhere.

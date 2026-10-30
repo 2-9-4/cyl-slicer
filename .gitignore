@@ -5,3 +5,4 @@ build/
 *.gcode
 !calibration/theta_one_turn.gcode
 !calibration/theta_five_turns.gcode
+!calibration/fast_first_nine_rotary_dryrun.gcode
