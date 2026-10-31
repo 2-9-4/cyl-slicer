@@ -10,7 +10,8 @@ profile=(
     --profile quality
     --out output_fast.gcode
     # Coarser layers, ~0.9 mm walls and 0.84 mm top/bottom shells.
-    --layer-height 0.28
+    --layer-height 0.12
+    --first-layer-height 0.28
     --line-width 0.48
     --nozzle-diameter 0.4
     --bead-model rounded
@@ -30,19 +31,13 @@ profile=(
     --raft-layers 2
     # Physical surface targets: 75 mm/s print, 200 mm/s travel.
     # The 6 mm³/s cap limits nominal beads to ~51 mm/s; thin beads may go faster.
-    --print-feed 4500
-    --travel-feed 12000
-    # First 10 deposited layers (including raft/support): 20 mm/s print, 80 travel.
-    --slow-start-layers 10
-    --slow-start-print-feed 1200
-    --slow-start-travel-feed 4800
+    --print-feed 4800
+    --travel-feed 9600
     # Optional adhesion aid: pass --one-direction-first-layers 10 to avoid Y reversals.
-    --one-direction-first-layers 0
-    --max-volumetric-flow 6
-    --support-print-feed 3000
-    --support-interface-print-feed 2100
+    --support-print-feed 4800
+    --support-interface-print-feed 4800
     # Physical mm/s², converted to M204 P/T for each layer radius and move direction.
-    --print-accel 1200
+    --print-accel 800
     --travel-accel 2000
     --material-profile pla
     --hotend-temp 200

@@ -874,7 +874,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
         raw_span = model_inner - config.bed_radius
         if raw_span <= 1e-9:
             return []
-        if raw_span < config.layer_height * 0.5 - 1e-9:
+        if raw_span < (config.first_layer_height or config.layer_height * 0.5) - 1e-9:
             raise ValueError(
                 "Gap-support foundation is thinner than half the requested "
                 "radial layer height; decrease --layer-height or adjust model radius"
@@ -883,7 +883,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
         # A deliberately requested contact gap can consume all, or all but a
         # sub-half-height sliver, of the available foundation.  Do not turn
         # that request into an unsafe thin support bead.
-        if span < config.layer_height * 0.5 - 1e-9:
+        if span < (config.first_layer_height or config.layer_height * 0.5) - 1e-9:
             return []
         h = config.layer_height
         full_count = int(math.floor(span / h + 1e-10))
@@ -912,13 +912,36 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
         # limit.  This can leave a little more than the requested clearance
         # when the model and bed schedules are not phase-aligned, never less.
         start = config.bed_radius + config.layer_height * 0.5
-        if start + config.layer_height * 0.5 > support_outer_limit + 1e-9:
+        if start + config.layer_height * 0.5 > support_outer_limit + 1e-9 and config.first_layer_height is None:
             return []
         support_slabs = []
         radius = start
         while radius + config.layer_height * 0.5 <= support_outer_limit + 1e-9:
             support_slabs.append((float(radius), None))
             radius += config.layer_height
+
+    if config.first_layer_height is not None:
+        # Foundation begins at the bed, independently of the model schedule.
+        first = config.first_layer_height
+        span = support_outer_limit - config.bed_radius
+        if span < first - 1e-9:
+            return []
+        support_slabs = [(float(config.bed_radius + first * 0.5), first)]
+        remaining = max(0.0, span - first)
+        h = config.layer_height
+        count = int(math.floor((remaining + 1e-10) / h))
+        heights = [h] * count
+        remainder = remaining - count * h
+        if config.radial_layer_mode == "complete-terminal" and remainder > 1e-9:
+            if remainder >= h * 0.5 - 1e-9:
+                heights.append(remainder)
+            elif heights:
+                shared = (heights.pop() + remainder) * 0.5
+                heights.extend((shared, shared))
+        edge = config.bed_radius + first
+        for height in heights:
+            support_slabs.append((float(edge + height * 0.5), height))
+            edge += height
 
     pieces = []
     if not first_model.support.is_empty:

@@ -211,6 +211,15 @@ If increasing layer height beyond 0.28 mm, also raise
 `--gap-fill-min-width-mm` to at least that height. Gap-fill width must stay
 between the layer height and the selected line width.
 
+## First layer height
+
+Use `--first-layer-height 0.2` to set the first radial slab thickness in mm.
+It defaults to `--layer-height` (0.16 mm in the default profile). Subsequent
+slabs use `--layer-height`; extrusion and line spacing use the actual slab
+thickness. When a support foundation is generated, its bed-facing slab and
+the first model slab both use this setting. In complete-terminal mode, an unprintably small remainder after
+the first slab is rejected; adjust either height or the radial range.
+
 ## Experimental complete-terminal radial slabs
 
 The optional `--radial-layer-mode complete-terminal` covers the requested mesh

@@ -531,15 +531,36 @@ def layer_slabs(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[tuple[float
     r_min = max(r_min, config.bed_radius)
     h = config.layer_height
     print(f"layer radii goes up {r_min:.2f}->{r_max:.2f}")
+    first = config.first_layer_height if config.first_layer_height is not None else h
     if config.radial_layer_mode == "fixed":
-        start = r_min + h * 0.5
-        stop = r_max - h * 0.5
-        if stop < start:
+        if config.first_layer_height is None:
+            start = r_min + h * 0.5
+            stop = r_max - h * 0.5
+            if stop < start:
+                return []
+            count = int(np.floor((stop - start) / h)) + 1
+            return [(float(start + i * h), h) for i in range(count)]
+        if r_max - r_min < first - 1e-9:
             return []
-        count = int(np.floor((stop - start) / h)) + 1
-        return [(float(start + i * h), h) for i in range(count)]
+        remaining = max(0.0, r_max - r_min - first)
+        count = int(np.floor((remaining + 1e-10) / h))
+        return [(float(r_min + first * 0.5), first)] + [
+            (float(r_min + first + (i + 0.5) * h), h) for i in range(count)]
 
     span = r_max - r_min
+    if config.first_layer_height is not None:
+        if span < first - 1e-9:
+            raise ValueError("Radial range is smaller than --first-layer-height")
+        remaining = max(0.0, span - first)
+        if remaining < 1e-9:
+            return [(float(r_min + first * 0.5), first)]
+        if remaining < h * 0.5 - 1e-9:
+            raise ValueError("Remaining radial range is less than half a layer; adjust --first-layer-height or --layer-height")
+        r_min += first
+        span = remaining
+        prefix = [(float(r_min - first * 0.5), first)]
+    else:
+        prefix = []
     if span <= 0:
         return []
     if span < h * 0.5 - 1e-9:
@@ -563,7 +584,7 @@ def layer_slabs(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[tuple[float
     for height in heights:
         slabs.append((float(edge + 0.5 * height), float(height)))
         edge += height
-    return slabs
+    return prefix + slabs
 
 
 def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
@@ -658,7 +679,8 @@ def slice_mesh(
                 is_full_wrap=full_flags[i],
                 support_interface_target=interface_target,
                 previous_occupied=(prev if i > 0 else None),
-                deposited_thickness=(slabs[i][1] if config.radial_layer_mode == "complete-terminal" else None),
+                deposited_thickness=(slabs[i][1] if config.radial_layer_mode == "complete-terminal"
+                                     or (i == 0 and config.first_layer_height is not None) else None),
             )
         )
 

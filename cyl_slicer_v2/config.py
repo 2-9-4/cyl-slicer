@@ -9,6 +9,7 @@ from .calibration import CalibrationSweep
 @dataclass(frozen=True)
 class SlicerConfig:
     layer_height: float = 0.16
+    first_layer_height: float | None = None  # None uses layer_height.
     radial_layer_mode: str = "fixed"  # fixed | complete-terminal (opt-in)
     nozzle_width: float = 0.42  # Deposited track width; not physical nozzle orifice.
     nozzle_diameter: float | None = 0.4
@@ -194,6 +195,13 @@ class SlicerConfig:
             raise ValueError("radial_layer_mode must be fixed or complete-terminal")
         if not math.isfinite(self.layer_height) or self.layer_height <= 0:
             raise ValueError("layer_height must be finite and positive")
+        if self.first_layer_height is not None:
+            if not math.isfinite(self.first_layer_height) or self.first_layer_height <= 0:
+                raise ValueError("first_layer_height must be finite and positive")
+            if self.nozzle_diameter is not None and self.first_layer_height > self.nozzle_diameter + 1e-9:
+                raise ValueError("first_layer_height cannot exceed specified nozzle_diameter")
+            if self.bead_model == "rounded" and self.first_layer_height > self.nozzle_width:
+                raise ValueError("rounded bead requires first_layer_height <= line width")
         if not math.isfinite(self.nozzle_width) or self.nozzle_width <= 0:
             raise ValueError("nozzle_width must be finite and positive")
         if self.nozzle_diameter is not None:
