@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 
 import shapely
 from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Point, Polygon, box
@@ -332,7 +333,8 @@ def _ring_to_edge_paths(
     return sorted(paths, key=lambda p: (p.points[0][0], p.points[0][1], p.points[-1][0], p.points[-1][1]))
 
 
-def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed: bool, config: SlicerConfig) -> Toolpath | None:
+def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed: bool, config: SlicerConfig,
+               *, preserve_short: bool = False) -> Toolpath | None:
     if len(pts) < 2:
         return None
     if role in PERIMETER_ROLES:
@@ -354,7 +356,7 @@ def _make_path(role: str, radius: float, pts: list[tuple[float, float]], closed:
     if len(cleaned) < 2:
         return None
     total_length = sum(cylindrical_distance(a, b, radius) for a, b in zip(cleaned, cleaned[1:]))
-    if total_length < max(MIN_GEOMETRY_LENGTH, _min_printable_length(config)):
+    if total_length < max(MIN_GEOMETRY_LENGTH, 0.0 if preserve_short else _min_printable_length(config)):
         return None
     return Toolpath(role=role, radius=radius, points=cleaned, closed=closed)
 
@@ -384,7 +386,10 @@ def inset_geometry(
 ):
     if geom.is_empty:
         return geom
-    source = periodic_copies(geom, turns=1) if periodic else geom
+    # Whole-turn translation can leave sub-ulp cracks at a nonzero cut.
+    # Weld only numerical noise before insetting; otherwise those cracks
+    # become real half-bead gaps. This grid is far below physical precision.
+    source = shapely.set_precision(periodic_copies(geom, turns=1), 1e-12) if periodic else geom
     metric = _to_metric(source, radius)
     inset = metric.buffer(-distance, join_style="mitre")
     if inset.is_empty:
@@ -428,11 +433,18 @@ def line_grid_lines(geom, radius: float, spacing: float, *, direction: str) -> l
     return sorted(result, key=lambda line: (line.coords[0][1], line.bounds[0], line.bounds[2]))
 
 
-def line_grid_paths(geom, role: str, radius: float, spacing: float, config: SlicerConfig, *, direction: str) -> list[Toolpath]:
+def line_grid_paths(geom, role: str, radius: float, spacing: float, config: SlicerConfig,
+                    *, direction: str, theta_window=None) -> list[Toolpath]:
     result = []
     for line in line_grid_lines(geom, radius, spacing, direction=direction):
         pts = [(float(t), float(z)) for t, z in line.coords]
-        path = _make_path(role, radius, pts, False, config)
+        # A tiny clipped end may belong to a long printable pass across the
+        # seam. Apply the whole-feature length limit after periodic joining.
+        seam_end = _is_full_theta_window(theta_window) and any(
+            abs(point[0] - edge) * radius <= 1e-7
+            for point in (pts[0], pts[-1]) for edge in theta_window
+        )
+        path = _make_path(role, radius, pts, False, config, preserve_short=seam_end)
         if path is not None:
             result.append(path)
     return result
@@ -499,6 +511,104 @@ def _can_reverse_join(path: Toolpath) -> bool:
     return path.role not in PERIMETER_ROLES
 
 
+def _join_periodic_seam_paths(paths: list[Toolpath], theta_window) -> list[Toolpath]:
+    """Stitch unique collinear continuations across the cut, in unwrapped space.
+
+    No connector is deposited. Only coincident endpoints on opposite window
+    edges qualify. Orient fragments into a continuous walk, retaining signed
+    theta deltas and reversing bead widths with their segments when needed.
+    Existing closed contours and individual full-turn paths stay untouched.
+    """
+    if not _is_full_theta_window(theta_window):
+        return paths
+    tolerance = 1e-7  # Physical mm; absorb intersection roundoff only.
+    buckets = defaultdict(list)
+    endpoints = {}
+    for index, path in enumerate(paths):
+        if path.closed or len(path.points) < 2:
+            continue
+        for end in (0, 1):
+            point = path.points[0 if end == 0 else -1]
+            for side, theta in enumerate(theta_window):
+                if abs(point[0] - theta) * path.radius <= tolerance:
+                    key = (index, end)
+                    endpoints[key] = (side, point[1])
+                    buckets[(side, math.floor(point[1] / tolerance))].append(key)
+                    break
+
+    contacts = {}
+    for key, (side, axial) in endpoints.items():
+        path = paths[key[0]]
+        bucket = math.floor(axial / tolerance)
+        matches = []
+        for offset in (-1, 0, 1):
+            for other in buckets.get((1 - side, bucket + offset), ()):
+                candidate = paths[other[0]]
+                if (key[0] != other[0] and path.role == candidate.role
+                        and abs(path.radius - candidate.radius) <= 1e-9
+                        and abs(axial - endpoints[other][1]) <= tolerance):
+                    matches.append(other)
+        if len(matches) == 1:
+            contacts[key] = matches[0]
+
+    links = {}
+    for key, other in contacts.items():
+        if contacts.get(other) != key:
+            continue  # Ambiguous/branched contacts cannot form a chain.
+        path, candidate = paths[key[0]], paths[other[0]]
+        if (path.segment_widths is None) != (candidate.segment_widths is None):
+            continue
+        vectors = []
+        for index, end in (key, other):
+            points = paths[index].points
+            tip, inner = (points[0], points[1]) if end == 0 else (points[-1], points[-2])
+            vectors.append(((inner[0] - tip[0]) * path.radius, inner[1] - tip[1]))
+        u, v = vectors
+        norm = math.hypot(*u) * math.hypot(*v)
+        if norm <= 1e-20 or u[0] * v[0] + u[1] * v[1] >= 0:
+            continue
+        if abs(u[0] * v[1] - u[1] * v[0]) > 1e-5 * norm:
+            continue
+        links[key] = other
+
+    result = []
+    visited = set()
+    # Start at free ends before considering any completely periodic cycles.
+    starts = [(i, end) for i in range(len(paths)) for end in (0, 1)
+              if (i, end) not in links]
+    starts.extend((i, 0) for i in range(len(paths)))
+    for index, entry in starts:
+        if index in visited:
+            continue
+        original = paths[index]
+        points = []
+        widths = [] if original.segment_widths is not None else None
+        while index not in visited:
+            visited.add(index)
+            path = paths[index]
+            fragment = list(path.points if entry == 0 else reversed(path.points))
+            fragment_widths = path.segment_widths
+            if fragment_widths is not None and entry == 1:
+                fragment_widths = list(reversed(fragment_widths))
+            if points:
+                shift = round((points[-1][0] - fragment[0][0]) / TWO_PI) * TWO_PI
+                fragment = [(theta + shift, axial) for theta, axial in fragment]
+                points.extend(fragment[1:])
+            else:
+                points.extend(fragment)
+            if widths is not None:
+                widths.extend(fragment_widths)
+            next_end = links.get((index, 1 - entry))
+            if next_end is None:
+                break
+            index, entry = next_end
+        closed = original.closed or _points_close(points[0], points[-1])
+        if closed:
+            points[-1] = points[0]
+        result.append(replace(original, points=points, segment_widths=widths, closed=closed))
+    return result
+
+
 def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
     remaining = [path for path in paths if not path.closed]
     joined = [path for path in paths if path.closed]
@@ -529,7 +639,7 @@ def _join_touching_paths(paths: list[Toolpath]) -> list[Toolpath]:
 
 def _postprocess_role_paths(paths: list[Toolpath], config: SlicerConfig) -> list[Toolpath]:
     kept = [path for path in paths if _path_length(path) >= _min_path_length_for_role(path.role, config)]
-    if kept and kept[0].segment_widths is not None:
+    if any(path.segment_widths is not None for path in kept):
         # Never join or prune variable-E paths without updating width metadata.
         return kept
     joined = _join_touching_paths(kept)
@@ -704,7 +814,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             if not region.is_empty:
                 paths["BRIDGE"].extend(line_grid_paths(
                     region, "BRIDGE", radius, config.dense_line_spacing,
-                    config, direction=direction
+                    config, direction=direction, theta_window=theta_window,
                 ))
         if not bridge_union.is_empty:
             infill_source = _safe_polygon_difference(infill_source, bridge_union)
@@ -724,17 +834,17 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             if not top.is_empty:
                 paths["TOP_SKIN"].extend(
                     line_grid_paths(top, "TOP_SKIN", radius, config.dense_line_spacing,
-                                    config, direction=solid_direction)
+                                    config, direction=solid_direction, theta_window=theta_window)
                 )
             if not bottom.is_empty:
                 paths["SOLID_INFILL"].extend(
                     line_grid_paths(bottom, "SOLID_INFILL", radius, config.dense_line_spacing,
-                                    config, direction=solid_direction)
+                                    config, direction=solid_direction, theta_window=theta_window)
                 )
         else:
             paths["SOLID_INFILL"].extend(
                 line_grid_paths(solid_source, "SOLID_INFILL", radius, config.dense_line_spacing,
-                                config, direction=solid_direction)
+                                config, direction=solid_direction, theta_window=theta_window)
             )
         if not solid_source.is_empty and not infill_source.is_empty:
             infill_source = infill_source.difference(solid_source)
@@ -752,11 +862,13 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         )
         if config.sparse_infill_pattern == "both" or layer.index % 2 == 0:
             paths["INFILL_RADIAL"].extend(
-                line_grid_paths(infill_source, "INFILL_RADIAL", radius, sparse_spacing, config, direction="radial")
+                line_grid_paths(infill_source, "INFILL_RADIAL", radius, sparse_spacing, config,
+                                direction="radial", theta_window=theta_window)
             )
         if config.sparse_infill_pattern == "both" or layer.index % 2 != 0:
             paths["INFILL_AXIAL"].extend(
-                line_grid_paths(infill_source, "INFILL_AXIAL", radius, sparse_spacing, config, direction="axial")
+                line_grid_paths(infill_source, "INFILL_AXIAL", radius, sparse_spacing, config,
+                                direction="axial", theta_window=theta_window)
             )
 
     if config.gap_fill_enabled and not model.is_empty:
@@ -791,6 +903,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
                         interface_spacing,
                         config,
                         direction=interface_direction,
+                        theta_window=layer.theta_window,
                     )
                 )
             support = _safe_polygon_difference(support, interface)
@@ -806,6 +919,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
                     support_spacing,
                     config,
                     direction=layer.raft_direction or "radial",
+                    theta_window=layer.theta_window,
                 )
             )
         else:
@@ -814,13 +928,16 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
             if radial_support:
                 cross_spacing = config.support_cross_spacing or support_spacing * 4.0
                 paths["SUPPORT"].extend(
-                    line_grid_paths(support, "SUPPORT", radius, cross_spacing, config, direction="axial")
+                    line_grid_paths(support, "SUPPORT", radius, cross_spacing, config,
+                                    direction="axial", theta_window=layer.theta_window)
                 )
 
     paths = {
         role: processed
         for role, role_paths in paths.items()
-        if (processed := _postprocess_role_paths(role_paths, config))
+        if (processed := _postprocess_role_paths(
+            _join_periodic_seam_paths(role_paths, layer.theta_window), config,
+        ))
     }
     travel_region = (
         model if support_footprint.is_empty else support_footprint if model.is_empty

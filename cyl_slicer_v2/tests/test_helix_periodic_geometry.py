@@ -60,19 +60,22 @@ class HelixPeriodicGeometryTests(unittest.TestCase):
         segments = parse_extrusion_segments(emit_gcode([result], config))
         for role in ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"):
             with self.subTest(role=role):
-                endpoints = [point for path in result.paths_by_role[role]
-                             for point in (path.points[0], path.points[-1])]
-                lower = sorted(x for t, x in endpoints if abs(t) < 1e-8)
-                upper = sorted(x for t, x in endpoints if abs(t - TWO_PI) < 1e-8)
-                # Four crossings, two edges each, including the crossings
-                # beyond the first turn that normalization used to discard.
-                self.assertEqual(len(lower), 8)
-                np.testing.assert_allclose(lower, upper, atol=1e-7, rtol=0)
+                paths = result.paths_by_role[role]
+                self.assertEqual(len(paths), 1)
+                self.assertTrue(paths[0].closed)
+                self.assertEqual(paths[0].points[0], paths[0].points[-1])
+                # The four crossings on both sides of the ribbon now lie
+                # inside one uninterrupted, explicitly unwrapped contour.
+                crossings = {round(x, 6) for t, x in paths[0].points
+                             if abs(math.remainder(t, TWO_PI)) < 1e-8}
+                self.assertEqual(len(crossings), 8)
+                self.assertGreater(max(t for t, _ in paths[0].points) -
+                                   min(t for t, _ in paths[0].points), 3 * TWO_PI)
                 # No artificial cap runs axially along the coordinate cut.
                 for path in result.paths_by_role[role]:
                     for a, b in zip(path.points, path.points[1:]):
                         self.assertFalse(abs(a[0] - b[0]) < 1e-8 and
-                                         (abs(a[0]) < 1e-8 or abs(a[0] - TWO_PI) < 1e-8))
+                                         abs(math.remainder(a[0], TWO_PI)) < 1e-8)
                 planned_length = sum(
                     math.hypot((b[0] - a[0]) * radius, b[1] - a[1])
                     for path in result.paths_by_role[role]

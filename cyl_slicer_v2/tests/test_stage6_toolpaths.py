@@ -47,8 +47,10 @@ class ToolpathTests(unittest.TestCase):
                 self.assertEqual(Counter(id(p) for items in result.paths_by_role.values() for p in items),
                                  Counter(id(p) for group in result.island_paths for items in group.values() for p in items))
                 seam_group = next(group for group in result.island_paths
-                                  if any(p.points[0][0] > 6 for p in group.get("EXTERNAL_PERIMETER", [])))
-                self.assertTrue(any(p.points[0][0] < cut + 0.3 for p in seam_group["EXTERNAL_PERIMETER"]))
+                                  if any(abs(math.remainder(t - cut, turn)) < 0.3
+                                         for p in group.get("EXTERNAL_PERIMETER", []) for t, _ in p.points))
+                self.assertEqual(len(seam_group["EXTERNAL_PERIMETER"]), 1)
+                self.assertTrue(seam_group["EXTERNAL_PERIMETER"][0].closed)
 
     def test_support_bridge_does_not_merge_separate_model_islands(self):
         occupied = box(0, 0, 0.2, 6).union(box(0.5, 0, 0.7, 6))
