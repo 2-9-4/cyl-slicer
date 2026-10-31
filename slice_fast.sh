@@ -41,7 +41,7 @@ profile=(
     --max-volumetric-flow 6
     --support-print-feed 3000
     --support-interface-print-feed 2100
-    # Opt-in M204 P/T, in Marlin's native mixed-axis units/s², not surface mm/s².
+    # Physical mm/s², converted to M204 P/T for each layer radius and move direction.
     --print-accel 1200
     --travel-accel 2000
     --material-profile pla

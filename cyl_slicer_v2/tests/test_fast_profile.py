@@ -143,14 +143,16 @@ class FlowLimitTests(unittest.TestCase):
         config = self.config()
         a = emit_gcode([layer], config)
         b = emit_gcode([layer], replace(config, print_accel=1200, travel_accel=2000))
-        command = "M204 P1200 T2000 ; native planner acceleration, firmware axis limits apply"
         self.assertNotIn("\nM204", a)
-        self.assertEqual(a, b.replace(command+"\n", ""))
-        self.assertLess(b.index(command), b.index(";LAYER:"))
-        self.assertNotRegex(b, r"(?m)^M(?:201|203|205|500)\b")
+        self.assertEqual(a, "\n".join(s for s in b.splitlines() if not s.startswith(("M201 ", "M204 "))) + "\n")
+        self.assertLess(b.index("\nM201 "), b.index(";LAYER:"))
+        self.assertLess(b.index(";LAYER:"), b.index("\nM204 "))
+        self.assertNotRegex(b, r"(?m)^M(?:203|205|500)\b")
         for key, letter in (("print_accel", "P"), ("travel_accel", "T")):
-            code = emit_gcode([], replace(config, **{key: 1234}))
-            self.assertIn(f"\nM204 {letter}1234 ;", code)
+            code = emit_gcode([layer], replace(config, **{key: 1234}))
+            self.assertRegex(code, rf"(?m)^M204 {letter}[\d.]+ ; layer surface acceleration")
+            self.assertNotIn("T" if letter == "P" else "P",
+                             next(s for s in code.splitlines() if s.startswith("M204 ")).split(";")[0])
 
 
 class FastScriptTests(unittest.TestCase):
@@ -164,8 +166,8 @@ class FastScriptTests(unittest.TestCase):
             subprocess.run(command, cwd=tmp, check=True, capture_output=True, text=True)
             code = (Path(tmp)/"fast output.gcode").read_text()
             for expected in (";LAYER_HEIGHT:0.28", ";LINE_WIDTH:0.48",
-                             ";MAX_VOLUMETRIC_FLOW_MM3_S:6", "M204 P1200 T2000",
-                             ";SLOW_START_LAYERS:10", ";SLOW_START_LAYER:1/10",
+                             ";MAX_VOLUMETRIC_FLOW_MM3_S:9", "; layer surface acceleration",
+                             ";SLOW_START_LAYERS:2", ";SLOW_START_LAYER:1/2",
                              ";PRINT_FEED:4500", ";TRAVEL_FEED:12000"):
                 self.assertIn(expected, code)
             self.assertTrue(print_moves(code.splitlines()))
@@ -181,6 +183,7 @@ class FastScriptTests(unittest.TestCase):
                              ";MAX_VOLUMETRIC_FLOW_MM3_S:4"):
                 self.assertIn(expected, overridden)
             self.assertNotIn("\nM204", overridden)
+            self.assertNotIn("\nM201", overridden)
             self.assertIn(";SLOW_START_LAYER:1/1", overridden)
             self.assertIn(";ONE_DIRECTION_LAYER:1/1 Y:positive", overridden)
             self.assertIn(";SLOW_START_PRINT_FEED_MM_MIN:900", overridden)

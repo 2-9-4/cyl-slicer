@@ -70,7 +70,7 @@ remain the canonical quality profile; the faster recipe lives in the script.
 | First 10 nonempty layers, including raft/support | Normal speeds | At most 20 mm/s print, 80 mm/s travel |
 | Maximum volumetric flow | Unset | 6 mm³/s |
 | Support / interface speed ceilings | Standard print speed | 50 / 35 mm/s |
-| Marlin M204 P / T | Firmware values | 1200 / 2000 native planner units/s² |
+| Print / travel acceleration | Firmware values | 1200 / 2000 physical mm/s² |
 | PLA hotend setpoint | 195°C | 200°C |
 
 The fast script caps printing at **20 mm/s** and travel at **80 mm/s** for the
@@ -150,19 +150,62 @@ ceiling through decimal quantization. Cooling estimates include
 these flow ceilings in physical cylindrical millimeters; acceleration and
 travel remain excluded from timing. `0` disables this optional cap.
 
-`--print-accel A` and `--travel-accel A` explicitly request
-[Marlin M204 P / T](https://marlinfw.org/docs/gcode/M204.html).
-These are native planner accelerations: X uses mm and Y uses degrees, so
-they are **not constant surface accelerations in mm/s²**. Firmware axis limits
-still apply. Only the requested P/T fields are emitted; E-only retract
-acceleration, axis maxima, jerk, advance and EEPROM are not changed. M204 changes
-remain active in firmware RAM until changed or reset; there is no automatic
+`--print-accel A` and `--travel-accel A` now request **physical surface
+acceleration in mm/s²**, using
+[Marlin M204 P / T](https://marlinfw.org/docs/gcode/M204.html). This replaces
+the earlier native mixed-axis interpretation of these flags.
+At the start of every layer (including raft, support and empty layers), the
+slicer reasserts acceleration using that layer's nozzle radius. Pure rotary
+acceleration is `A * 180 / (pi * radius)` degrees/s². Before each spatial move,
+it also accounts for direction: `A_native = A * L_native / L_physical`, with
+`L_native = hypot(delta_X, delta_Y_degrees)` and
+`L_physical = hypot(delta_X, radius * delta_Y_radians)`. Axial and radial
+moves retain A directly; diagonal moves receive their own conversion. Travel
+uses the lifted nozzle radius during Z-hop. Repeated equal-direction requests
+are cached within a layer. Geometry, winding, bead widths and deposited E are
+preserved. When acceleration is configured, a single startup `M201` sets X/Y
+axis acceleration ceilings high enough for the largest print or travel target,
+including every declared calibration band. Y uses the smallest emitted nozzle
+radius, so all subsequent layer radii and move directions fit under that ceiling.
+Z receives the travel acceleration ceiling when a travel target is configured.
+These ceilings round upward to integer native units/s² with one extra unit for
+numeric rounding; `M204` continues to select each move's actual acceleration.
+No `M201` is emitted when acceleration targets are disabled or there are no layers.
+Only requested P/T fields are emitted in `M204`. The E-axis `M201` limit and
+E-only retract acceleration are retained, as are speed limits, jerk and advance.
+Those settings and the mechanics can still limit achieved motion. M201/M204 changes
+remain active in firmware RAM until changed or reset; no EEPROM save is emitted.
+There is no automatic
 restore because the slicer cannot read the previous values. To use the existing
 firmware acceleration settings instead:
 
 ```bash
 ./slice_fast.sh part.stl --out part.fast.gcode --print-accel 0 --travel-accel 0
 ```
+
+To increase print speed and acceleration with radial height on a calibration
+model, supply explicit paired bands:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli calibration/retraction_posts.stl \
+  --out calibration/speed_accel.v2.gcode \
+  --print-feed 1200 --print-accel 400 --travel-accel 1200 \
+  --calibration speed-accel --calibration-values '20:400,40:800,60:1200,80:1600' \
+  --calibration-base-height 2 --calibration-band-height 3
+```
+
+Each pair is `print_speed_mm/s:print_acceleration_mm/s²`. The normal profile
+applies below 2 mm radial height above the mandrel; pairs apply at 2, 5, 8 and
+11 mm, with the last pair held above the final band. Band selection uses nozzle
+deposition height, independently of temporary Z-hop. G-code records the schedule
+and each layer's band. `--calibration print-speed --calibration-values 20,40,60`
+or `--calibration print-accel --calibration-values 400,800,1200` sweeps either
+setting independently. Travel settings stay fixed unless explicitly configured.
+Slow-start, cooling, role-specific speed ceilings and volumetric flow limits
+remain active and may prevent a band from reaching its requested print speed.
+Set `--cooling-min-layer-time-s 0 --cooling-min-island-print-time-s 0
+--slow-start-layers 0` explicitly when an unconstrained speed comparison is
+needed; keep the model large enough for the intended test.
 
 If increasing layer height beyond 0.28 mm, also raise
 `--gap-fill-min-width-mm` to at least that height. Gap-fill width must stay

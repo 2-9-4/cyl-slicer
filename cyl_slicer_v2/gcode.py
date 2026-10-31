@@ -76,6 +76,94 @@ def _emitted_y_degrees(theta: float, state: GcodeState) -> float:
     return math.degrees(theta - state.theta_origin)
 
 
+def _set_acceleration(
+    state: GcodeState, config: SlicerConfig, factor: float = 1.0,
+    *, printing: bool | None = None, force: bool = False,
+) -> list[str]:
+    """Convert physical mm/s² to native planner units/s², without changing E.
+
+    Acceleration, like feed, scales by L_native / L_physical (not its square).
+    Only P/T are set: Marlin's E-only retract acceleration R stays untouched.
+    """
+    fields = []
+    for is_print, letter, key in ((True, "P", "print_accel"), (False, "T", "travel_accel")):
+        if printing is not None and printing != is_print:
+            continue
+        requested = getattr(config, key)
+        if requested <= 0:
+            continue
+        native = requested * factor
+        if not math.isfinite(native) or native <= 0:
+            raise ValueError("Physical acceleration cannot be represented in native planner units")
+        # Compare the emitted values, so equal-direction moves don't add blocks.
+        native_text = f"{native:.6f}".rstrip("0").rstrip(".")
+        native = float(native_text)
+        if native <= 0:
+            raise ValueError("Physical acceleration is below G-code precision (0.000001 native units/s²)")
+        cache = key + "_native"
+        if force or native != getattr(state, cache):
+            fields.append(f"{letter}{native_text}")
+            setattr(state, cache, native)
+    if not fields:
+        return []
+    note = "layer surface acceleration" if force else "surface acceleration"
+    return ["M204 " + " ".join(fields) + f" ; {note}, radius/direction corrected; firmware axis limits apply"]
+
+
+def _path_acceleration(
+    state: GcodeState, config: SlicerConfig, theta: float, axial: float,
+    output_x_offset: float, *, printing: bool = False,
+) -> list[str]:
+    """Use the emitted endpoints and actual nozzle radius, including travel hops."""
+    if (config.print_accel if printing else config.travel_accel) <= 0:
+        return []
+    dx = round(_emitted_x(axial, output_x_offset), 3) - round(_emitted_x(state.axial, output_x_offset), 3)
+    dy = round(_emitted_y_degrees(theta, state), 3) - round(_emitted_y_degrees(state.theta_accum, state), 3)
+    if math.hypot(dx, dy) <= 1e-12:
+        return []
+    radius = config.bed_radius + round(_emitted_z(state.radial, config), 4)
+    factor = _surface_feed_for_marlin(dx, math.radians(dy), radius, 1.0)
+    return _set_acceleration(state, config, factor, printing=printing)
+
+
+def _startup_axis_acceleration(layers: list[LayerToolpaths], config: SlicerConfig) -> list[str]:
+    """Set XYZ ceilings high enough for all physical M204 targets in this job.
+
+    A native axis component cannot exceed A (X/Z) or degrees(A/r) (Y),
+    regardless of move direction. Use the smallest emitted nozzle radius and
+    every declared acceleration band, including bands above a truncated slice.
+    E is deliberately omitted: its shared limit also affects E-only retracts.
+    """
+    if not layers:
+        return []
+    maximum_print = config.print_accel
+    sweep = config.retraction_sweep
+    if sweep is not None:
+        if sweep.parameter == "print-accel":
+            maximum_print = max(maximum_print, *sweep.values)
+        elif sweep.parameter == "speed-accel":
+            maximum_print = max(maximum_print, *(value[1] for value in sweep.values))
+    maximum = max(maximum_print, config.travel_accel)
+    if maximum <= 0:
+        return []
+    radii = [layer.deposition_radius(config.layer_height) for layer in layers]
+    if any(not math.isfinite(r) or r < config.bed_radius for r in radii):
+        raise ValueError("Nozzle radius must be finite and at/above bed radius")
+    minimum_radius = min(config.bed_radius + round(r - config.bed_radius, 4) for r in radii)
+    rotary = math.degrees(maximum / minimum_radius)
+    if not math.isfinite(rotary):
+        raise ValueError("Physical acceleration cannot be represented in native planner units")
+    # Marlin stores M201 in integer native units/s². Round upward, allowing one
+    # extra unit of numeric headroom above the M204 targets.
+    limits = {"X": math.ceil(maximum) + 1, "Y": math.ceil(rotary) + 1}
+    if config.travel_accel > 0:
+        limits["Z"] = math.ceil(config.travel_accel) + 1
+    if any(value >= 2**32 for value in limits.values()):
+        raise ValueError("Startup acceleration ceiling exceeds Marlin's 32-bit M201 range")
+    fields = [f"{axis}{value}" for axis, value in limits.items()]
+    return ["M201 " + " ".join(fields) + " ; axis acceleration ceilings for all slicer targets and calibration bands"]
+
+
 def _reset_rotary_axis(
     state: GcodeState,
     *,
@@ -1166,6 +1254,7 @@ def emit_toolpath(
         # state.radial tracks physical nozzle radius (outer face of the slab),
         # while path.radius is the geometric slice sample/metric radius.
         state.radial += config.z_hop_height
+        lines.extend(_set_acceleration(state, config, printing=False))
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z hop")
     # XY travel uses Marlin's mixed-unit planner metric too. Radial hop
     # motions are separate Z-only commands and retain their native mm/min.
@@ -1173,6 +1262,7 @@ def emit_toolpath(
         travel_feed = _surface_feed_for_marlin(
             x0 - state.axial, t0 - state.theta_accum, path.radius, config.travel_mm_per_min
         )
+        lines.extend(_path_acceleration(state, config, t0, x0, output_x_offset))
         lines.append(_format_move("G0", x=_emitted_x(x0, output_x_offset), y_deg=_emitted_y_degrees(t0, state), f=travel_feed))
         state.theta_accum = t0
         state.axial = x0
@@ -1184,12 +1274,14 @@ def emit_toolpath(
                 axial-state.axial, theta-state.theta_accum,
                 path.radius, config.travel_mm_per_min
             )
+            lines.extend(_path_acceleration(state, config, theta, axial, output_x_offset))
             lines.append(_format_move("G0", x=_emitted_x(axial, output_x_offset),
                                       y_deg=_emitted_y_degrees(theta, state), f=feed))
             state.theta_accum = theta
             state.axial = axial
     if z_hop:
         state.radial -= config.z_hop_height
+        lines.extend(_set_acceleration(state, config, printing=False))
         lines.append(_format_move("G0", z=_emitted_z(state.radial, config), f=config.travel_mm_per_min) + " ; z unhop")
     lines.extend(_unretract(state, config))
 
@@ -1226,6 +1318,7 @@ def emit_toolpath(
                 config,
             )
         extruded = True
+        lines.extend(_path_acceleration(state, config, t, x, output_x_offset, printing=True))
         lines.append(
             _format_move(
                 "G1",
@@ -1424,13 +1517,6 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";SUPPORT_WEDGE_COUNT:{config.support_wedge_count}")
         out.append(f";SUPPORT_WEDGE_GAP_MM:{config.support_wedge_gap_mm:g}")
         out.append(f";SUPPORT_WEDGE_PHASE_DEG:{config.support_wedge_phase_deg:g}")
-    acceleration = []
-    if config.print_accel > 0:
-        acceleration.append(f"P{config.print_accel:g}")
-    if config.travel_accel > 0:
-        acceleration.append(f"T{config.travel_accel:g}")
-    if acceleration:
-        out.append("M204 " + " ".join(acceleration) + " ; native planner acceleration, firmware axis limits apply")
     if config.linear_advance_k is not None:
         # Only an explicitly verified Marlin LIN_ADVANCE build may see M900.
         # This is a firmware-level pressure offset; absolute E accounting
@@ -1438,6 +1524,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f"M900 K{config.linear_advance_k:g} ; enable calibrated Marlin linear advance")
     if config.retraction_sweep:
         out.append(config.retraction_sweep.header().rstrip())
+    out.extend(_startup_axis_acceleration(layers, config))
 
     fan_pwm = 0
     current_linear_advance_k = config.linear_advance_k
@@ -1488,6 +1575,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";SAMPLE_RADIUS:{layer.radius:.4f}")
         out.append(f";DEPOSITED_THICKNESS:{deposited_thickness:.4f}")
         out.append(f";Z:{nozzle_radius:.4f}")
+        # Reassert both configured accelerations on EVERY layer, including empty
+        # layers. This is the pure-rotary reference; each following move corrects
+        # for its direction (axial/diagonal/radial) before entering the planner.
+        out.extend(_set_acceleration(state, layer_config, math.degrees(1.0) / nozzle_radius, force=True))
         if (config.retraction_sweep is not None
                 and config.retraction_sweep.parameter == "linear-advance-k"):
             requested_k = layer_config.linear_advance_k
@@ -1504,6 +1595,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             note = "part cooling on" if desired_pwm == _effective_material_fan_pwm(layer_config) else "part cooling ramp"
             out.append(f"M106 S{desired_pwm} ; {note}")
             fan_pwm = desired_pwm
+        out.extend(_set_acceleration(state, layer_config, printing=False))
         out.append(_format_move("G0", z=_emitted_z(nozzle_radius, layer_config), f=layer_config.travel_mm_per_min))
         # Reset E every layer, but leave Y in its current coordinate frame.
         # Repeated native/workspace Y rebases are unnecessary for a compact
@@ -1573,6 +1665,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     if layers:
         # Z is radial lift above the mandrel. Park relative to the last emitted
         # radius, not at a fixed Z that could drive the nozzle into a tall print.
+        out.extend(_set_acceleration(state, layer_config, printing=False))
         out.extend(
             [
                 "G90 ; absolute positioning for end lift",

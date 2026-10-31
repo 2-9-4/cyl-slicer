@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 
-from .calibration import RetractionSweep
+from .calibration import CalibrationSweep
 
 
 @dataclass(frozen=True)
@@ -83,8 +83,8 @@ class SlicerConfig:
     slow_start_print_feed_mm_per_min: float = 1200.0
     slow_start_travel_feed_mm_per_min: float = 4800.0
     max_volumetric_flow_mm3_s: float = 0.0  # 0 disables the deposited-flow speed cap.
-    # Opt-in Marlin M204 requests in native mixed X-mm/Y-degree planner units/s².
-    # These are not constant physical surface accelerations on a rotary machine.
+    # Opt-in physical surface mm/s² targets, converted to Marlin M204 per layer
+    # and move direction, with matching startup M201 XYZ acceleration ceilings.
     print_accel: float = 0.0
     travel_accel: float = 0.0
     material_profile: str = "pla"  # Metadata; never guesses a material's K.
@@ -94,7 +94,7 @@ class SlicerConfig:
     extrusion_feed_ramp_start_fraction: float = 0.65
     travel_mm_per_min: float = 9000.0
     extrusion_per_mm: float | None = None
-    retraction_sweep: RetractionSweep | None = None
+    retraction_sweep: CalibrationSweep | None = None  # Historical name; all calibration modes.
     retract_speed_mm_per_min: float = 1200.0
     retract_mm: float = 1.4
     z_hop_height: float = 0.4

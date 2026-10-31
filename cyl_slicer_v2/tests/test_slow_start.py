@@ -68,7 +68,7 @@ class SlowStartTests(unittest.TestCase):
         self.assertEqual(geometry_and_commands(a), geometry_and_commands(b))
         self.assertEqual(a.count("; retract"), b.count("; retract"))
         self.assertEqual(a.count("; unretract"), b.count("; unretract"))
-        self.assertIn("M204 P1200 T2000", b)
+        self.assertRegex(b, r"M204 P[\d.]+ T[\d.]+ ; layer surface acceleration")
 
     def test_cooling_uses_slow_start_ceiling_and_role_and_flow_limits_still_apply(self):
         layers = [layer(0, 31, "SUPPORT_INTERFACE"), layer(1, 31.16)]

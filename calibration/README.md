@@ -1,5 +1,29 @@
 # Cylindrical Bowden calibration
 
+For height bands that increase print speed and acceleration, v2 also supports:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli calibration/retraction_posts.stl \
+  --out calibration/speed_accel.v2.gcode \
+  --print-feed 1200 --print-accel 400 --travel-accel 1200 \
+  --calibration speed-accel --calibration-values '20:400,40:800,60:1200,80:1600' \
+  --calibration-base-height 2 --calibration-band-height 3
+```
+
+Pairs are print speed in mm/s and print acceleration in physical mm/s². Normal
+settings apply below the base height. Each pair occupies a 3 mm radial band;
+the final pair is held above the last band. `print-speed` and `print-accel`
+calibration modes accept individual comma-separated values. Speed limits from
+cooling, slow start, role and flow settings still apply. Acceleration is updated
+at every layer and corrected for move direction and nozzle radius, preserving
+the physical target as the cylinder grows. See the [v2 guide](../cyl_slicer_v2/README.md)
+for conversion details. A single startup `M201` raises the X/Y acceleration
+ceilings to cover all configured bands and radii, plus Z for configured travel
+acceleration. Per-move `M204` still selects the requested acceleration. The
+extruder acceleration limit, retract acceleration and speed limits are retained;
+no EEPROM save is emitted. The `--print-accel` and `--travel-accel` flags now use
+physical mm/s² rather than the former native mixed-axis units.
+
 The photograph shows threads between features. It is consistent with oozing on
 travel, but cannot establish the cause by itself. Excess temperature, wet filament,
 Bowden tube movement, and poor restart pressure can all complicate retraction tuning.

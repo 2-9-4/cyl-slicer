@@ -160,9 +160,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-volumetric-flow", dest="max_volumetric_flow_mm3_s", type=float, default=None,
                         help="Maximum deposited filament flow in mm³/s; caps speed, preserving E (0 disables).")
     parser.add_argument("--print-accel", type=float, default=None,
-                        help="Opt-in Marlin M204 P in native mixed-axis planner units/s² (0 leaves firmware unchanged).")
+                        help="Physical print acceleration in mm/s²; sets startup M201 ceilings and radius/direction-corrected M204 P (0 disables this target).")
     parser.add_argument("--travel-accel", type=float, default=None,
-                        help="Opt-in Marlin M204 T in native mixed-axis planner units/s² (0 leaves firmware unchanged).")
+                        help="Physical travel acceleration in mm/s²; sets startup M201 ceilings and radius/direction-corrected M204 T (0 disables this target).")
     parser.add_argument("--travel-feed", type=float, default=None,
                         help="Target physical XY travel mm/min; radial Z moves retain native mm/min.")
     parser.add_argument("--material-fan-policy", choices=("manual", "preset"), default=None,
