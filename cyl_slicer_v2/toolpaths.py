@@ -11,7 +11,7 @@ from shapely.strtree import STRtree
 
 from .config import SlicerConfig
 from .gap_fill import narrow_gap_fill_paths
-from .layers import merge_support_body
+from .layers import merge_support_body, segment_support_wedges
 from .coordinates import TWO_PI, coalesce_collinear_points, cylindrical_distance
 from .models import LayerSlice, LayerToolpaths, Toolpath
 from .periodic import periodic_copies, translate_theta
@@ -756,7 +756,13 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         walls = [path for role in PERIMETER_ROLES for path in paths.get(role, [])]
         paths["GAP_FILL"].extend(narrow_gap_fill_paths(model, walls, radius, config))
 
-    support = _clean_polygonal(layer.support)
+    # Also handle externally supplied LayerSlices, and expose the real slots
+    # to island grouping and travel containment. Never let cross-ties, dense
+    # interfaces or a raft bridge them with the finite deposited bead width.
+    support_footprint = segment_support_wedges(layer.support, radius, config)
+    support = _clean_polygonal(segment_support_wedges(
+        support_footprint, radius, config, bead_clearance=True,
+    ))
     interface_source = layer.support_interface if layer.support_interface is not None else GeometryCollection()
     interface = _clean_polygonal(interface_source)
     if not interface.is_empty:
@@ -810,13 +816,13 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         if (processed := _postprocess_role_paths(role_paths, config))
     }
     travel_region = (
-        model if layer.support.is_empty else layer.support if model.is_empty
-        else unary_union([model, layer.support])
+        model if support_footprint.is_empty else support_footprint if model.is_empty
+        else unary_union([model, support_footprint])
     )
     support_roles = {"SUPPORT", "SUPPORT_INTERFACE"}
     model_paths = {role: items for role, items in paths.items() if role not in support_roles}
     support_paths = {role: items for role, items in paths.items() if role in support_roles}
-    islands = _island_path_groups(model_paths, model) + _island_path_groups(support_paths, layer.support)
+    islands = _island_path_groups(model_paths, model) + _island_path_groups(support_paths, support_footprint)
     # Slicing/intersection geometry remains at the slab midpoint. Nozzle Z
     # must be at its OUTER deposited surface, not at the sampled midpoint.
     return LayerToolpaths(layer_index=layer.index, radius=radius, paths_by_role=paths,
@@ -936,8 +942,10 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
             top_surfaces=empty,
             bottom_surfaces=empty,
             needs_support=empty,
-            support=(raft_footprint if i < config.raft_layers
-                     else merge_support_body(footprint, radius, config)),
+            support=segment_support_wedges(
+                raft_footprint if i < config.raft_layers
+                else merge_support_body(footprint, radius, config), radius, config,
+            ),
             theta_window=first_model.theta_window,
             is_full_wrap=first_model.is_full_wrap,
             is_raft=i < config.raft_layers,

@@ -643,6 +643,34 @@ branches; it does not make the sparse support fill fully dense. Model/lateral
 clearance and pending radial contact gaps are removed after merging. Dense
 interface pads and their independent contact heights keep their original masks.
 
+### Separate breakaway support wedges (experimental opt-in)
+
+`--support-wedge-count 12` divides a full turn into twelve 30-degree support
+sectors, with radial release slots running through the support body, dense
+interface and raft. A partial footprint prints only the sectors it intersects.
+This lets support sections be removed individually instead of forming a shared
+cylindrical cage. Model geometry is unchanged.
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli cubeandring2.stl \
+  --support-wedge-count 12 --support-wedge-gap-mm 0.8 \
+  --out cubeandring2.wedges12.gcode
+```
+
+`--support-wedge-gap-mm` is the air gap between deposited bead edges at the
+build-cylinder radius (default 0.8 mm). Slot angles stay fixed, so gaps widen
+at larger radii. Centerlines are set back by another half bead width on each
+side. `--support-wedge-phase-deg` sets one boundary's angle (default 0 degrees);
+the same boundaries apply to every layer, including across the rotary seam.
+Support/raft merging happens before cutting the slots, and neither cross-ties
+nor interface passes reconnect them. Travel containment sees the slots and
+keeps normal retraction/Z-hop fallback for crossings.
+
+The default count is `0` (disabled) in every profile. This is experimental:
+cutting support and raft changes their strength, adhesion and underside bearing.
+Check a small removal coupon before a full print. It does not add an opening
+to the model itself; `cubeandring2.scad` retains its intentional slit.
+
 Extrusion is derived from the selected bead cross-section and filament area.
 For the rounded default: `((w-h)*h + pi*h*h/4) /
 (pi*(filament_diameter/2)^2)` filament-mm per toolpath-mm. The default

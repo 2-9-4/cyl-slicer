@@ -54,6 +54,9 @@ class SlicerConfig:
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
     support_merge_gap: float = 2.0  # Physical-mm closing of the combined support body.
+    support_wedge_count: int = 0  # Opt-in separate angular sectors; 0 disables.
+    support_wedge_gap_mm: float = 0.8  # Bead-edge gap at the build cylinder.
+    support_wedge_phase_deg: float = 0.0  # Fixed boundary phase on every layer.
     support_gap_layers: int = 1
     support_contact_gap_mm: float | None = None
     support_lateral_gap_mm: float = 0.0
@@ -289,6 +292,19 @@ class SlicerConfig:
             raise ValueError("support_bearing_min_area must be non-negative")
         if not math.isfinite(self.support_merge_gap) or self.support_merge_gap < 0:
             raise ValueError("support_merge_gap must be finite and non-negative")
+        if (type(self.support_wedge_count) is not int
+                or (self.support_wedge_count != 0 and not 2 <= self.support_wedge_count <= 360)):
+            raise ValueError("support_wedge_count must be 0 (disabled) or an integer in [2, 360]")
+        if not math.isfinite(self.support_wedge_gap_mm) or self.support_wedge_gap_mm <= 0:
+            raise ValueError("support_wedge_gap_mm must be finite and positive")
+        if not math.isfinite(self.support_wedge_phase_deg):
+            raise ValueError("support_wedge_phase_deg must be finite")
+        if self.support_wedge_count and (not math.isfinite(self.bed_radius) or self.bed_radius <= 0):
+            raise ValueError("support_wedge_count requires a finite positive bed_radius")
+        if (self.support_wedge_count
+                and 2 * math.pi * self.bed_radius / self.support_wedge_count
+                <= self.support_wedge_gap_mm + self.nozzle_width):
+            raise ValueError("support_wedge_count leaves less than one bead width between wedge gaps")
         if self.support_gap_layers < 0:
             raise ValueError("support_gap_layers must be non-negative")
         if self.support_contact_gap_mm is not None and (

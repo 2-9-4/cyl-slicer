@@ -265,6 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--support-contact-gap-mm", type=float, default=None,
                         help="Physical radial contact clearance mm, overrides --support-gap-layers.")
+    parser.add_argument("--support-wedge-count", type=int, default=None,
+                        help="Experimental separate support wedges around a full turn (2..360; 0 disables). Cuts body, interface and raft.")
+    parser.add_argument("--support-wedge-gap-mm", type=float, default=None,
+                        help="Air gap between deposited wedge edges at the build cylinder; widens outward (default 0.8 mm).")
+    parser.add_argument("--support-wedge-phase-deg", type=float, default=None,
+                        help="Fixed angular phase of a wedge boundary (default 0 degrees).")
     parser.add_argument("--support-lateral-gap-mm", type=float, default=None,
                         help="Physical same-layer model/support clearance in R*theta/axial mm.")
     parser.add_argument(
@@ -462,6 +468,9 @@ def main(argv: list[str] | None = None) -> int:
         support_min_region_area=_profile_value(args, "support_min_region_area"),
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),
         support_merge_gap=_profile_value(args, "support_merge_gap"),
+        support_wedge_count=_profile_value(args, "support_wedge_count"),
+        support_wedge_gap_mm=_profile_value(args, "support_wedge_gap_mm"),
+        support_wedge_phase_deg=_profile_value(args, "support_wedge_phase_deg"),
         support_gap_layers=_profile_value(args, "support_gap_layers"),
         support_contact_gap_mm=_profile_value(args, "support_contact_gap_mm"),
         support_lateral_gap_mm=_profile_value(args, "support_lateral_gap_mm"),

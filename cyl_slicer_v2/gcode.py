@@ -1420,6 +1420,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         out.append(f";SLOW_START_TRAVEL_FEED_MM_MIN:{config.slow_start_travel_feed_mm_per_min:g}")
     if config.one_direction_first_layers > 0:
         out.append(f";ONE_DIRECTION_FIRST_LAYERS:{config.one_direction_first_layers}")
+    if config.support_wedge_count:
+        out.append(f";SUPPORT_WEDGE_COUNT:{config.support_wedge_count}")
+        out.append(f";SUPPORT_WEDGE_GAP_MM:{config.support_wedge_gap_mm:g}")
+        out.append(f";SUPPORT_WEDGE_PHASE_DEG:{config.support_wedge_phase_deg:g}")
     acceleration = []
     if config.print_accel > 0:
         acceleration.append(f"P{config.print_accel:g}")

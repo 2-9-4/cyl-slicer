@@ -263,6 +263,32 @@ def merge_support_body(geom, radius: float, config: SlicerConfig):
     return _safe_union([source, merged])
 
 
+def segment_support_wedges(geom, radius: float, config: SlicerConfig, *, bead_clearance: bool = False):
+    """Cut fixed radial release slots, after any support/raft merging.
+
+    Gap angle is fixed at the bed, so slots widen outwards and cannot be
+    capped by a different radial layer. Toolpath centerlines need another
+    half-bead setback on each side to keep actual filament outside the slots.
+    Work in the input's theta window, including both sides of periodic cuts.
+    """
+    if geom is None or geom.is_empty:
+        return GeometryCollection()
+    if not config.support_wedge_count:
+        return geom
+    pitch = TWO_PI / config.support_wedge_count
+    phase = math.radians(config.support_wedge_phase_deg) % pitch
+    half_gap = config.support_wedge_gap_mm / (2 * config.bed_radius)
+    if bead_clearance:
+        half_gap += config.nozzle_width / (2 * radius)
+    lo, axial_lo, hi, axial_hi = geom.bounds
+    first = math.floor((lo - half_gap - phase) / pitch)
+    last = math.ceil((hi + half_gap - phase) / pitch)
+    slots = [box(phase + i * pitch - half_gap, axial_lo - 1,
+                 phase + i * pitch + half_gap, axial_hi + 1)
+             for i in range(first, last + 1)]
+    return _safe_difference(geom, _safe_union(slots))
+
+
 def _support_interface_regions(geom, radius: float, config: SlicerConfig):
     return _metric_region_filter(
         geom,
@@ -401,6 +427,8 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
             exclusions,
         )
         layer.support_interface = _safe_difference(_safe_union(interface_pieces), exclusions)
+        layer.support = segment_support_wedges(layer.support, layer.radius, config)
+        layer.support_interface = segment_support_wedges(layer.support_interface, layer.radius, config)
         layer.support_interface_direction = interface_direction
 
         if not layer.needs_support.is_empty:
