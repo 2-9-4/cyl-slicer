@@ -16,7 +16,7 @@ import trimesh
 from .config import SlicerConfig
 from .coordinates import TWO_PI
 from .mesh_io import axial_bounds
-from .periodic import normalize_periodic
+from .periodic import fold_to_canonical, normalize_periodic
 
 _WORKER_MESH: trimesh.Trimesh | None = None
 _WORKER_CONFIG: SlicerConfig | None = None
@@ -627,7 +627,10 @@ def _sample_intersection_layer_once(
         if not polygons:
             return GeometryCollection(), (0.0, 2.0 * np.pi), False
 
-        geom = unary_union(polygons)
+        # A closed ribbon can wind through arbitrarily many turns in this
+        # unwrapped frame. Fold every turn before normalization, whose local
+        # periodic copies only cover one neighboring turn on either side.
+        geom = fold_to_canonical(unary_union(polygons), clip_z_min, clip_z_max)
     else:
         central_frame = box(0.0, z_min, period, z_max)
         expanded_frame = box(-period, z_min, 2.0 * period, z_max)

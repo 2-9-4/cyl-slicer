@@ -21,14 +21,15 @@ module subdivided_cube(size=1, center=false, dim=5) {
     }
 }
 $fn=360;
+ch = 15;
 difference(){
 union(){
     for(i = [0:10:360]){
     rotate([0,0,i])translate([30+25,0,0])rotate([0.2*i,0.2*i,45])subdivided_cube(10    ,center=true);
     }
-    translate([0,0,-10])
+    translate([0,0,-ch/2])
     difference(){
-        cylinder(r=55,h=20);
+        cylinder(r=55,h=ch);
         translate([0,0,-1]) cylinder(r=45,h=50);
     }
 }

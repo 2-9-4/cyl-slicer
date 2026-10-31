@@ -642,8 +642,15 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
     radius = layer.radius
 
     if not model.is_empty:
-        periodic = layer.is_full_wrap
         theta_window = layer.theta_window
+        # Slanted ribbons can cross the cut without occupying a full angular
+        # band at any axial height. Their window still identifies periodic
+        # neighbors; inset those together so the cut cannot open a bead gap.
+        periodic = layer.is_full_wrap or (
+            _is_full_theta_window(theta_window)
+            and model.bounds[0] <= theta_window[0] + 1e-8
+            and model.bounds[2] >= theta_window[1] - 1e-8
+        )
         # Contours are occupied MATERIAL boundaries, not bead CENTERLINES.
         # First wall centers sit half a bead inside outer edges and holes.
         # Remaining walls use the same spacing as dense lines; for a rounded
