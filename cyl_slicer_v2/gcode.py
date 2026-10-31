@@ -1302,10 +1302,10 @@ def emit_toolpath(
             path.segment_widths[index] if path.segment_widths is not None else None, config
         )
         previous_e = state.extrusion
-        state.extrusion += dist * config.extrusion_per_mm * role_flow * width_ratio
-        segment_feed = _flow_limited_feed(
-            role_feed * ramp_factor, config.extrusion_per_mm * role_flow * width_ratio, config
-        )
+        deposited_per_mm = (config.extrusion_per_mm * (config.flow_percent / 100.0)
+                            * role_flow * width_ratio)
+        state.extrusion += dist * deposited_per_mm
+        segment_feed = _flow_limited_feed(role_feed * ramp_factor, deposited_per_mm, config)
         planner_feed = _surface_feed_for_marlin(
             x - state.axial, t - state.theta_accum, path.radius, segment_feed
         )
@@ -1378,7 +1378,7 @@ def _cooling_feed_for_target(
         for (role, width_ratio), length in lengths.items():
             role_feed, role_flow = _role_print_settings(role, trial)
             limited = _flow_limited_feed(
-                role_feed, trial.extrusion_per_mm * role_flow * width_ratio, trial
+                role_feed, trial.extrusion_per_mm * (trial.flow_percent / 100.0) * role_flow * width_ratio, trial
             )
             seconds += length * 60.0 / limited
         return seconds
@@ -1453,6 +1453,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         ";start of slice",
         ";MARLIN_REQUIRES:POWER_LOSS_RECOVERY (G92.9 native Y reset)",
         f";LAYER_HEIGHT:{config.layer_height}",
+        f";FLOW_PERCENT:{config.flow_percent:g}",
         f";LINE_WIDTH:{config.nozzle_width}",
         f";MATERIAL_PROFILE:{config.material_profile}",
         f";LINEAR_ADVANCE:{('Marlin M900 K' + f'{config.linear_advance_k:g}') if config.linear_advance_k is not None else 'disabled'}",

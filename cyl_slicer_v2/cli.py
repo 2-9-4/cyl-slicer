@@ -159,6 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Physical print speed ceiling in mm/min during slow start (default 1200 = 20 mm/s).")
     parser.add_argument("--slow-start-travel-feed", type=float, default=None,
                         help="Physical travel speed ceiling in mm/min during slow start (default 4800 = 80 mm/s).")
+    parser.add_argument("--flow-percent", type=float, default=None,
+                        help="Global extrusion flow percentage (default: 100; e.g. 98 for 0.98).")
     parser.add_argument("--max-volumetric-flow", dest="max_volumetric_flow_mm3_s", type=float, default=None,
                         help="Maximum deposited filament flow in mm³/s; caps speed, preserving E (0 disables).")
     parser.add_argument("--print-accel", type=float, default=None,
@@ -428,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         slow_start_print_feed_mm_per_min=_profile_value(args, "slow_start_print_feed_mm_per_min"),
         slow_start_travel_feed_mm_per_min=_profile_value(args, "slow_start_travel_feed_mm_per_min"),
         max_volumetric_flow_mm3_s=_profile_value(args, "max_volumetric_flow_mm3_s"),
+        flow_percent=_profile_value(args, "flow_percent"),
         print_accel=_profile_value(args, "print_accel"),
         travel_accel=_profile_value(args, "travel_accel"),
         material_profile=_profile_value(args, "material_profile"),

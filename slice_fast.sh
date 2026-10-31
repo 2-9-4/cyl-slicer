@@ -12,6 +12,7 @@ profile=(
     # Coarser layers, ~0.9 mm walls and 0.84 mm top/bottom shells.
     --layer-height 0.12
     --first-layer-height 0.28
+    --flow-percent 0.98
     --line-width 0.48
     --nozzle-diameter 0.4
     --bead-model rounded

@@ -95,6 +95,7 @@ class SlicerConfig:
     extrusion_feed_ramp_start_fraction: float = 0.65
     travel_mm_per_min: float = 9000.0
     extrusion_per_mm: float | None = None
+    flow_percent: float = 100.0  # Global deposited-filament multiplier; excludes retraction.
     retraction_sweep: CalibrationSweep | None = None  # Historical name; all calibration modes.
     retract_speed_mm_per_min: float = 1200.0
     retract_mm: float = 1.4
@@ -215,6 +216,8 @@ class SlicerConfig:
             raise ValueError("rounded bead requires layer_height <= line width")
         if self.filament_diameter <= 0:
             raise ValueError("filament_diameter must be positive")
+        if not math.isfinite(self.flow_percent) or self.flow_percent <= 0:
+            raise ValueError("flow_percent must be finite and positive")
         if self.extrusion_per_mm is None or not math.isfinite(self.extrusion_per_mm) or self.extrusion_per_mm <= 0:
             raise ValueError("extrusion_per_mm must be finite and positive")
         if self.wall_count < 1:

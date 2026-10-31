@@ -211,6 +211,13 @@ If increasing layer height beyond 0.28 mm, also raise
 `--gap-fill-min-width-mm` to at least that height. Gap-fill width must stay
 between the layer height and the selected line width.
 
+## Flow percentage
+
+Use `--flow-percent 98` for a 0.98 extrusion multiplier. The default is
+100. This scales deposited filament for all roles, including support and
+bridges, in addition to any role-specific flow ratios; it does not change
+retraction distances or path geometry.
+
 ## First layer height
 
 Use `--first-layer-height 0.2` to set the first radial slab thickness in mm.
