@@ -60,6 +60,7 @@ profile=(
     --slow-start-print-feed 1200   
     --slow-start-travel-feed 4800 
     --one-direction-first-layers 1
+    --support-wedge-count 12
 )
 
 # Keep input/output paths relative to the caller, even when invoked elsewhere.
