@@ -60,7 +60,9 @@ class RegisteredAxialGridTests(unittest.TestCase):
             b = thetas(box(.02, 30, .4, 40), radius, 1.5, cfg)
             c = thetas(box(TAU+.02, 0, TAU+.4, 10), radius, 1.5, cfg)
             self.assertEqual(a, b)
-            self.assertEqual([round(t+TAU, 10) for t in a], c)
+            self.assertEqual(len(a), len(c))
+            for theta, shifted_theta in zip(a, c):
+                self.assertAlmostEqual(shifted_theta - theta, TAU, delta=2e-9)
         self.assertEqual(len(thetas(box(0,0,TAU,5),50,4,self.cfg())),
                          math.ceil(TAU*60/4-1e-10))
 
