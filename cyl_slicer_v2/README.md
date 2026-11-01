@@ -620,6 +620,51 @@ before using non-default contact gaps. Fully adaptive radial sampling, variable-
 bottom-interface patterns and printed underside contact validation remain
 separate engineering tasks.
 
+## Stable axial infill/support tracks across radial layers (issue #59)
+
+On a cylindrical printer, constant physical mm spacing for X-directed
+(axial) lines currently produces a new angular pitch at every printed
+radius, moving the previous layer's tracks. Three modes are available:
+
+- `--axial-grid-mode per-layer` (**default/legacy**): recalculate physical
+  spacing independently on each radius; existing files and printing behavior
+  are unchanged.
+- `--axial-grid-mode fixed-outer`: use a single periodic 0..2π angular
+  lattice chosen so circumferential spacing at the **outermost physical
+  deposited radius** does not exceed the configured spacing. Every smaller
+  layer retains exactly those angular tracks, making the bottom denser.
+- `--axial-grid-mode nested`: use that same global angular lattice, but
+  select power-of-two subsets on smaller radii. New tracks appear at
+  deterministic halfway angular positions as circumference grows; existing
+  tracks stay registered. The maximum angular gap at a given radius is
+  bounded by the role's requested mm spacing. **This inserts new tracks,
+  not connected Y-shaped extrusion branches.** Physical support at line
+  onset still needs testing.
+
+`build_toolpaths()` automatically derives one outer reference radius
+from the entire job (including actual variable-height slab outer faces)
+before parallel workers start. Standalone `build_layer_toolpaths()` must
+instead receive `axial_grid_outer_radius_mm` explicitly. To force the
+same registration across independently sliced chunks, pass
+`--axial-grid-outer-radius-mm 60` (using your actual target physical
+radius), optionally `--axial-grid-phase-deg 0`. Example:
+
+```bash
+./slice_fast.sh model.stl --axial-grid-mode nested
+./slice_fast.sh model.stl --axial-grid-mode fixed-outer --axial-grid-outer-radius-mm 60
+```
+
+Registration applies to axial sparse fill, axial solid skin, support-cross
+ties, axial raft and dense support interfaces, with **independent role
+spacing**. Rotary-direction passes are unchanged. The global lattice is
+clipped to each connected occupied region and aligned at the periodic
+0/2π seam; it does not recenter on small islands. Fixed-outer on a
+large radial span can **overlap beads and overextrude** near the build
+cylinder, especially dense solid skin/support interfaces. Nested reduces
+that over-density but its new line starts can need mechanical support.
+Both modes remain opt-in pending real printed coupons; neither changes
+nominal bead width/flow per emitted path.
+
 ## Cooling per connected island (quality default)
 
 The 8-second **layer** print-time target remains enabled. To avoid a tiny

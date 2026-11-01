@@ -401,18 +401,65 @@ def inset_geometry(
     return raw
 
 
-def line_grid_lines(geom, radius: float, spacing: float, *, direction: str) -> list[LineString]:
+def _registered_axial_grid(radius: float, spacing: float, config: SlicerConfig) -> tuple[float, float, int, int]:
+    """Periodic angular pitch, phase, ring count and nested child stride.
+
+    The pitch and phase are fixed across radial slabs. In nested mode a
+    power-of-two subset of that same lattice is active on smaller radii;
+    pre-existing tracks never move when children become eligible.
+    """
+    outer = config.axial_grid_outer_radius_mm
+    if outer is None:
+        raise ValueError("Registered axial grid requires an outer radius; "
+                         "use build_toolpaths() or set axial_grid_outer_radius_mm")
+    if radius > outer + 1e-7:
+        raise ValueError("axial_grid_outer_radius_mm must include all printed radii")
+    count = max(1, math.ceil(TWO_PI * outer / spacing - 1e-10))
+    step = TWO_PI / count
+    stride = 1
+    if config.axial_grid_mode == "nested":
+        # Adjacent live tracks remain at most spacing mm apart on this
+        # layer. On larger radii deterministic midpoints are introduced.
+        while stride * 2 < count and step * radius * (stride * 2) <= spacing + 1e-10:
+            stride *= 2
+    return step, math.radians(config.axial_grid_phase_deg), count, stride
+
+
+def line_grid_lines(geom, radius: float, spacing: float, *, direction: str,
+                    config: SlicerConfig | None = None) -> list[LineString]:
     if geom.is_empty:
         return []
     theta_min, z_min, theta_max, z_max = geom.bounds
     lines = []
     if direction == "axial":
-        step = spacing / radius
-        start = math.floor(theta_min / step) * step
-        theta = start
-        while theta <= theta_max + step * 0.5:
-            lines.append(LineString([(theta, z_min - spacing), (theta, z_max + spacing)]))
-            theta += step
+        if config is not None and config.axial_grid_mode != "per-layer":
+            step, phase, count, stride = _registered_axial_grid(radius, spacing, config)
+            # Integer lattice indices avoid cumulative floating-point
+            # phase drift or global realignment when island bounds change.
+            first = math.ceil((theta_min - phase) / step - 1e-10)
+            last = math.floor((theta_max - phase) / step + 1e-10)
+            lower_is_grid = abs((theta_min-phase)/step - round((theta_min-phase)/step)) < 1e-9
+            for k in range(first, last + 1):
+                # The parent/child subset must repeat every *N* ring
+                # tracks. N need not be divisible by stride, so k % stride
+                # alone would shift the nested grid by one at the 0/2pi seam.
+                if (k % count) % stride != 0:
+                    continue
+                theta = phase + k * step
+                # A complete 2pi closed strip has one physical seam line,
+                # not two extrusion passes at its two cut coordinates.
+                if (theta_max-theta_min >= TWO_PI - 1e-9
+                        and lower_is_grid and abs(theta-theta_max) < 1e-9):
+                    continue
+                lines.append(LineString([(theta, z_min-spacing), (theta, z_max+spacing)]))
+        else:
+            # Exact historical behavior for quality and legacy profiles.
+            step = spacing / radius
+            start = math.floor(theta_min / step) * step
+            theta = start
+            while theta <= theta_max + step * 0.5:
+                lines.append(LineString([(theta, z_min-spacing), (theta, z_max+spacing)]))
+                theta += step
     elif direction == "radial":
         start = math.floor(z_min / spacing) * spacing
         z = start
@@ -436,7 +483,7 @@ def line_grid_lines(geom, radius: float, spacing: float, *, direction: str) -> l
 def line_grid_paths(geom, role: str, radius: float, spacing: float, config: SlicerConfig,
                     *, direction: str, theta_window=None) -> list[Toolpath]:
     result = []
-    for line in line_grid_lines(geom, radius, spacing, direction=direction):
+    for line in line_grid_lines(geom, radius, spacing, direction=direction, config=config):
         pts = [(float(t), float(z)) for t, z in line.coords]
         # A tiny clipped end may belong to a long printable pass across the
         # seam. Apply the whole-feature length limit after periodic joining.
@@ -1105,6 +1152,14 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
 
 def build_toolpaths(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerToolpaths]:
     all_layers = [*gap_support_slices(layers, config), *layers]
+    if config.axial_grid_mode != "per-layer" and config.axial_grid_outer_radius_mm is None and all_layers:
+        # One radius shared by all workers, model islands, support, and raft.
+        # Use the physical deposited outer face, not a local model/island
+        # bounding box or the sample radius of a truncated worker batch.
+        outer = max(layer.radius + 0.5 * (
+            layer.deposited_thickness if layer.deposited_thickness is not None
+            else config.layer_height) for layer in all_layers)
+        config = replace(config, axial_grid_outer_radius_mm=outer)
     worker_count = min(config.toolpath_workers, len(all_layers))
     if worker_count <= 1:
         return [build_layer_toolpaths(layer, config) for layer in all_layers]
