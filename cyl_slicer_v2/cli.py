@@ -122,6 +122,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-layers", type=int, default=None, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=None, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=None)
+    parser.add_argument("--axial-grid-mode", choices=("per-layer", "fixed-outer", "nested"),
+                        default=None, help="Registration of fixed-theta infill/support tracks across radial layers. "
+                                           "fixed-outer keeps all lines; nested adds dyadic children on larger radii.")
+    parser.add_argument("--axial-grid-outer-radius-mm", type=float, default=None,
+                        help="Physical outer grid reference radius in mm; inferred from full job when omitted.")
+    parser.add_argument("--axial-grid-phase-deg", type=float, default=None,
+                        help="Fixed angular grid phase in degrees for fixed-outer/nested modes.")
     parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default=None,
                         help="Legacy crosshatched grid on every layer or one alternating grid axis per layer.")
     parser.add_argument("--solid-infill-pattern", choices=("axial", "alternate"), default=None,
@@ -420,6 +427,9 @@ def main(argv: list[str] | None = None) -> int:
         top_layers=_profile_value(args, "top_layers"),
         bottom_layers=_profile_value(args, "bottom_layers"),
         infill_spacing=_profile_value(args, "infill_spacing"),
+        axial_grid_mode=_profile_value(args, "axial_grid_mode"),
+        axial_grid_outer_radius_mm=_profile_value(args, "axial_grid_outer_radius_mm"),
+        axial_grid_phase_deg=_profile_value(args, "axial_grid_phase_deg"),
         sparse_infill_pattern=_profile_value(args, "sparse_infill_pattern"),
         solid_infill_pattern=_profile_value(args, "solid_infill_pattern"),
         monotonic_top_skin=_profile_value(args, "monotonic_top_skin"),

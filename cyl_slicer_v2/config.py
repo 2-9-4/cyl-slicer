@@ -29,6 +29,11 @@ class SlicerConfig:
     top_layers: int = 5
     bottom_layers: int = 5
     infill_spacing: float = 1.5
+    # Axial (fixed-theta) grids: legacy per-layer, fixed outer density, or
+    # nested dyadic track insertion with fixed angular registration.
+    axial_grid_mode: str = "per-layer"  # per-layer | fixed-outer | nested
+    axial_grid_outer_radius_mm: float | None = None  # Inferred by build_toolpaths.
+    axial_grid_phase_deg: float = 0.0
     sparse_infill_pattern: str = "alternate"  # optional alternating single-grid layer.
     solid_infill_pattern: str = "alternate"  # optional alternating exposed fill angle.
     monotonic_top_skin: bool = False  # Opt-in one-way top passes; default fill meanders.
@@ -253,6 +258,14 @@ class SlicerConfig:
             raise ValueError("bottom_layers must be at least 1")
         if self.infill_spacing <= 0:
             raise ValueError("infill_spacing must be positive")
+        if self.axial_grid_mode not in {"per-layer", "fixed-outer", "nested"}:
+            raise ValueError("axial_grid_mode must be per-layer, fixed-outer or nested")
+        if (self.axial_grid_outer_radius_mm is not None
+                and (not math.isfinite(self.axial_grid_outer_radius_mm)
+                     or self.axial_grid_outer_radius_mm <= 0)):
+            raise ValueError("axial_grid_outer_radius_mm must be finite and positive")
+        if not math.isfinite(self.axial_grid_phase_deg) or not 0 <= self.axial_grid_phase_deg < 360:
+            raise ValueError("axial_grid_phase_deg must be in [0, 360)")
         if self.sparse_infill_pattern not in {"both", "alternate"}:
             raise ValueError("sparse_infill_pattern must be 'both' or 'alternate'")
         if (self.sparse_infill_pattern == "alternate"

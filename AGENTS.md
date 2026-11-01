@@ -4,6 +4,11 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Registered axial infill grids must use one 2π-periodic angular phase/step
+  across radial layers and clipped islands. Fixed-outer preserves all tracks
+  (can overfill small radii); nested dyadic insertion must preserve parent
+  angular positions and never silently claim actual connected branching.
+  Keep it opt-in until printed density/support coupons validate the behavior.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
 - For cooling, estimate each island's deposited path lengths in physical
   theta*radius/axial mm and respect role-specific maximum speeds and the
