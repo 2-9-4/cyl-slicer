@@ -202,7 +202,7 @@ class SeamPolicyTests(unittest.TestCase):
             import re
             moves=[line for line in emitted if line.startswith("G1 X") and " E" in line]
             self.assertTrue(moves)
-            final_e=float(re.search(r"\\bE(-?\\d+(?:\\.\\d+)?)",moves[-1]).group(1))
+            final_e=float(re.search(r"\bE(-?\d+(?:\.\d+)?)",moves[-1]).group(1))
             self.assertAlmostEqual(final_e,expected,delta=2e-4)
 
     def test_axial_options_have_profile_parity_and_bad_values_rejected(self):
