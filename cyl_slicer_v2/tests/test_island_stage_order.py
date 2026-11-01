@@ -162,6 +162,16 @@ class IslandStageOrderTests(unittest.TestCase):
         self.assertEqual(len([l for l in regular.splitlines()
                               if l.startswith(";TYPE:")]), 2)
 
+    def test_print_order_and_old_island_flag_are_identical(self):
+        parser = build_parser()
+        for flag in ("--print-order", "--island-print-order"):
+            for profile in ("quality", "legacy-cli", "library"):
+                with self.subTest(flag=flag, profile=profile):
+                    args = parser.parse_args(
+                        ["--profile", profile, flag, "infill,outer,inner"])
+                    self.assertEqual(_profile_value(args, "island_print_order"),
+                                     ("infill", "outer", "inner"))
+
     def test_cli_profiles_and_invalid_orders(self):
         for profile in ("quality", "legacy-cli", "library"):
             args = build_parser().parse_args(["--profile", profile])
