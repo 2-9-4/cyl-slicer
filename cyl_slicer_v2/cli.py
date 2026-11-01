@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import time
@@ -77,6 +78,34 @@ def _profile_value(args, key: str):
     if args.profile == "legacy-cli" and key in CLI_PROFILE_OVERRIDES:
         return CLI_PROFILE_OVERRIDES[key]
     return getattr(SlicerConfig(), key)
+
+
+_ADVANCE_MATERIALS = frozenset(("unprofiled", "pla", "petg", "abs", "tpu"))
+
+
+def _selected_material_advance_k(args, parser: argparse.ArgumentParser) -> float | None:
+    """Parse user-calibrated K values without assuming values from material names.
+
+    A list of several material calibrations may travel with a project; only
+    the one matching the explicitly chosen material is emitted to firmware.
+    """
+    mapping = {}
+    for text in args.linear_advance_material_k or []:
+        if "=" not in text:
+            parser.error("--linear-advance-material-k requires material=K (e.g. pla=0.05)")
+        material, number = text.split("=", 1)
+        if material not in _ADVANCE_MATERIALS:
+            parser.error(f"unknown linear-advance material {material!r}")
+        if material in mapping:
+            parser.error(f"duplicate linear-advance material {material!r}")
+        try:
+            k = float(number)
+        except ValueError:
+            parser.error(f"invalid linear-advance K {number!r} for {material}")
+        if not math.isfinite(k) or not 0 <= k <= 10:
+            parser.error(f"linear-advance K for {material} must be finite and in [0, 10]")
+        mapping[material] = k
+    return mapping.get(_profile_value(args, "material_profile"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,7 +186,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--marlin-linear-advance", action="store_true",
                         help="Explicitly declare flashed firmware supports Marlin LIN_ADVANCE M900.")
     parser.add_argument("--linear-advance-k", type=float, default=None,
-                        help="Calibrated Marlin K, 0..10; requires --marlin-linear-advance.")
+                        help="Calibrated Marlin K, 0..10; requires --marlin-linear-advance. Overrides a material-specific K.")
+    parser.add_argument("--linear-advance-material-k", action="append", default=None,
+                        metavar="MATERIAL=K",
+                        help="User-calibrated material-specific Marlin K (repeat per material). "
+                             "Only the selected --material-profile K is used; requires verified firmware support.")
     parser.add_argument("--extrusion-feed-ramp-mm", type=float, default=None,
                         help="Optional physical-mm path-start commanded feed ramp (default disabled).")
     parser.add_argument("--extrusion-feed-ramp-start-fraction", type=float, default=None,
@@ -387,9 +420,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     sweep = sweep_from_args(args, parser)
+    material_k = _selected_material_advance_k(args, parser)
+    if (material_k is not None and args.linear_advance_k is None
+            and not args.marlin_linear_advance):
+        parser.error("selected material linear-advance K requires --marlin-linear-advance "
+                     "and verified flashed firmware M900 support")
     if sweep is not None and sweep.parameter == "linear-advance-k" and not args.marlin_linear_advance:
         parser.error("linear-advance-k calibration requires --marlin-linear-advance "
                      "and verified flashed firmware M900 support")
+
+    # A calibration sweep starts at explicit K0 unless the user deliberately
+    # supplied a base. Ordinary named material profiles never invent K values.
+    selected_k = (args.linear_advance_k if args.linear_advance_k is not None
+                  else 0.0 if sweep is not None and sweep.parameter == "linear-advance-k"
+                  else material_k)
 
     timings: list[tuple[str, float]] = []
 
@@ -457,13 +501,12 @@ def main(argv: list[str] | None = None) -> int:
         material_profile=_profile_value(args, "material_profile"),
         # For a K sweep, a known no-advance base (K0) is explicitly set.
         # Every M900 remains gated by the verified firmware capability flag.
-        linear_advance_k=(0.0 if sweep is not None
-                          and sweep.parameter == "linear-advance-k"
-                          and args.linear_advance_k is None
-                          else args.linear_advance_k),
+        linear_advance_k=selected_k,
         extrusion_feed_ramp_mm=_profile_value(args, "extrusion_feed_ramp_mm"),
         extrusion_feed_ramp_start_fraction=_profile_value(args, "extrusion_feed_ramp_start_fraction"),
-        linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance else None),
+        linear_advance_firmware=("marlin-m900" if args.marlin_linear_advance
+                                 and (selected_k is not None or not args.linear_advance_material_k)
+                                 else None),
         travel_mm_per_min=_profile_value(args, "travel_mm_per_min"),
         fan_speed=_profile_value(args, "fan_speed"),
         material_fan_policy=_profile_value(args, "material_fan_policy"),
