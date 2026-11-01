@@ -10,6 +10,11 @@
   angular positions and never silently claim actual connected branching.
   Keep it opt-in until printed density/support coupons validate the behavior.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
+- Opt-in bottom support interfaces must seed only from exposed model
+  outer radial faces with immediately adjacent support and propagate through
+  consecutive support slabs. Keep top and bottom interface deposition disjoint
+  and separate from sparse support; preserve wedges, periodic theta and role
+  speed/flow/fan defaults. Do not invent model-to-support physical gaps.
 - Cross-layer island cooling reordering must match islands by periodic
   physical position (not array indexes); avoid last-then-first consecutive
   visits only when an alternative exists. Preserve island-contiguous groups,

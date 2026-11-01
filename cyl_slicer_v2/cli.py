@@ -357,6 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Top support interface line spacing in mm; defaults to nozzle width.",
     )
+    parser.add_argument("--support-bottom-interface-layers", type=int, default=None,
+                        help="Optional dense support-base layers above existing model surfaces (default 0/off).")
+    parser.add_argument("--support-bottom-interface-spacing", type=float, default=None,
+                        help="Physical mm line spacing for bottom support interfaces; defaults to top-interface spacing.")
     parser.add_argument(
         "--support-meander-max-angle-deg",
         type=float,
@@ -564,6 +568,8 @@ def main(argv: list[str] | None = None) -> int:
         support_lateral_gap_mm=_profile_value(args, "support_lateral_gap_mm"),
         support_interface_layers=_profile_value(args, "support_interface_layers"),
         support_interface_spacing=_profile_value(args, "support_interface_spacing"),
+        support_bottom_interface_layers=_profile_value(args, "support_bottom_interface_layers"),
+        support_bottom_interface_spacing=_profile_value(args, "support_bottom_interface_spacing"),
         support_meander_max_angle_deg=args.support_meander_max_angle_deg,
         support_cross_spacing=args.support_cross_spacing,
         raft_layers=_profile_value(args, "raft_layers"),

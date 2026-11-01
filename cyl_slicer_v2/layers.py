@@ -458,6 +458,40 @@ def propagate_support(layers: list[LayerSlice], config: SlicerConfig) -> None:
         carry = _merge_support_carry(next_carry, layer.radius, config)
 
 
+def add_bottom_support_interfaces(layers: list[LayerSlice], config: SlicerConfig) -> None:
+    """Mark dense support bases directly above an exposed prior model surface.
+
+    This is *not* top-of-support contact under an overhang. It detects where
+    support starts on the model's OUTER radial face, then follows the actual
+    connected support footprint upward for N slabs, leaving neighboring
+    independent supports sparse. No radial gap is invented or removed.
+    """
+    count = config.support_bottom_interface_layers
+    if count <= 0:
+        return
+    for i in range(len(layers) - 1):
+        model = layers[i].occupied
+        if model.is_empty:
+            continue
+        # An occupied region continuing into the next slab is not an exposed
+        # contact surface; avoid seeding interfaces throughout thick solids.
+        next_model = _periodic_union(layers[i + 1].occupied)
+        exposed = _safe_difference(model, next_model)
+        if exposed.is_empty:
+            continue
+        footprint = _safe_intersection(layers[i + 1].support, _periodic_union(exposed))
+        if footprint.is_empty:
+            continue
+        for j in range(i + 1, min(len(layers), i + 1 + count)):
+            footprint = _safe_intersection(footprint, layers[j].support)
+            if footprint.is_empty:
+                break  # Never jump gaps to create a floating dense interface.
+            existing = layers[j].support_bottom_interface
+            layers[j].support_bottom_interface = _safe_union(
+                [footprint, existing]
+            )
+
+
 def _assign_printable_bridges(layers: list[LayerSlice], config: SlicerConfig) -> None:
     """Replace only confirmed two-ended short bridge support with bridge fills."""
     if config.bridge_mode != "print":
@@ -687,5 +721,6 @@ def slice_mesh(
     _assign_printable_bridges(layers, config)
     propagate_solid_surfaces(layers, config)
     propagate_support(layers, config)
+    add_bottom_support_interfaces(layers, config)
 
     return layers

@@ -26,6 +26,7 @@ ROLE_ORDER = [
     "SOLID_INFILL",
     "SUPPORT",
     "SUPPORT_INTERFACE",
+    "SUPPORT_BOTTOM_INTERFACE",
     "INFILL_RADIAL",
     "INFILL_AXIAL",
 ]
@@ -955,6 +956,34 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
                 )
             support = _safe_polygon_difference(support, interface)
 
+    # Top and bottom support contact masks can coexist on the same layer.
+    # Give the upper/overhang-facing interface precedence where they overlap;
+    # the two dense roles must never deposit twice in the same footprint.
+    bottom_source = (layer.support_bottom_interface if
+                     layer.support_bottom_interface is not None else GeometryCollection())
+    bottom = _clean_polygonal(bottom_source)
+    if not bottom.is_empty:
+        bottom = _clean_polygonal(bottom.intersection(support))
+        if not bottom.is_empty:
+            bottom_spacing = (config.support_bottom_interface_spacing
+                              or config.support_interface_spacing
+                              or config.dense_line_spacing)
+            bottom_direction = "axial" if layer.index % 2 == 0 else "radial"
+            if bottom_direction == "radial":
+                paths["SUPPORT_BOTTOM_INTERFACE"].extend(
+                    meandered_radial_grid_paths(
+                        bottom, "SUPPORT_BOTTOM_INTERFACE", radius,
+                        bottom_spacing, config,
+                    )
+                )
+            else:
+                paths["SUPPORT_BOTTOM_INTERFACE"].extend(
+                    line_grid_paths(bottom, "SUPPORT_BOTTOM_INTERFACE", radius,
+                                    bottom_spacing, config, direction="axial",
+                                    theta_window=layer.theta_window)
+                )
+            support = _safe_polygon_difference(support, bottom)
+
     if not support.is_empty:
         support_spacing = (config.raft_grid_spacing or config.dense_line_spacing) if layer.is_raft else config.support_spacing
         if layer.is_raft:
@@ -990,7 +1019,7 @@ def build_layer_toolpaths(layer: LayerSlice, config: SlicerConfig) -> LayerToolp
         model if support_footprint.is_empty else support_footprint if model.is_empty
         else unary_union([model, support_footprint])
     )
-    support_roles = {"SUPPORT", "SUPPORT_INTERFACE"}
+    support_roles = {"SUPPORT", "SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE"}
     model_paths = {role: items for role, items in paths.items() if role not in support_roles}
     support_paths = {role: items for role, items in paths.items() if role in support_roles}
     islands = _island_path_groups(model_paths, model) + _island_path_groups(support_paths, support_footprint)

@@ -25,6 +25,9 @@ class LayerSlice:
     deposited_thickness: float | None = None
     # Occupancy from the preceding radial layer, for opt-in wall diagnostics.
     previous_occupied: BaseGeometry | None = None
+    # Optional support-base interface directly above an existing model top
+    # surface (distinct from the top interface beneath an overhang).
+    support_bottom_interface: BaseGeometry | None = None
 
 
 @dataclass
