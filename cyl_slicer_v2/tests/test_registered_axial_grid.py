@@ -32,14 +32,13 @@ def slab(index, radius, model=None, support=None, interface=None):
 
 class RegisteredAxialGridTests(unittest.TestCase):
     def cfg(self, **kwargs):
-        return SlicerConfig(axial_grid_mode="fixed-outer",
+        return replace(SlicerConfig(axial_grid_mode="fixed-outer",
                             axial_grid_outer_radius_mm=60,
                             generate_gap_support=False,
                             wall_count=1, min_path_length=0,
                             support_merge_gap=0,
                             cooling_min_layer_time_s=0,
-                            cooling_min_island_print_time_s=0,
-                            **kwargs)
+                            cooling_min_island_print_time_s=0), **kwargs)
 
     def test_registered_full_wrap_has_exact_unique_lines_and_outer_pitch(self):
         geom = box(0, 0, TAU, 10)
