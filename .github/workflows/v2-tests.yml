@@ -21,7 +21,7 @@ jobs:
       - name: Install geometry and testing dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy>=1.26,<3" "scipy>=1.11" "shapely>=2.0,<3" "trimesh>=4.0" "rtree>=1.2" "mapbox-earcut>=1.0" "pytest>=8"
+          python -m pip install "numpy>=1.26,<3" "scipy>=1.11" "shapely>=2.0,<3" "trimesh>=4.0" "rtree>=1.2" "mapbox-earcut>=1.0" "pytest>=8" "pytest-xdist>=3" "pytest-timeout>=2"
       - name: Verify exact-radius tube and recovery guards
         run: |
           python -m unittest cyl_slicer_v2.tests.test_stage3_intersection_backend.IntersectionBackendTests.test_tube_intersection_layer_is_nonempty_and_full_wrap
@@ -40,5 +40,10 @@ jobs:
         run: python -m unittest cyl_slicer_v2.tests.test_extrusion_feed_ramp
       - name: Verify material fan policy and bridge restoration
         run: python -m unittest cyl_slicer_v2.tests.test_material_fan_policy
+      - name: Verify late-layer perimeter regression with pytest-xdist timeout
+        run: |
+          python -m pytest -q -n 2 --timeout=30 \
+            cyl_slicer_v2/tests/test_stage7_gcode.py::GcodeTests::test_cubeandring_layers_64_to_66_have_no_full_turn_perimeter_segments
+          python -m pytest -q -n 2 --timeout=30 cyl_slicer_v2/tests/test_safe_island_travel_router.py
       - name: Run full v2 unittest suite
         run: python -m unittest discover cyl_slicer_v2/tests
