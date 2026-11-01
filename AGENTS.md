@@ -15,6 +15,11 @@
   visits only when an alternative exists. Preserve island-contiguous groups,
   safe retract/travel, all deposited geometry/E and one-direction start layers.
   Never claim exact elapsed revisit times from print-only estimates.
+- Optional unsupported-wall feed limits must use the physical longest
+  unsupported perimeter run from the previous radial slab; never use theta
+  radians as millimeters or presume bearing on the first printed slab.
+  Apply a per-path feed ceiling without modifying filament E/width or
+  the bridge/support/fan policies. Leave unset until measured on hardware.
 - For cooling, estimate each island's deposited path lengths in physical
   theta*radius/axial mm and respect role-specific maximum speeds and the
   machine's configured minimum speed. Cooling timing estimates must be
