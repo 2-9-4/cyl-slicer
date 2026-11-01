@@ -165,13 +165,14 @@ class SeamPolicyTests(unittest.TestCase):
                 SlicerConfig(seam_exclude_axial_mm=(-1, 11)))
 
     def test_variable_width_seam_cut_and_vertex_preserve_all_extrusion(self):
+        from cyl_slicer_v2.config import SlicerConfig as QualitySlicerConfig
         from cyl_slicer_v2.gcode import _segment_width_ratio, emit_toolpath
         original = rect(theta_min=.1, theta_max=.9)
         original.segment_widths = [.22, .32, .42, .30]
-        cfg = SlicerConfig(retract_mm=0, seam_policy="aligned",
-                           seam_angle_deg=math.degrees(.1),
-                           seam_axial_target_mm=6.25,
-                           cooling_min_layer_time_s=0)
+        cfg = QualitySlicerConfig(retract_mm=0, seam_policy="aligned",
+                                  seam_angle_deg=math.degrees(.1),
+                                  seam_axial_target_mm=6.25,
+                                  cooling_min_layer_time_s=0)
         expected = sum(
             cylindrical_distance(a,b,original.radius) *
             cfg.extrusion_per_mm * _segment_width_ratio(w,cfg)
@@ -179,9 +180,9 @@ class SeamPolicyTests(unittest.TestCase):
         )
         for config,position in (
             (cfg,(.1,6.25)),
-            (SlicerConfig(retract_mm=0),(.9,0.0)),
-            (SlicerConfig(retract_mm=0,seam_policy="corner",
-                          seam_angle_deg=math.degrees(.9)),(.9,0.0)),
+            (QualitySlicerConfig(retract_mm=0),(.9,0.0)),
+            (QualitySlicerConfig(retract_mm=0,seam_policy="corner",
+                                 seam_angle_deg=math.degrees(.9)),(.9,0.0)),
         ):
             state=GcodeState(theta_accum=position[0],axial=position[1],
                              radial=original.radius+.08)
