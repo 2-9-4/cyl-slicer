@@ -142,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Cylinder angular phase target for aligned seams and corner tie-breaking.")
     parser.add_argument("--seam-exclude-deg", type=float, nargs=2, default=None, metavar=("START", "END"),
                         help="Exclude closed-loop starts in this angular window (wraps through zero if START>END).")
+    parser.add_argument("--seam-axial-target-mm", type=float, default=None,
+                        help="Optional physical X target: second priority after angle for aligned seams, "
+                             "after corner strength and angle for corner seams.")
+    parser.add_argument("--seam-exclude-axial-mm", type=float, nargs=2, default=None, metavar=("START", "END"),
+                        help="Exclude closed-loop seam starts in axial X half-open interval [START, END) mm.")
     parser.add_argument("--seam-end-ramp-mm", type=float, default=None,
                         help="Opt-in physical-mm feed reduction over the end of closed perimeter loops.")
     parser.add_argument("--seam-end-ramp-fraction", type=float, default=None,
@@ -484,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
         seam_policy=args.seam_policy,
         seam_angle_deg=args.seam_angle_deg,
         seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),
+        seam_axial_target_mm=_profile_value(args, "seam_axial_target_mm"),
+        seam_exclude_axial_mm=(tuple(args.seam_exclude_axial_mm)
+                               if args.seam_exclude_axial_mm is not None else None),
         seam_end_ramp_mm=_profile_value(args, "seam_end_ramp_mm"),
         seam_end_ramp_fraction=_profile_value(args, "seam_end_ramp_fraction"),
         wall_support_report=_profile_value(args, "wall_support_report"),

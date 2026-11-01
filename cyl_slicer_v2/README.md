@@ -425,12 +425,32 @@ the sharpest actual polygon corner, with the target angle and travel distance
 as tie-breakers. These policies are especially useful for stacking starts over
 successive layers or hiding them at corners.
 
+Use `--seam-axial-target-mm 12` to anchor the seam near physical axial
+X=12 mm as well as its chosen angular phase. For `aligned`, angular phase
+takes priority, then the axial target, then entry travel. For `corner`,
+the highest-curvature vertex takes priority, followed by angular phase,
+axial target and travel. On a constant-theta edge, the slicer can split
+the edge exactly at that axial target; this only changes the start
+location, not the deposited shape or filament.
+
+`--seam-exclude-axial-mm START END` excludes a half-open physical axial
+X region [START,END) from seam starts, independently of the angular
+exclusion. The slicer includes the first printable axial boundary in the
+candidate set so a small allowed portion of a long edge remains usable.
+If both angular and axial exclusions are present, candidates must satisfy
+both. Set these only when a usable part of every closed contour remains,
+because no valid seam causes a deliberate error.
+
 `--seam-exclude-deg START END` excludes start angles in the half-open cylinder
 window [START,END) measured in degrees; START greater than END means the
 window crosses the 0/360° rotary seam. When every candidate is excluded the
 slicer raises an error instead of silently putting a seam in the forbidden
 region. This applies to already closed perimeter loops only; open/wraparound
-surface walls retain their original winding. No automatic coasting/restart
+surface walls retain their original winding. All closed-loop seam rotations preserve physical winding, geometry and
+**per-edge variable bead-width metadata**, including when an edge is
+split to insert a seam. Its two pieces inherit their original width,
+so the printed E volume is conserved. The nearest default remains
+unchanged for constant-width paths. No automatic coasting/restart
 over-extrusion is enabled: calibrate pressure advance and retraction on the
 machine first.
 

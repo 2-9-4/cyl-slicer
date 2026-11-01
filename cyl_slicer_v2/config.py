@@ -24,6 +24,8 @@ class SlicerConfig:
     seam_policy: str = "nearest"  # nearest | aligned | corner, for closed loops only.
     seam_angle_deg: float = 180.0  # Cylinder phase target for aligned/corner.
     seam_exclude_deg: tuple[float, float] | None = None
+    seam_axial_target_mm: float | None = None  # Optional physical X anchor after angle preference.
+    seam_exclude_axial_mm: tuple[float, float] | None = None  # Half-open axial exclusion.
     seam_end_ramp_mm: float = 0.0  # Opt-in closed-perimeter finish tuning.
     seam_end_ramp_fraction: float = 0.65  # Requested feed fraction at seam exit.
     top_layers: int = 5
@@ -262,6 +264,13 @@ class SlicerConfig:
             if (len(pair) != 2 or any(not math.isfinite(x) or not 0 <= x < 360 for x in pair)
                     or pair[0] == pair[1]):
                 raise ValueError("seam_exclude_deg must contain two distinct angles in [0, 360)")
+        if self.seam_axial_target_mm is not None and not math.isfinite(self.seam_axial_target_mm):
+            raise ValueError("seam_axial_target_mm must be finite when set")
+        if self.seam_exclude_axial_mm is not None:
+            pair = self.seam_exclude_axial_mm
+            if (len(pair) != 2 or any(not math.isfinite(v) for v in pair)
+                    or pair[0] >= pair[1]):
+                raise ValueError("seam_exclude_axial_mm must be finite increasing [START, END)")
         if not math.isfinite(self.seam_end_ramp_mm) or self.seam_end_ramp_mm < 0:
             raise ValueError("seam_end_ramp_mm must be finite and nonnegative")
         if (not math.isfinite(self.seam_end_ramp_fraction)
