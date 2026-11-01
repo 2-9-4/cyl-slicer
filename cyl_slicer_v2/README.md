@@ -449,6 +449,25 @@ retract distance are unaffected. A flow ratio is **not** a substitute for
 independently tuning interface density, contact gap, support temperature and
 cooling on the actual printer. Avoid exceeding nozzle volumetric flow capacity.
 
+## Optional support/attached-interface fan control
+
+The existing support speed/flow settings can now be paired with
+`--support-fan-pwm N` and `--support-interface-fan-pwm N`
+(independent 0..255 values). Both are **off by default**; `None` means each
+role uses the normal layer fan, so previous G-code is unchanged. A requested
+override emits M106 before that support/support-interface path and restores
+the layer PWM immediately afterward, including when transitioning between
+multiple support islands. A requested PWM equal to the layer PWM emits no
+redundant M106. A material `--material-fan-policy preset` also limits
+support-role overrides to that material's preset ceiling; in manual mode a
+support PWM is an explicit override. Existing bridge override behavior stays
+separately calibrated and unchanged.
+
+Fan response is asynchronous; M106 changes are not guarantees that airflow
+reaches a steady state on a short path. Compare support release and bonding
+coupons before enabling, and do not assume this changes actual support gap,
+volume, interface density, or the model material.
+
 ## Bounded on-island travel routing
 
 The quality profile now enables `--route-travel-inside-island`. When a
