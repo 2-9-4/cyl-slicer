@@ -665,6 +665,31 @@ that over-density but its new line starts can need mechanical support.
 Both modes remain opt-in pending real printed coupons; neither changes
 nominal bead width/flow per emitted path.
 
+## Opt-in speed ceiling for partially supported walls (issue #10)
+
+With `--wall-unsupported-print-feed 600`, the slicer measures each model
+perimeter's **longest continuous unsupported span** over the previous radial
+slab. The calculation uses real physical mm (`radius * θ` and axial X),
+includes 0/2π seam continuations and accounts for the half-bead support
+footprint. Only a wall exceeding the default
+`--wall-unsupported-min-span-mm 2` is slowed, never sped up. The
+`;WALL_UNSUPPORTED_FEED_CAP:` G-code comment shows when the cap is active.
+Use `--wall-support-report` to additionally see measured unsupported
+fractions and spans.
+
+```bash
+./slice_fast.sh part.stl --wall-unsupported-print-feed 600 --wall-unsupported-min-span-mm 2
+```
+
+This is **opt-in** because unsupported-wall performance depends on actual
+rotary phase, gravity, flow and material. It changes only the path's
+physical motion feed ceiling (which remains corrected for Marlin mixed
+mm/degrees); it never changes geometry, cumulative deposited filament E,
+bridge-region classification, per-wall flow or cooling fan PWM. Any more
+restrictive island/layer cooling or material throughput limit still wins.
+A missing previous occupied layer is deliberately not interpreted as a
+known overhang; start-of-print adhesion remains independently controlled.
+
 ## Cooling per connected island (quality default)
 
 The 8-second **layer** print-time target remains enabled. To avoid a tiny

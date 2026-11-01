@@ -10,6 +10,11 @@
   angular positions and never silently claim actual connected branching.
   Keep it opt-in until printed density/support coupons validate the behavior.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
+- Optional unsupported-wall feed limits must use the physical longest
+  unsupported perimeter run from the previous radial slab; never use theta
+  radians as millimeters or presume bearing on the first printed slab.
+  Apply a per-path feed ceiling without modifying filament E/width or
+  the bridge/support/fan policies. Leave unset until measured on hardware.
 - For cooling, estimate each island's deposited path lengths in physical
   theta*radius/axial mm and respect role-specific maximum speeds and the
   machine's configured minimum speed. Cooling timing estimates must be

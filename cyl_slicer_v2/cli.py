@@ -148,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Target final feed fraction at the seam; no filament is removed.")
     parser.add_argument("--wall-support-report", action=argparse.BooleanOptionalAction,
                         default=None, help="Annotate per-wall support fraction and longest unsupported span in physical mm.")
+    parser.add_argument("--wall-unsupported-print-feed", type=float, default=None,
+                        help="Opt-in physical mm/min ceiling for perimeter paths whose longest unsupported "
+                             "run exceeds --wall-unsupported-min-span-mm; does not change E.")
+    parser.add_argument("--wall-unsupported-min-span-mm", type=float, default=None,
+                        help="Physical unsupported-run threshold triggering the optional wall speed ceiling (default 2 mm).")
     parser.add_argument("--top-layers", type=int, default=None, help="Number of solid shells on the outer surface.")
     parser.add_argument("--bottom-layers", type=int, default=None, help="Number of solid shells on the inner surface.")
     parser.add_argument("--infill-spacing", type=float, default=None)
@@ -468,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         seam_end_ramp_mm=_profile_value(args, "seam_end_ramp_mm"),
         seam_end_ramp_fraction=_profile_value(args, "seam_end_ramp_fraction"),
         wall_support_report=_profile_value(args, "wall_support_report"),
+        wall_unsupported_print_feed_mm_per_min=_profile_value(args, "wall_unsupported_print_feed_mm_per_min"),
+        wall_unsupported_min_span_mm=_profile_value(args, "wall_unsupported_min_span_mm"),
         top_layers=_profile_value(args, "top_layers"),
         bottom_layers=_profile_value(args, "bottom_layers"),
         infill_spacing=_profile_value(args, "infill_spacing"),

@@ -1737,18 +1737,37 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                 keep_primed_for_outer=keep_primed,
             )
             out.append(f";TYPE:{path.role}")
-            if (path_config.wall_support_report and path.role in PERIMETER_ROLES
+            if ((path_config.wall_support_report
+                 or path_config.wall_unsupported_print_feed_mm_per_min is not None)
+                    and path.role in PERIMETER_ROLES
                     and layer.previous_occupied is not None):
-                # Diagnostics only: independent of travel ordering, print
-                # feed, E, seam policy, gravity and support generation.
+                # Evaluate at the actual deposited path, including the final
+                # seam orientation and physical theta*radius metric. One GEOS
+                # analysis serves both the report and the optional feed cap.
                 wall = measure_wall_support(
                     path, layer.previous_occupied, path_config.nozzle_width
                 )
-                out.append(
-                    f";WALL_SUPPORT:{wall.category} COVERED_FRACTION:{wall.covered_fraction:.4f}"
-                    f" MAX_UNSUPPORTED_MM:{wall.max_unsupported_run_mm:.4f}"
-                    f" TOTAL_MM:{wall.total_length_mm:.4f}"
-                )
+                if path_config.wall_support_report:
+                    out.append(
+                        f";WALL_SUPPORT:{wall.category} COVERED_FRACTION:{wall.covered_fraction:.4f}"
+                        f" MAX_UNSUPPORTED_MM:{wall.max_unsupported_run_mm:.4f}"
+                        f" TOTAL_MM:{wall.total_length_mm:.4f}"
+                    )
+                maximum = path_config.wall_unsupported_print_feed_mm_per_min
+                if (maximum is not None
+                        and wall.max_unsupported_run_mm >
+                            path_config.wall_unsupported_min_span_mm + 1e-8
+                        and maximum + 1e-8 < path_config.feed_mm_per_min):
+                    # Only this particular unsupported wall slows down.
+                    # Speed is expressed in physical cylindrical mm/min; the
+                    # emitter still applies Marlin mixed-axis feed correction.
+                    path_config = replace(
+                        path_config, feed_mm_per_min=maximum
+                    )
+                    out.append(
+                        f";WALL_UNSUPPORTED_FEED_CAP:MAX_UNSUPPORTED_MM:"
+                        f"{wall.max_unsupported_run_mm:.4f} FEED_MM_MIN:{maximum:g}"
+                    )
             override_pwm, role_fan_name = _role_fan_override(path.role, path_config)
             role_fan_active = override_pwm is not None and override_pwm != fan_pwm
             if role_fan_active:
