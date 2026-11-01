@@ -259,15 +259,37 @@ does not make arbitrary overhangs self-supporting. Independent model/support
 contact gaps and material separation still require physical coupons, and
 variable-height slope optimization remains experimental.
 
-## Perimeter wall order
+## Per-island deposition stage order
 
-The default `--wall-order outer-first` preserves the historical dimensional
-outline order. For overhangs where inside walls should support the outer shell,
-`--wall-order inner-first` prints every island’s internal perimeters before
-its external perimeter, then its infill. This is per-island ordering: the
-slicer still completes each island before traveling to another. A one-wall
-model behaves identically under either setting. This does not change wall
-geometry, extrusion flow, winding, or the selected seam.
+The default `--wall-order outer-first` preserves historical print order;
+`--wall-order inner-first` swaps just the external/internal perimeters,
+before printing infill. To prime the nozzle on an island's infill *before*
+printing its visible outer wall, while retaining outer-before-inner walls:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.cli model.stl --island-print-order infill,outer,inner
+./slice_fast.sh model.stl --island-print-order infill,outer,inner
+```
+
+All six permutations of `infill,outer,inner` are accepted, with each stage
+required exactly once. `infill` comprises `TOP_SKIN`, `SOLID_INFILL`,
+`INFILL_RADIAL`, `INFILL_AXIAL` and variable-width `GAP_FILL`.
+Each connected **model** island is completed in the requested stage order
+before travelling to another island. `BRIDGE` remains a separate post-wall
+role with its own bearing/flow logic, and support/support-interface remain
+in their separate support-island groups. Missing roles are skipped.
+
+When `--island-print-order` is set it supersedes `--wall-order`; leaving
+it unset preserves the old G-code role order. The option only reorders paths:
+bead area, E, seam/winding, monotonic top skin and flow caps are not changed.
+For an infill-to-outer-wall transition within the **same** model island,
+the nozzle stays primed across a verified, in-island travel of at most
+`--route-max-unretracted-mm` (default 5 mm). Traversals across holes,
+separate islands or longer gaps still retract; the special transition applies
+only with explicit stage ordering. The pressure-priming benefit depends on
+actual infill volume and nozzle pressure recovery. Inspect G-code and compare
+printed seams before changing a calibrated workflow. Inner-first may remain a better
+choice for overhangs that require internal walls as support.
 
 ## Optional seam finish feed ramp
 

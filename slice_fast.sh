@@ -61,4 +61,11 @@ profile=(
 
 # Keep input/output paths relative to the caller, even when invoked elsewhere.
 export PYTHONPATH="${repo_root}${PYTHONPATH:+:${PYTHONPATH}}"
-exec "${repo_root}/.venv/bin/python" -m cyl_slicer_v2.cli "${profile[@]}" "$@"
+python_cmd="${repo_root}/.venv/bin/python"
+# Developer/CI checkouts may have Python dependencies installed but no
+# repository-local venv. Prefer the venv when available; otherwise run the
+# environment-selected Python. Do not change the caller's working directory.
+if [[ ! -x "${python_cmd}" ]]; then
+    python_cmd="${PYTHON:-python3}"
+fi
+exec "${python_cmd}" -m cyl_slicer_v2.cli "${profile[@]}" "$@"
