@@ -665,6 +665,37 @@ that over-density but its new line starts can need mechanical support.
 Both modes remain opt-in pending real printed coupons; neither changes
 nominal bead width/flow per emitted path.
 
+## Cross-layer island revisit ordering (issue #9)
+
+`--cooling-revisit-order avoid-last` is an opt-in scheduling improvement
+for jobs with multiple disconnected islands. The previous radial layer's
+**last printed island** is matched by its physical, 2π-periodic angular/axial
+location (not unstable island array index). If another island is available
+on the new layer, the planner starts with the nearest *other* island and
+prints each island's entire group without interruption. This avoids an
+immediate end-of-layer/start-of-next-layer repeat that defeats small-island
+cooling despite independent deposition-time slowdowns.
+
+```bash
+./slice_fast.sh part.stl --cooling-revisit-order avoid-last
+```
+
+`--cooling-revisit-match-mm 10` controls the maximum physical distance
+for recognizing the last island across consecutive deposited radial layers.
+Model and support groups are never mistaken for each other. A single
+island, ambiguous full-wrap geometry or no close match falls back to
+nearest-first; one-direction adhesion layers retain their directional
+ordering. G-code includes `;COOLING_ISLAND_ORDER:...` to show the
+per-layer group visitation order; indices are local to that layer.
+
+This **reorders paths/travel**, not deposition geometry, width, extrusion
+volume, material fan ceilings, retraction safety or the per-island physical
+speed floor. It improves the opportunity for cooling but does **not**
+guarantee a specific real-time revisit interval or correct temperature
+history without firmware acceleration/travel timing and physical tests.
+It inserts no G4 dwell; the default remains nearest-first until printed
+coupons validate improved layer adhesion/heat management.
+
 ## Cooling per connected island (quality default)
 
 The 8-second **layer** print-time target remains enabled. To avoid a tiny
