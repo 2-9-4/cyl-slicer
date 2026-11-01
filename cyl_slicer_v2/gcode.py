@@ -1655,6 +1655,15 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         if config.cooling_min_layer_time_s > 0:
             out.append(f";COOLING_PRINT_DURATION_ESTIMATE_S:{estimated_print_time:.4f}")
             out.append(f";COOLING_PRINT_SPEED_MM_MIN:{cooling_speed:.4f}")
+            if (has_paths
+                    and estimated_print_time + 1e-5 < layer_config.cooling_min_layer_time_s):
+                # The bounded feed floor takes precedence over impossible
+                # thermal targets. Flag rather than claim it achieved 8 s or
+                # park a hot nozzle over the part with a stationary G4.
+                out.append(
+                    f";COOLING_TARGET_UNMET:LAYER TARGET_S:{layer_config.cooling_min_layer_time_s:g}"
+                    f" ESTIMATE_S:{estimated_print_time:.4f}"
+                )
         out.append(f";SAMPLE_RADIUS:{layer.radius:.4f}")
         out.append(f";DEPOSITED_THICKNESS:{deposited_thickness:.4f}")
         out.append(f";Z:{nozzle_radius:.4f}")
@@ -1705,6 +1714,12 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                 if feed + 1e-8 < layer_config.feed_mm_per_min:
                     island_configs[group_index] = replace(layer_config, feed_mm_per_min=feed)
                 out.append(f";COOLING_ISLAND:{group_index} PRINT_DURATION_ESTIMATE_S:{duration:.4f} SPEED_MM_MIN:{feed:.4f}")
+                if duration + 1e-5 < layer_config.cooling_min_island_print_time_s:
+                    out.append(
+                        f";COOLING_TARGET_UNMET:ISLAND:{group_index}"
+                        f" TARGET_S:{layer_config.cooling_min_island_print_time_s:g}"
+                        f" ESTIMATE_S:{duration:.4f}"
+                    )
         for index, (path, group_index) in enumerate(tagged_paths):
             path_config = island_configs.get(group_index, layer_config)
             path = _orient_path_for_current_position(path, state, path_config)

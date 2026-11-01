@@ -73,6 +73,34 @@ class RoleAwareLayerCoolingTests(unittest.TestCase):
         self.assertAlmostEqual(duration, .4)
         self.assertNotIn("\nG4", emit_gcode([p], cfg))
 
+    def test_impossible_layer_target_emits_diagnostic_without_dwell(self):
+        cfg = SlicerConfig(cooling_min_layer_time_s=100,
+                           cooling_min_island_print_time_s=0,
+                           cooling_min_print_speed_mm_per_min=300,
+                           retract_mm=0)
+        code = emit_gcode([layer({"TOP_SKIN": 2})], cfg)
+        self.assertIn(";COOLING_TARGET_UNMET:LAYER TARGET_S:100 ESTIMATE_S:0.4000", code)
+        self.assertNotIn(";COOLING_TARGET_UNMET:ISLAND", code)
+        self.assertNotIn("\nG4", code)
+
+    def test_island_target_unachievable_even_with_layer_time_met(self):
+        cfg = SlicerConfig(cooling_min_layer_time_s=0,
+                           cooling_min_island_print_time_s=100,
+                           cooling_min_print_speed_mm_per_min=300,
+                           retract_mm=0)
+        code = emit_gcode([layer({"SOLID_INFILL": 1})], cfg)
+        self.assertIn(";COOLING_TARGET_UNMET:ISLAND:0 TARGET_S:100 ESTIMATE_S:0.2000", code)
+        self.assertNotIn(";COOLING_TARGET_UNMET:LAYER", code)
+        self.assertNotIn("\nG4", code)
+
+    def test_achievable_target_and_empty_layer_do_not_warn(self):
+        cfg = SlicerConfig(cooling_min_layer_time_s=2,
+                           cooling_min_island_print_time_s=2)
+        self.assertNotIn(";COOLING_TARGET_UNMET",
+                         emit_gcode([layer({"TOP_SKIN": 100})], cfg))
+        self.assertNotIn(";COOLING_TARGET_UNMET",
+                         emit_gcode([LayerToolpaths(0, 31)], cfg))
+
     def test_physical_arc_and_axial_roles_have_equal_time(self):
         cfg = SlicerConfig(cooling_min_layer_time_s=3,
                            bridge_print_feed_mm_per_min=900)
