@@ -80,6 +80,21 @@ class RegisteredAxialGridTests(unittest.TestCase):
         self.assertGreater(len(thetas(geom,60,2,cfg)),
                            len(thetas(geom,18,2,cfg)))
 
+    def test_nested_periodicity_even_when_outer_count_is_odd(self):
+        cfg = self.cfg(axial_grid_mode="nested")
+        # 60 mm circumference with 2mm target gives an odd 189 tracks.
+        step, _, count, stride = _registered_axial_grid(18, 2, cfg)
+        self.assertEqual(count % 2, 1)
+        self.assertGreater(stride, 1)
+        for lo in (.03, 1.23, 5.95):
+            baseline = thetas(box(lo, 0, lo + .21, 3), 18, 2, cfg)
+            for turns in (-3, -1, 1, 7):
+                shifted = thetas(box(lo + turns*TAU, 0,
+                                    lo + turns*TAU + .21, 3), 18, 2, cfg)
+                self.assertEqual(len(baseline), len(shifted))
+                for a, b in zip(baseline, shifted):
+                    self.assertAlmostEqual(b - a, turns*TAU, delta=2e-9)
+
     def test_roles_have_their_own_spacing_for_infill_and_support(self):
         model = box(.05,0,.5,20)
         support = box(.05,0,.5,20)
