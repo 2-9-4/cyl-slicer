@@ -7,10 +7,13 @@ import re
 import unittest
 
 from shapely.geometry import box
+from cyl_slicer_v2.periodic import periodic_copies
 
 from cyl_slicer_v2.cli import _profile_value, build_parser
 from cyl_slicer_v2.config import SlicerConfig
-from cyl_slicer_v2.gcode import _island_role_sequence, _ordered_layer_paths_with_islands, emit_gcode
+from cyl_slicer_v2.gcode import (_island_role_sequence,
+                                  _ordered_layer_paths_with_islands,
+                                  _should_retract_after_path, emit_gcode)
 from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 from cyl_slicer_v2.toolpaths import ROLE_ORDER
 
@@ -121,6 +124,43 @@ class IslandStageOrderTests(unittest.TestCase):
         b = _ordered_layer_paths_with_islands(layer, GcodeState(),
             self.config(island_print_order=("infill","outer","inner")))
         self.assertEqual([path.points for path, _ in a], [path.points for path, _ in b])
+
+    def test_only_bounded_contained_infill_to_outer_keeps_nozzle_primed(self):
+        cfg = self.config(island_print_order=("infill","outer","inner"))
+        cfg = replace(cfg, retract_mm=1.4, route_max_unretracted_mm=5)
+        infill = line("SOLID_INFILL", .10, 0)
+        outer = line("EXTERNAL_PERIMETER", .15, 0)
+        position = GcodeState(theta_accum=.10, axial=0, radial=31)
+        region = periodic_copies(box(.08, -1, .18, 5))
+        self.assertTrue(_should_retract_after_path(infill, outer, position, cfg, region))
+        self.assertFalse(_should_retract_after_path(
+            infill, outer, position, cfg, region, keep_primed_for_outer=True))
+        separated = periodic_copies(box(.09, -1, .11, 5).union(
+                                    box(.14, -1, .16, 5)))
+        self.assertTrue(_should_retract_after_path(
+            infill, outer, position, cfg, separated, keep_primed_for_outer=True))
+        far = line("EXTERNAL_PERIMETER", .4, 0)
+        self.assertTrue(_should_retract_after_path(
+            infill, far, position, cfg,
+            periodic_copies(box(.08, -1, .5, 5)), keep_primed_for_outer=True))
+
+    def test_gcode_wires_safe_infill_to_outer_pressure_transition(self):
+        infill = line("SOLID_INFILL", .10, 0)
+        outer = line("EXTERNAL_PERIMETER", .15, 0)
+        layers = LayerToolpaths(0, 31, {
+            infill.role: [infill], outer.role: [outer],
+        }, island_paths=[{infill.role: [infill], outer.role: [outer]}],
+            travel_region=box(.08, -1, .18, 5))
+        cfg = replace(self.config(), retract_mm=1.4,
+                      route_max_unretracted_mm=5)
+        regular = emit_gcode([layers], cfg)
+        primed = emit_gcode([layers], replace(
+            cfg, island_print_order=("infill","outer","inner")))
+        between = primed.split(";TYPE:SOLID_INFILL", 1)[1].split(
+            ";TYPE:EXTERNAL_PERIMETER", 1)[0]
+        self.assertNotIn("; retract", between)
+        self.assertEqual(len([l for l in regular.splitlines()
+                              if l.startswith(";TYPE:")]), 2)
 
     def test_cli_profiles_and_invalid_orders(self):
         for profile in ("quality", "legacy-cli", "library"):
