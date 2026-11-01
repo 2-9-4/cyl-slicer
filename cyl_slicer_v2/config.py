@@ -76,6 +76,10 @@ class SlicerConfig:
     support_lateral_gap_mm: float = 0.0
     support_interface_layers: int = 3
     support_interface_spacing: float | None = 0.4
+    # Optional model-facing base of support columns, distinct from the
+    # overhang-facing (top) support interface. Zero preserves existing output.
+    support_bottom_interface_layers: int = 0
+    support_bottom_interface_spacing: float | None = None
     support_meander_max_angle_deg: float = 15.0
     support_cross_spacing: float | None = None
     raft_layers: int = 4
@@ -365,10 +369,14 @@ class SlicerConfig:
             raise ValueError("support_contact_gap_mm must be finite and non-negative")
         if not math.isfinite(self.support_lateral_gap_mm) or self.support_lateral_gap_mm < 0:
             raise ValueError("support_lateral_gap_mm must be finite and non-negative")
-        if self.support_interface_layers < 0:
-            raise ValueError("support_interface_layers must be non-negative")
-        if self.support_interface_spacing is not None and self.support_interface_spacing <= 0:
-            raise ValueError("support_interface_spacing must be positive when set")
+        if type(self.support_interface_layers) is not int or self.support_interface_layers < 0:
+            raise ValueError("support_interface_layers must be a non-negative integer")
+        if type(self.support_bottom_interface_layers) is not int or self.support_bottom_interface_layers < 0:
+            raise ValueError("support_bottom_interface_layers must be a non-negative integer")
+        for name in ("support_interface_spacing", "support_bottom_interface_spacing"):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be finite and positive when set")
         if self.support_meander_max_angle_deg <= 0 or self.support_meander_max_angle_deg > 360:
             raise ValueError("support_meander_max_angle_deg must be in (0, 360]")
         if self.support_cross_spacing is not None and self.support_cross_spacing <= 0:

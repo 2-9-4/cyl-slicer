@@ -665,6 +665,34 @@ that over-density but its new line starts can need mechanical support.
 Both modes remain opt-in pending real printed coupons; neither changes
 nominal bead width/flow per emitted path.
 
+## Optional bottom support interfaces (issue #16)
+
+Support on top of a previously printed model surface can benefit from a
+dense **bottom support interface**, separately from the existing dense top
+support interface immediately below an overhang. Opt in with:
+
+```bash
+./slice_fast.sh part.stl --support-bottom-interface-layers 2 \\
+  --support-bottom-interface-spacing 0.7
+```
+
+The slicer detects exposed model outer faces (not the interior of a solid)
+and the support directly above those faces, then follows that support
+footprint upward through up to the requested number of **consecutive**
+radial slabs. It does not grow through voids or consume neighboring,
+independent support islands. The separate `SUPPORT_BOTTOM_INTERFACE`
+G-code role uses its own configurable physical-mm pitch and inherits the
+existing support-interface material speed/flow/fan policy; overlapping
+top-facing interface takes precedence, so material cannot be deposited
+twice. Support wedge cutouts, 0/2π periodic contact, and radial slab
+thickness geometry are respected.
+
+The default is **zero bottom interface layers**, preserving previous
+output. This does **not** introduce an extra radial air gap at the
+model-to-support-base interface; controlling that release clearance
+independently remains a distinct geometry change to #16. Check physical
+surface adhesion and removal before using dense support bases routinely.
+
 ## Cross-layer island revisit ordering (issue #9)
 
 `--cooling-revisit-order avoid-last` is an opt-in scheduling improvement

@@ -24,8 +24,8 @@ from .wall_support import measure_wall_support
 TWO_PI = 2.0 * math.pi
 PATH_ORDER_OPTIMIZE_LIMIT = 1024
 PATH_ORDER_ROUTE_CANDIDATES = 8
-SUPPORT_ROLES = frozenset({"SUPPORT", "SUPPORT_INTERFACE"})
-BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "INFILL_RADIAL", "SOLID_INFILL", "GAP_FILL"})
+SUPPORT_ROLES = frozenset({"SUPPORT", "SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE"})
+BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE", "INFILL_RADIAL", "SOLID_INFILL", "GAP_FILL"})
 # Precision budget, not a Marlin travel limit: float32 spacing at 3600 degrees
 # is 0.000244 degrees, below our 0.001-degree output resolution.
 MAX_MARLIN_Y_DEGREES = 3600.0
@@ -936,6 +936,9 @@ def _should_retract_after_path(
         "INFILL_AXIAL": config.infill_spacing,
         "SUPPORT": config.support_spacing,
         "SUPPORT_INTERFACE": config.support_interface_spacing or config.nozzle_width,
+        "SUPPORT_BOTTOM_INTERFACE": (config.support_bottom_interface_spacing
+                                     or config.support_interface_spacing
+                                     or config.nozzle_width),
         "EXTERNAL_PERIMETER": config.nozzle_width,
         "INTERNAL_PERIMETER": config.nozzle_width,
     }
@@ -986,7 +989,7 @@ def _island_revisit_anchor(group: dict[str, list[Toolpath]]) -> tuple[float, flo
     representative = next(
         (group[role][0] for role in
          ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER", "SUPPORT",
-          "SUPPORT_INTERFACE", "TOP_SKIN", "SOLID_INFILL",
+          "SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE", "TOP_SKIN", "SOLID_INFILL",
           "INFILL_RADIAL", "INFILL_AXIAL", "GAP_FILL", "BRIDGE")
          if group.get(role)), None
     )
@@ -1201,7 +1204,7 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
     if role == "SUPPORT":
         maximum = config.support_print_feed_mm_per_min
         return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_flow_ratio
-    if role == "SUPPORT_INTERFACE":
+    if role in {"SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE"}:
         maximum = config.support_interface_print_feed_mm_per_min
         return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_interface_flow_ratio
     return config.feed_mm_per_min, 1.0
@@ -1568,7 +1571,8 @@ def _role_fan_override(role: str, config: SlicerConfig) -> tuple[int | None, str
     if role == "BRIDGE" and config.bridge_mode == "print":
         return config.bridge_fan_pwm, "bridge"
     key = {"SUPPORT": "support_fan_pwm",
-           "SUPPORT_INTERFACE": "support_interface_fan_pwm"}.get(role)
+           "SUPPORT_INTERFACE": "support_interface_fan_pwm",
+           "SUPPORT_BOTTOM_INTERFACE": "support_interface_fan_pwm"}.get(role)
     if key is None:
         return None, role.lower()
     requested = getattr(config, key)
@@ -1618,6 +1622,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SUPPORT_INTERFACE_PRINT_FEED_MM_MIN:{config.support_interface_print_feed_mm_per_min}",
         f";SUPPORT_FLOW_RATIO:{config.support_flow_ratio:g}",
         f";SUPPORT_INTERFACE_FLOW_RATIO:{config.support_interface_flow_ratio:g}",
+        *([f";SUPPORT_BOTTOM_INTERFACE_LAYERS:{config.support_bottom_interface_layers}",
+           f";SUPPORT_BOTTOM_INTERFACE_SPACING_MM:"
+           f"{config.support_bottom_interface_spacing or config.support_interface_spacing or config.dense_line_spacing:g}"]
+          if config.support_bottom_interface_layers else []),
         *([f";SUPPORT_FAN_PWM:{config.support_fan_pwm}"]
           if config.support_fan_pwm is not None else []),
         *([f";SUPPORT_INTERFACE_FAN_PWM:{config.support_interface_fan_pwm}"]
