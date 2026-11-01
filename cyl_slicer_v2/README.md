@@ -616,8 +616,14 @@ the layer, the quality profile additionally enables
 surface length and role-specific speed limits are used to set the
 **fastest** permissible feed that reaches at least the requested deposition
 time; other islands keep their existing layer-capped feed. A 300 mm/min
-minimum speed still takes priority if the target cannot be reached. It never
-adds stationary G4 commands over molten plastic and never modifies E,
+minimum speed still takes priority if the target cannot be reached. The
+slicer now emits `;COOLING_TARGET_UNMET:LAYER ...` and
+`;COOLING_TARGET_UNMET:ISLAND:N ...` comments identifying which requested
+minimum deposition duration is unachievable at the configured feed floor.
+Those diagnostics include both target and achieved estimated seconds, making
+cooling-limited coupons and automated G-code validation easier. Empty layers
+are not flagged. It never adds stationary G4 commands over molten plastic
+and never modifies E,
 geometry, bridge-flow multipliers or the temporary bridge-fan override.
 
 `--cooling-min-island-print-time-s 0` disables per-island slowdown.
