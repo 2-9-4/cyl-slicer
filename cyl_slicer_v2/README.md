@@ -261,14 +261,14 @@ variable-height slope optimization remains experimental.
 
 ## Per-island deposition stage order
 
-The default `--wall-order outer-first` preserves historical print order;
+The default `--wall-order outer-first` preserves historical print order on every model layer;
 `--wall-order inner-first` swaps just the external/internal perimeters,
 before printing infill. To prime the nozzle on an island's infill *before*
 printing its visible outer wall, while retaining outer-before-inner walls:
 
 ```bash
-.venv/bin/python -m cyl_slicer_v2.cli model.stl --island-print-order infill,outer,inner
-./slice_fast.sh model.stl --island-print-order infill,outer,inner
+.venv/bin/python -m cyl_slicer_v2.cli model.stl --print-order infill,outer,inner
+./slice_fast.sh model.stl --print-order infill,outer,inner
 ```
 
 All six permutations of `infill,outer,inner` are accepted, with each stage
@@ -279,7 +279,7 @@ before travelling to another island. `BRIDGE` remains a separate post-wall
 role with its own bearing/flow logic, and support/support-interface remain
 in their separate support-island groups. Missing roles are skipped.
 
-When `--island-print-order` is set it supersedes `--wall-order`; leaving
+When `--print-order` (alias `--island-print-order`) is set it supersedes `--wall-order`; leaving
 it unset preserves the old G-code role order. The option only reorders paths:
 bead area, E, seam/winding, monotonic top skin and flow caps are not changed.
 For an infill-to-outer-wall transition within the **same** model island,
