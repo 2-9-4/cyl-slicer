@@ -12,7 +12,7 @@ profile=(
     # Coarser layers, ~0.9 mm walls and 0.84 mm top/bottom shells.
     --layer-height 0.12
     --first-layer-height 0.28
-    --flow-percent 0.98
+    --flow-percent 98
     --line-width 0.48
     --nozzle-diameter 0.4
     --bead-model rounded
@@ -55,7 +55,7 @@ profile=(
     --slow-start-layers 2
     --slow-start-print-feed 1200   
     --slow-start-travel-feed 4800 
-    --one-direction-first-layers 1
+    --one-direction-first-layers 0
     --support-wedge-count 12
 )
 
