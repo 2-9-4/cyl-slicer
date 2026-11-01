@@ -282,9 +282,13 @@ in their separate support-island groups. Missing roles are skipped.
 When `--island-print-order` is set it supersedes `--wall-order`; leaving
 it unset preserves the old G-code role order. The option only reorders paths:
 bead area, E, seam/winding, monotonic top skin and flow caps are not changed.
-The pressure-priming benefit depends on actual infill volume and whether
-the following travel retracts. Inspect the G-code preview and compare printed
-seams before changing a calibrated workflow. Inner-first may remain a better
+For an infill-to-outer-wall transition within the **same** model island,
+the nozzle stays primed across a verified, in-island travel of at most
+`--route-max-unretracted-mm` (default 5 mm). Traversals across holes,
+separate islands or longer gaps still retract; the special transition applies
+only with explicit stage ordering. The pressure-priming benefit depends on
+actual infill volume and nozzle pressure recovery. Inspect G-code and compare
+printed seams before changing a calibrated workflow. Inner-first may remain a better
 choice for overhangs that require internal walls as support.
 
 ## Optional seam finish feed ramp
