@@ -500,12 +500,14 @@ def add_bottom_support_interfaces(layers: list[LayerSlice], config: SlicerConfig
             # Keep the upper slab's geometry unchanged for the next pass,
             # which can print a dense base above this real air clearance.
             layers[j].support = _safe_difference(layers[j].support, footprint)
-            layers[j].support_interface = _safe_difference(
-                layers[j].support_interface, footprint
-            )
-            layers[j].support_bottom_interface = _safe_difference(
-                layers[j].support_bottom_interface, footprint
-            )
+            if layers[j].support_interface is not None:
+                layers[j].support_interface = _safe_difference(
+                    layers[j].support_interface, footprint
+                )
+            if layers[j].support_bottom_interface is not None:
+                layers[j].support_bottom_interface = _safe_difference(
+                    layers[j].support_bottom_interface, footprint
+                )
             j += 1
         if count <= 0:
             continue
