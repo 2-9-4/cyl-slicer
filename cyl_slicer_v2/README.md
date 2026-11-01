@@ -688,10 +688,21 @@ twice. Support wedge cutouts, 0/2π periodic contact, and radial slab
 thickness geometry are respected.
 
 The default is **zero bottom interface layers**, preserving previous
-output. This does **not** introduce an extra radial air gap at the
-model-to-support-base interface; controlling that release clearance
-independently remains a distinct geometry change to #16. Check physical
-surface adhesion and removal before using dense support bases routinely.
+output. Independently, `--support-bottom-contact-gap-mm 0.24` optionally
+cuts support immediately above an exposed model face until the support
+slab's **inner deposited face** is at least 0.24 mm above the model
+slab's **outer deposited face**. This is a geometric air clearance, not a
+rounded-up nominal number of layers; it works with variable radial slab
+heights. It only cuts contact footprints which had support in the
+immediately next radial slab and preserves unrelated columns and
+support-wedge openings. The first *surviving* support slab begins the
+requested bottom-interface count. Both controls are opt-in/independent;
+a gap can be requested with zero dense bottom interfaces.
+
+A radial air gap deliberately leaves support detached from the model
+below, so check adhesion, overhang stiffness and release behavior with
+physical coupons before use. Do not use a large bottom gap where those
+columns need the model as a rigid foundation.
 
 ## Cross-layer island revisit ordering (issue #9)
 

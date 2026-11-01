@@ -14,7 +14,9 @@
   outer radial faces with immediately adjacent support and propagate through
   consecutive support slabs. Keep top and bottom interface deposition disjoint
   and separate from sparse support; preserve wedges, periodic theta and role
-  speed/flow/fan defaults. Do not invent model-to-support physical gaps.
+  speed/flow/fan defaults. An optional support-bottom contact clearance must
+  compare actual deposited radial faces (not rounded layer counts), carve only
+  the identified contacting footprint, and never jump an existing gap.
 - Cross-layer island cooling reordering must match islands by periodic
   physical position (not array indexes); avoid last-then-first consecutive
   visits only when an alternative exists. Preserve island-contiguous groups,
