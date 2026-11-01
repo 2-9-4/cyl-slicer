@@ -101,10 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wall-count", type=int, default=None)
     parser.add_argument("--wall-order", choices=("outer-first", "inner-first"), default="outer-first",
                         help="Legacy per-island perimeter order; overridden by --island-print-order.")
-    parser.add_argument("--island-print-order", type=lambda value: tuple(s.strip() for s in value.split(",")),
+    parser.add_argument("--print-order", "--island-print-order", dest="island_print_order",
+                        type=lambda value: tuple(s.strip() for s in value.split(",")),
                         default=None, metavar="STAGES",
-                        help="Per-island three-stage print order, e.g. infill,outer,inner; "
-                             "each stage exactly once; overrides --wall-order.")
+                        help="Model print order on every layer, within each connected island; "
+                             "three stages infill,outer,inner in any order. "
+                             "--island-print-order is the backwards-compatible alias.")
     parser.add_argument("--seam-policy", choices=("nearest", "aligned", "corner"), default="nearest",
                         help="Closed-wall start selection; nearest preserves current toolpath behavior.")
     parser.add_argument("--seam-angle-deg", type=float, default=180.0,
