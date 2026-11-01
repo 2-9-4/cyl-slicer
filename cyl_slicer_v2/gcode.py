@@ -635,6 +635,8 @@ def _rotate_closed_perimeter(
 ) -> Toolpath:
     if config is not None and (
         config.seam_policy != "nearest" or config.seam_exclude_deg is not None
+        or config.seam_axial_target_mm is not None
+        or config.seam_exclude_axial_mm is not None
     ):
         return _rotate_preferred_seam(path, state, config)
     loop = path.points[:-1]
@@ -656,15 +658,35 @@ def _rotate_closed_perimeter(
     if best is None:
         return path
     _, index, fraction = best
+    return _rebase_closed_seam(path, index, fraction)
+
+
+def _rebase_closed_seam(path: Toolpath, index: int, fraction: float) -> Toolpath:
+    """Rotate/split a closed path while preserving every per-edge bead width.
+
+    If the seam cuts through an existing edge, its two pieces inherit the
+    *same* width as the original edge. The emitter can then conserve its
+    deposited E exactly, including paths constructed with variable widths.
+    """
+    loop = path.points[:-1]
+    n = len(loop)
+    widths = path.segment_widths
+    if widths is not None and len(widths) != n:
+        raise ValueError("Closed perimeter segment_widths must match its edges")
     if fraction <= 1e-10 or fraction >= 1.0 - 1e-10:
-        index = (index + (fraction >= 1.0 - 1e-10)) % len(loop)
-        points = loop[index:] + loop[:index] + [loop[index]]
+        vertex = (index + (fraction >= 1.0 - 1e-10)) % n
+        points = loop[vertex:] + loop[:vertex] + [loop[vertex]]
+        new_widths = widths[vertex:] + widths[:vertex] if widths is not None else None
     else:
         a, b = path.points[index:index + 2]
-        point = (a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction)
+        point = (a[0] + (b[0] - a[0]) * fraction,
+                 a[1] + (b[1] - a[1]) * fraction)
         points = [point, *loop[index + 1:], *loop[:index + 1], point]
-    return replace(path, points=points)
-
+        new_widths = (
+            [widths[index], *widths[index + 1:], *widths[:index], widths[index]]
+            if widths is not None else None
+        )
+    return replace(path, points=points, segment_widths=new_widths)
 
 
 def _seam_angle_distance(theta: float, angle_rad: float) -> float:
@@ -680,6 +702,13 @@ def _seam_angle_excluded(theta: float, window: tuple[float, float] | None) -> bo
     if begin < end:
         return begin - 1e-9 <= angle < end - 1e-9
     return angle >= begin - 1e-9 or angle < end - 1e-9
+
+
+def _seam_axial_excluded(axial: float, window: tuple[float, float] | None) -> bool:
+    if window is None:
+        return False
+    start, end = window
+    return start - 1e-9 <= axial < end - 1e-9
 
 
 def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConfig) -> Toolpath:
@@ -717,6 +746,17 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
             # The upper exclusion boundary is printable. The lower boundary
             # is blocked by design, but its neighboring vertices are tested.
             ray_degrees.append(config.seam_exclude_deg[1])
+        # Intersections with physical X targets and allowed ends of forbidden
+        # axial windows are candidates too, even on constant-theta edges.
+        axial_targets = []
+        if config.seam_axial_target_mm is not None:
+            axial_targets.append(config.seam_axial_target_mm)
+        if config.seam_exclude_axial_mm is not None:
+            axial_targets.append(config.seam_exclude_axial_mm[1])
+        if abs(b[1] - a[1]) > 1e-14:
+            fractions.extend((value - a[1]) / (b[1] - a[1])
+                             for value in axial_targets
+                             if 0 <= (value - a[1]) / (b[1] - a[1]) <= 1)
         for degrees in ray_degrees:
             phase = math.radians(degrees)
             lower = math.floor((min(a[0], b[0]) - phase) / TWO_PI) - 1
@@ -730,9 +770,12 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
         for fraction in fractions:
             theta = a[0] + fraction * (b[0] - a[0])
             axial = a[1] + fraction * (b[1] - a[1])
-            if _seam_angle_excluded(theta, config.seam_exclude_deg):
+            if (_seam_angle_excluded(theta, config.seam_exclude_deg)
+                    or _seam_axial_excluded(axial, config.seam_exclude_axial_mm)):
                 continue
             angular_cost = radius * _seam_angle_distance(theta, target)
+            axial_cost = (abs(axial - config.seam_axial_target_mm)
+                          if config.seam_axial_target_mm is not None else 0.0)
             travel = min(
                 math.hypot((theta + shift * TWO_PI) * radius - current[0], axial - current[1])
                 for shift in (-1, 0, 1)
@@ -750,25 +793,18 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
                     turn = 1.0 - max(-1.0, min(1.0,
                         (u[0] * v[0] + u[1] * v[1]) / denom))
             if config.seam_policy == "corner":
-                cost = (-round(turn, 9), angular_cost, travel)
+                cost = (-round(turn, 9), angular_cost, axial_cost, travel)
             elif config.seam_policy == "aligned":
-                cost = (angular_cost, travel, -turn)
+                cost = (angular_cost, axial_cost, travel, -turn)
             else:
-                cost = (travel, angular_cost, -turn)
+                cost = (travel, angular_cost, axial_cost, -turn)
             if best is None or cost < best[0]:
                 best = (cost, index, fraction)
 
     if best is None:
-        raise ValueError("No eligible perimeter seam point outside excluded angular window")
+        raise ValueError("No eligible perimeter seam point outside excluded window")
     _, index, fraction = best
-    if fraction <= 1e-10 or fraction >= 1.0 - 1e-10:
-        index = (index + (fraction >= 1.0 - 1e-10)) % n
-        points = loop[index:] + loop[:index] + [loop[index]]
-    else:
-        a, b = path.points[index:index + 2]
-        point = (a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction)
-        points = [point, *loop[index + 1:], *loop[:index + 1], point]
-    return replace(path, points=points)
+    return _rebase_closed_seam(path, index, fraction)
 
 
 def _shadow_after_path(
@@ -1609,6 +1645,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SEAM_POLICY:{config.seam_policy}",
         f";SEAM_ANGLE_DEG:{config.seam_angle_deg:g}",
         f";SEAM_EXCLUDE_DEG:{config.seam_exclude_deg}",
+        *([f";SEAM_AXIAL_TARGET_MM:{config.seam_axial_target_mm:g}"]
+          if config.seam_axial_target_mm is not None else []),
+        *([f";SEAM_EXCLUDE_AXIAL_MM:{config.seam_exclude_axial_mm}"]
+          if config.seam_exclude_axial_mm is not None else []),
         f";SEAM_END_RAMP_MM:{config.seam_end_ramp_mm:g}",
         f";SEAM_END_RAMP_FRACTION:{config.seam_end_ramp_fraction:g}",
         f";BEAD_AREA_MM2:{config.bead_area:.6f}",

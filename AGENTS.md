@@ -60,7 +60,11 @@
   wall_order behavior when unset.
   Join periodic seam components for ordering; keep support components separate.
   Enter closed perimeters using the configured seam policy (nearest by default),
-  preserving winding and deposited length. Keep intentional zero-distance calibration bands intact.
+  preserving winding and deposited length. Seam cuts on variable-width loops
+  must split/rotate their segment_widths alongside edges, conserving E exactly.
+  Physical axial targets and half-open exclusion windows must be tested as
+  actual geometric edge intersections, not nearest sampled vertices.
+  Keep intentional zero-distance calibration bands intact.
 - Keep Marlin's native Y position bounded as well as emitted Y values. The target
   firmware enables `POWER_LOSS_RECOVERY`: use `M400`, `G92.9 Y<wrapped phase>`,
   then `G92 Y0` (or `G92 E0 Y0` at layer changes). Keep angular phase so resets

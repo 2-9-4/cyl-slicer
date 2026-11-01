@@ -133,6 +133,100 @@ class SeamPolicyTests(unittest.TestCase):
             y = float(travels[0].split("Y", 1)[1].split()[0])
             self.assertAlmostEqual(y % 360, 25, places=2)
 
+
+    def test_axial_target_picks_exact_position_on_constant_theta_edge(self):
+        original = rect(theta_min=.1, theta_max=.9)
+        cfg = SlicerConfig(seam_policy="aligned",
+                           seam_angle_deg=math.degrees(.1),
+                           seam_axial_target_mm=7.25)
+        for turn in (-3, 0, 6):
+            shifted = Toolpath(original.role, original.radius,
+                [(t + turn*2*math.pi, x) for t,x in original.points],
+                closed=True)
+            result = _orient_path_for_current_position(
+                shifted, GcodeState(theta_accum=0.8, axial=0), cfg)
+            self.assertAlmostEqual(result.points[0][0] % (2*math.pi), .1, places=9)
+            self.assertAlmostEqual(result.points[0][1], 7.25, places=9)
+            self.assertAlmostEqual(length(result), length(shifted), places=8)
+
+    def test_axial_exclusion_uses_printable_upper_edge_not_nearby_vertex(self):
+        original = rect(theta_min=.1, theta_max=.9)
+        cfg = SlicerConfig(seam_policy="aligned",
+                           seam_angle_deg=math.degrees(.1),
+                           seam_axial_target_mm=6,
+                           seam_exclude_axial_mm=(0, 8))
+        p = _orient_path_for_current_position(original, GcodeState(), cfg)
+        self.assertAlmostEqual(p.points[0][0], .1, places=8)
+        self.assertAlmostEqual(p.points[0][1], 8, places=8)
+        self.assertAlmostEqual(length(p), length(original), places=8)
+        with self.assertRaisesRegex(ValueError,"No eligible perimeter seam"):
+            _orient_path_for_current_position(
+                original, GcodeState(),
+                SlicerConfig(seam_exclude_axial_mm=(-1, 11)))
+
+    def test_variable_width_seam_cut_and_vertex_preserve_all_extrusion(self):
+        from cyl_slicer_v2.gcode import _segment_width_ratio, emit_toolpath
+        original = rect(theta_min=.1, theta_max=.9)
+        original.segment_widths = [.22, .32, .42, .30]
+        cfg = SlicerConfig(retract_mm=0, seam_policy="aligned",
+                           seam_angle_deg=math.degrees(.1),
+                           seam_axial_target_mm=6.25,
+                           cooling_min_layer_time_s=0)
+        expected = sum(
+            cylindrical_distance(a,b,original.radius) *
+            cfg.extrusion_per_mm * _segment_width_ratio(w,cfg)
+            for a,b,w in zip(original.points,original.points[1:],original.segment_widths)
+        )
+        for config,position in (
+            (cfg,(.1,6.25)),
+            (SlicerConfig(retract_mm=0),(.9,0.0)),
+            (SlicerConfig(retract_mm=0,seam_policy="corner",
+                          seam_angle_deg=math.degrees(.9)),(.9,0.0)),
+        ):
+            state=GcodeState(theta_accum=position[0],axial=position[1],
+                             radial=original.radius+.08)
+            path = _orient_path_for_current_position(original,state,config)
+            self.assertIsNotNone(path.segment_widths)
+            self.assertEqual(len(path.segment_widths),len(path.points)-1)
+            actual = sum(
+                cylindrical_distance(a,b,original.radius) *
+                cfg.extrusion_per_mm * _segment_width_ratio(w,cfg)
+                for a,b,w in zip(path.points,path.points[1:],path.segment_widths)
+            )
+            self.assertAlmostEqual(actual,expected,places=8)
+            self.assertAlmostEqual(length(path),length(original),places=8)
+            emitted = emit_toolpath(path,
+                 GcodeState(theta_accum=path.points[0][0],
+                            axial=path.points[0][1],radial=original.radius+.08),
+                 config, 0, retract_after=False)
+            import re
+            moves=[line for line in emitted if line.startswith("G1 X") and " E" in line]
+            self.assertTrue(moves)
+            final_e=float(re.search(r"\\bE(-?\\d+(?:\\.\\d+)?)",moves[-1]).group(1))
+            self.assertAlmostEqual(final_e,expected,delta=2e-4)
+
+    def test_axial_options_have_profile_parity_and_bad_values_rejected(self):
+        from cyl_slicer_v2.cli import build_parser, _profile_value
+        for profile in ("quality","library","legacy-cli"):
+            args = build_parser().parse_args(["--profile",profile])
+            self.assertIsNone(_profile_value(args,"seam_axial_target_mm"))
+            self.assertIsNone(_profile_value(args,"seam_exclude_axial_mm"))
+            explicit = build_parser().parse_args(["--profile",profile,
+                "--seam-axial-target-mm","-5.5",
+                "--seam-exclude-axial-mm","2","7"])
+            self.assertEqual(_profile_value(explicit,"seam_axial_target_mm"),-5.5)
+            self.assertEqual(tuple(explicit.seam_exclude_axial_mm),(2,7))
+        for fields in (
+            {"seam_axial_target_mm": math.nan},
+            {"seam_axial_target_mm": math.inf},
+            {"seam_exclude_axial_mm": (4,4)},
+            {"seam_exclude_axial_mm": (9,1)},
+            {"seam_exclude_axial_mm": (0,math.inf)},
+            {"seam_exclude_axial_mm": (math.nan,2)},
+        ):
+            with self.subTest(fields=fields),self.assertRaises(ValueError):
+                SlicerConfig(**fields).validate()
+
     def test_invalid_seam_inputs(self):
         cases = (
             {"seam_policy": "scatter"},
