@@ -664,8 +664,8 @@ class GcodeTests(unittest.TestCase):
         gcode = emit_gcode(late_layers, config)
         bad = []
         for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
-            if role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}
-                    and abs(y1 - y0) >= 300.0:
+            if (role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}
+                    and abs(y1 - y0) >= 300.0):
                 bad.append((layer, role, x0, y0, x1, y1))
         self.assertEqual(bad, [])
 
