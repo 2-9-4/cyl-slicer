@@ -440,7 +440,10 @@ def line_grid_lines(geom, radius: float, spacing: float, *, direction: str,
             last = math.floor((theta_max - phase) / step + 1e-10)
             lower_is_grid = abs((theta_min-phase)/step - round((theta_min-phase)/step)) < 1e-9
             for k in range(first, last + 1):
-                if k % stride != 0:
+                # The parent/child subset must repeat every *N* ring
+                # tracks. N need not be divisible by stride, so k % stride
+                # alone would shift the nested grid by one at the 0/2pi seam.
+                if (k % count) % stride != 0:
                     continue
                 theta = phase + k * step
                 # A complete 2pi closed strip has one physical seam line,
