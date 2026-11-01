@@ -464,10 +464,12 @@ def add_bottom_support_interfaces(layers: list[LayerSlice], config: SlicerConfig
     This is *not* top-of-support contact under an overhang. It detects where
     support starts on the model's OUTER radial face, then follows the actual
     connected support footprint upward for N slabs, leaving neighboring
-    independent supports sparse. No radial gap is invented or removed.
+    independent supports sparse. Optional air clearance is cut in physical
+    radius against the OUTER deposited face of the underlying model slab.
     """
     count = config.support_bottom_interface_layers
-    if count <= 0:
+    gap = config.support_bottom_contact_gap_mm
+    if count <= 0 and gap <= 0:
         return
     for i in range(len(layers) - 1):
         model = layers[i].occupied
@@ -482,12 +484,37 @@ def add_bottom_support_interfaces(layers: list[LayerSlice], config: SlicerConfig
         footprint = _safe_intersection(layers[i + 1].support, _periodic_union(exposed))
         if footprint.is_empty:
             continue
-        for j in range(i + 1, min(len(layers), i + 1 + count)):
+        # Only this *already contacting* support footprint is eligible:
+        # unrelated columns and later-found floating supports are untouched.
+        _, model_outer = _layer_radial_faces(layers[i], config)
+        required_inner = model_outer + gap
+        j = i + 1
+        while j < len(layers):
+            inner, _ = _layer_radial_faces(layers[j], config)
+            if inner + 1e-9 >= required_inner:
+                break
             footprint = _safe_intersection(footprint, layers[j].support)
             if footprint.is_empty:
+                break  # The contacting column ended; do not jump a void.
+            # Cut only the footprint above the exposed lower model surface.
+            # Keep the upper slab's geometry unchanged for the next pass,
+            # which can print a dense base above this real air clearance.
+            layers[j].support = _safe_difference(layers[j].support, footprint)
+            layers[j].support_interface = _safe_difference(
+                layers[j].support_interface, footprint
+            )
+            layers[j].support_bottom_interface = _safe_difference(
+                layers[j].support_bottom_interface, footprint
+            )
+            j += 1
+        if count <= 0:
+            continue
+        for k in range(j, min(len(layers), j + count)):
+            footprint = _safe_intersection(footprint, layers[k].support)
+            if footprint.is_empty:
                 break  # Never jump gaps to create a floating dense interface.
-            existing = layers[j].support_bottom_interface
-            layers[j].support_bottom_interface = _safe_union(
+            existing = layers[k].support_bottom_interface
+            layers[k].support_bottom_interface = _safe_union(
                 [footprint, existing]
             )
 
