@@ -128,6 +128,10 @@ class SlicerConfig:
     cooling_min_layer_time_s: float = 8.0  # 0 disables conservative slowdown.
     cooling_min_island_print_time_s: float = 2.0  # Each connected island, lower-bound print duration.
     cooling_min_print_speed_mm_per_min: float = 300.0
+    # Opt-in inter-layer ordering avoids printing the same small island at
+    # the end of one radial slab and the beginning of the next.
+    cooling_revisit_order: str = "nearest"  # nearest | avoid-last
+    cooling_revisit_match_mm: float = 10.0  # Max physical centroid drift to recognize an island.
     min_path_length: float = 0.1
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
     intersection_curve_error_mm: float = 0.01  # Maximum physical unwrapped chord deviation.
@@ -450,6 +454,11 @@ class SlicerConfig:
         if (not math.isfinite(self.cooling_min_print_speed_mm_per_min)
                 or self.cooling_min_print_speed_mm_per_min <= 0):
             raise ValueError("cooling_min_print_speed_mm_per_min must be finite and positive")
+        if self.cooling_revisit_order not in {"nearest", "avoid-last"}:
+            raise ValueError("cooling_revisit_order must be nearest or avoid-last")
+        if (not math.isfinite(self.cooling_revisit_match_mm)
+                or self.cooling_revisit_match_mm <= 0):
+            raise ValueError("cooling_revisit_match_mm must be finite and positive")
         if (self.cooling_min_layer_time_s > 0
                 and self.cooling_min_print_speed_mm_per_min > self.feed_mm_per_min):
             raise ValueError("cooling minimum print speed cannot exceed normal print speed")

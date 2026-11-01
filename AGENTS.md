@@ -10,6 +10,11 @@
   angular positions and never silently claim actual connected branching.
   Keep it opt-in until printed density/support coupons validate the behavior.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
+- Cross-layer island cooling reordering must match islands by periodic
+  physical position (not array indexes); avoid last-then-first consecutive
+  visits only when an alternative exists. Preserve island-contiguous groups,
+  safe retract/travel, all deposited geometry/E and one-direction start layers.
+  Never claim exact elapsed revisit times from print-only estimates.
 - Optional unsupported-wall feed limits must use the physical longest
   unsupported perimeter run from the previous radial slab; never use theta
   radians as millimeters or presume bearing on the first printed slab.

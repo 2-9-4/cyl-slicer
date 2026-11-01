@@ -976,9 +976,47 @@ def _island_role_sequence(config: SlicerConfig | None) -> list[str]:
     return roles
 
 
+def _island_revisit_anchor(group: dict[str, list[Toolpath]]) -> tuple[float, float, bool] | None:
+    """Phase-invariant approximate center for matching connected islands.
+
+    Prefer an outer model contour or support outline to keep the signature
+    stable when the number/direction of infill passes alternates. Sample only
+    a bounded number of points; no geometric unions or GEOS calls.
+    """
+    representative = next(
+        (group[role][0] for role in
+         ("EXTERNAL_PERIMETER", "INTERNAL_PERIMETER", "SUPPORT",
+          "SUPPORT_INTERFACE", "TOP_SKIN", "SOLID_INFILL",
+          "INFILL_RADIAL", "INFILL_AXIAL", "GAP_FILL", "BRIDGE")
+         if group.get(role)), None
+    )
+    if representative is None or not representative.points:
+        return None
+    pts = representative.points
+    stride = max(1, math.ceil(len(pts) / 64))
+    samples = pts[::stride]
+    # Avoid weighting an explicitly duplicated closing vertex twice.
+    if len(samples) > 1 and samples[-1] == samples[0]:
+        samples = samples[:-1]
+    sine = sum(math.sin(t) for t, _ in samples)
+    cosine = sum(math.cos(t) for t, _ in samples)
+    if math.hypot(sine, cosine) < len(samples) * 0.05:
+        return None  # Full-wrap shape: mean angular phase is ambiguous.
+    return (math.atan2(sine, cosine) % TWO_PI,
+            sum(z for _, z in samples) / len(samples),
+            set(group).issubset(SUPPORT_ROLES))
+
+
+def _revisit_anchor_distance(a, b, radius: float) -> float:
+    if a[2] != b[2]:
+        return math.inf  # Do not match model and temporary support as one island.
+    return math.hypot(math.remainder(a[0]-b[0], TWO_PI) * radius, a[1]-b[1])
+
+
 def _ordered_layer_paths_with_islands(
     layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None,
-    travel_region: BaseGeometry | None = None,
+    travel_region: BaseGeometry | None = None, *,
+    avoid_first_anchor: tuple[float, float, bool] | None = None,
 ) -> list[tuple[Toolpath, int]]:
     roles = _island_role_sequence(config)
     ordered = []
@@ -987,6 +1025,19 @@ def _ordered_layer_paths_with_islands(
         travel_region = periodic_copies(layer.travel_region)
     groups = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
     remaining = list(enumerate(groups))
+    avoid_first_index = None
+    if (avoid_first_anchor is not None and config is not None and len(groups) > 1
+            and config.cooling_revisit_order == "avoid-last"):
+        candidates = []
+        for index, group in enumerate(groups):
+            anchor = _island_revisit_anchor(group)
+            if anchor is not None:
+                distance = _revisit_anchor_distance(anchor, avoid_first_anchor, layer.radius)
+                candidates.append((distance, index))
+        if candidates:
+            distance, index = min(candidates)
+            if distance <= config.cooling_revisit_match_mm:
+                avoid_first_index = index
     while remaining:
         def entry_distance(group):
             first_role = next((role for role in roles if group.get(role)), None)
@@ -995,8 +1046,13 @@ def _ordered_layer_paths_with_islands(
             candidates = [_orient_path_for_current_position(path, shadow, config) for path in group[first_role]]
             return min(_travel_distance_to_point(path, path.points[0], shadow, config) for path in candidates)
 
-        nearest = (min(range(len(remaining)), key=lambda i: entry_distance(remaining[i][1]))
-                   if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else 0)
+        choices = list(range(len(remaining)))
+        if not ordered and avoid_first_index is not None:
+            eligible = [i for i in choices if remaining[i][0] != avoid_first_index]
+            if eligible:
+                choices = eligible
+        nearest = (min(choices, key=lambda i: entry_distance(remaining[i][1]))
+                   if len(remaining) <= PATH_ORDER_OPTIMIZE_LIMIT else choices[0])
         group_index, group = remaining.pop(nearest)
         for role in roles:
             role_paths = (
@@ -1581,6 +1637,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";COOLING_MIN_LAYER_TIME_S:{config.cooling_min_layer_time_s:g}",
         f";COOLING_MIN_ISLAND_PRINT_TIME_S:{config.cooling_min_island_print_time_s:g}",
         f";COOLING_MIN_PRINT_SPEED_MM_MIN:{config.cooling_min_print_speed_mm_per_min:g}",
+        f";COOLING_REVISIT_ORDER:{config.cooling_revisit_order}",
         "G90 ; absolute positioning",
         "M82 ; absolute extrusion mode",
         *_reset_rotary_axis(state, reset_extrusion=True),
@@ -1612,6 +1669,7 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     fan_pwm = 0
     current_linear_advance_k = config.linear_advance_k
     printed_layers = 0
+    previous_last_island_anchor = None
     for layer in layers:
         nozzle_radius = layer.deposition_radius(config.layer_height)
         if not math.isfinite(nozzle_radius) or nozzle_radius < config.bed_radius:
@@ -1703,7 +1761,19 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             else None
         )
         travel_region = periodic_copies(layer.travel_region) if layer.travel_region is not None else None
-        tagged_paths = _ordered_layer_paths_with_islands(layer, state, layer_config, travel_region)
+        avoid_anchor = (previous_last_island_anchor
+                        if layer_config.cooling_revisit_order == "avoid-last" and not one_direction
+                        else None)
+        tagged_paths = _ordered_layer_paths_with_islands(
+            layer, state, layer_config, travel_region, avoid_first_anchor=avoid_anchor
+        )
+        if layer_config.cooling_revisit_order == "avoid-last" and tagged_paths:
+            # Introspection only. The indices are stable within this layer;
+            # the next layer is matched by physical position, not index.
+            group_order = list(dict.fromkeys(index for _, index in tagged_paths))
+            out.append(";COOLING_ISLAND_ORDER:" + ",".join(map(str, group_order)))
+            groups = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
+            previous_last_island_anchor = _island_revisit_anchor(groups[group_order[-1]])
         groups_by_id: dict[int, list[Toolpath]] = {}
         for path, group_index in tagged_paths:
             groups_by_id.setdefault(group_index, []).append(path)
