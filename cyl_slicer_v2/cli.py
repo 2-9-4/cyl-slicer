@@ -100,7 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--axial-min", type=float, default=15.0, help="Minimum emitted X position in mm.")
     parser.add_argument("--wall-count", type=int, default=None)
     parser.add_argument("--wall-order", choices=("outer-first", "inner-first"), default="outer-first",
-                        help="Per-island printing order; inner-first prints supporting walls before visible shell.")
+                        help="Legacy per-island perimeter order; overridden by --island-print-order.")
+    parser.add_argument("--island-print-order", type=lambda value: tuple(s.strip() for s in value.split(",")),
+                        default=None, metavar="STAGES",
+                        help="Per-island three-stage print order, e.g. infill,outer,inner; "
+                             "each stage exactly once; overrides --wall-order.")
     parser.add_argument("--seam-policy", choices=("nearest", "aligned", "corner"), default="nearest",
                         help="Closed-wall start selection; nearest preserves current toolpath behavior.")
     parser.add_argument("--seam-angle-deg", type=float, default=180.0,
@@ -400,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
         axial_min=args.axial_min,
         wall_count=_profile_value(args, "wall_count"),
         wall_order=args.wall_order,
+        island_print_order=_profile_value(args, "island_print_order"),
         seam_policy=args.seam_policy,
         seam_angle_deg=args.seam_angle_deg,
         seam_exclude_deg=(tuple(args.seam_exclude_deg) if args.seam_exclude_deg is not None else None),

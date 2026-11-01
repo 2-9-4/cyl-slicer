@@ -33,6 +33,9 @@
   don't suppress retraction across holes or separate islands based on distance
   alone. A role/type change is not by itself a reason to retract.
 - Finish each model island's walls and infill before moving to another island.
+  Opt-in island_print_order permutes infill/outer/inner within each island,
+  preserving all emitted material, separate support groups, and the legacy
+  wall_order behavior when unset.
   Join periodic seam components for ordering; keep support components separate.
   Enter closed perimeters using the configured seam policy (nearest by default),
   preserving winding and deposited length. Keep intentional zero-distance calibration bands intact.

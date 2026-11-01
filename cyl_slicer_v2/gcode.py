@@ -912,17 +912,37 @@ def _should_retract_after_path(
     return True
 
 
-def _ordered_layer_paths_with_islands(
-    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None,
-    travel_region: BaseGeometry | None = None,
-) -> list[tuple[Toolpath, int]]:
-    # Keep the existing default order for callers of this geometry helper;
-    # the outer/inner swap happens *within each island*, not across islands.
+_ISLAND_PRINT_STAGES: dict[str, tuple[str, ...]] = {
+    "infill": ("TOP_SKIN", "SOLID_INFILL", "INFILL_RADIAL", "INFILL_AXIAL", "GAP_FILL"),
+    "outer": ("EXTERNAL_PERIMETER",),
+    "inner": ("INTERNAL_PERIMETER",),
+}
+
+
+def _island_role_sequence(config: SlicerConfig | None) -> list[str]:
+    """Return the exact deposition-role order used inside each connected island.
+
+    Explicit stages change only the model fill/wall ordering. Bridge paths
+    remain after model walls for their anchored spans; support paths stay in
+    separately grouped islands. Legacy defaults remain byte-for-byte stable.
+    """
     roles = list(ROLE_ORDER)
+    if config is not None and config.island_print_order is not None:
+        chosen = [role for stage in config.island_print_order
+                  for role in _ISLAND_PRINT_STAGES[stage]]
+        return chosen + [role for role in roles if role not in chosen]
     if config is not None and config.wall_order == "inner-first":
         external = roles.index("EXTERNAL_PERIMETER")
         internal = roles.index("INTERNAL_PERIMETER")
         roles[external], roles[internal] = roles[internal], roles[external]
+    return roles
+
+
+def _ordered_layer_paths_with_islands(
+    layer: LayerToolpaths, state: GcodeState, config: SlicerConfig | None = None,
+    travel_region: BaseGeometry | None = None,
+) -> list[tuple[Toolpath, int]]:
+    roles = _island_role_sequence(config)
     ordered = []
     shadow = state
     if travel_region is None and config is not None and layer.travel_region is not None:
@@ -1462,6 +1482,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";NOZZLE_DIAMETER:{config.nozzle_diameter if config.nozzle_diameter is not None else 'unknown'}",
         f";BEAD_MODEL:{config.bead_model}",
         f";WALL_ORDER:{config.wall_order}",
+        *([f";ISLAND_PRINT_ORDER:{','.join(config.island_print_order)}"]
+          if config.island_print_order is not None else []),
         f";ROUTE_TRAVEL_INSIDE_ISLAND:{str(config.route_travel_inside_island).lower()}",
         f";ROUTE_MAX_EXTRA_MM:{config.route_max_extra_mm:g}",
         f";ROUTE_MAX_FACTOR:{config.route_max_factor:g}",
