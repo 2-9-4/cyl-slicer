@@ -90,8 +90,10 @@ class IslandStageOrderTests(unittest.TestCase):
         self.assertEqual(by_island[2], ["SUPPORT", "SUPPORT_INTERFACE"])
         self.assertEqual([key for key, _ in groupby([i for _, i in seq])],
                          list(dict.fromkeys(i for _, i in seq)))
-        self.assertEqual(Counter(id(p) for p, _ in seq),
-                         Counter(id(p) for paths in layer.paths_by_role.values() for p in paths))
+        # Entry planning can reverse a line or rotate a closed seam, which
+        # creates a new Toolpath object. Compare deposited roles, not ids.
+        self.assertEqual(Counter(p.role for p, _ in seq),
+                         Counter(p.role for paths in layer.paths_by_role.values() for p in paths))
 
     def test_arbitrary_stage_permutations_override_legacy_wall_order(self):
         for order, expected in (
