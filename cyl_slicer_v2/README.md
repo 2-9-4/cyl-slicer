@@ -468,6 +468,19 @@ reaches a steady state on a short path. Compare support release and bonding
 coupons before enabling, and do not assume this changes actual support gap,
 volume, interface density, or the model material.
 
+## Detailed-island travel-routing fallback
+
+The optional in-island travel router now rejects expensive geometry before
+calling GEOS when a connected footprint has more than 1536 raw boundary
+vertices (including holes). This is a *conservative fallback*: those complex
+islands are not considered verified for no-retract travel, and the normal
+retraction/Z-hop route remains in effect. Ordinary smaller polygons retain
+the existing exact-geometry safety checks, including periodic wrapping and
+hole avoidance; AABB filtering skips unrelated islands before expensive
+prepared-geometry queries. Toolpath geometry, extrusion and filament E are
+unchanged. The vertex budget limits complex polygon processing, not model
+meshing or toolpath generation.
+
 ## Bounded on-island travel routing
 
 The quality profile now enables `--route-travel-inside-island`. When a

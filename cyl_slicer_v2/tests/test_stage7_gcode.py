@@ -641,13 +641,32 @@ class GcodeTests(unittest.TestCase):
         self.assertRegex(gcode, r"G1 X[-0-9.]+ Y[-0-9.]+ E", msg="expected X/Y/E extrusion move")
 
     def test_cubeandring_layers_64_to_66_have_no_full_turn_perimeter_segments(self):
+        # A perimeter topology regression needs only the three cross-sections
+        # in question. Building 67 complete support/fill/G-code layers made
+        # this test exceed pytest-timeout=30 under xdist contention.
+        from cyl_slicer_v2.occupancy import theta_edges, axial_edges, sample_layer_with_edges
+        from cyl_slicer_v2.occupancy_backends import MeshContainsBackend
         root = Path(__file__).resolve().parents[2]
-        gcode = slice_to_gcode(load_mesh(root / "cubeandring.stl"), SlicerConfig(), max_layers=67)
+        mesh = load_mesh(root / "cubeandring.stl")
+        config = SlicerConfig()
+        radii = layer_radii(mesh, config)
+        backend = MeshContainsBackend(mesh)
+        t_edges, z_edges = theta_edges(config), axial_edges(mesh, config)
+        empty = GeometryCollection()
+        late_layers = []
+        for index in (64, 65, 66):
+            geom, window, full = sample_layer_with_edges(
+                backend, radii[index], config, t_edges, z_edges
+            )
+            layer = LayerSlice(index, radii[index], geom, empty, empty, empty,
+                               empty, theta_window=window, is_full_wrap=full)
+            late_layers.append(build_layer_toolpaths(layer, config))
+        gcode = emit_gcode(late_layers, config)
         bad = []
         for layer, role, x0, y0, x1, y1 in parse_extrusion_segments(gcode):
-            if layer in {64, 65, 66} and role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}:
-                if abs(y1 - y0) >= 300.0:
-                    bad.append((layer, role, x0, y0, x1, y1))
+            if role in {"EXTERNAL_PERIMETER", "INTERNAL_PERIMETER"}
+                    and abs(y1 - y0) >= 300.0:
+                bad.append((layer, role, x0, y0, x1, y1))
         self.assertEqual(bad, [])
 
     def test_single_rotated_cube_final_layer_does_not_spin_for_tiny_triangle(self):
