@@ -51,6 +51,8 @@ class SlicerConfig:
     support_interface_print_feed_mm_per_min: float | None = None
     support_flow_ratio: float = 1.0
     support_interface_flow_ratio: float = 1.0
+    support_fan_pwm: int | None = None  # None: normal layer fan.
+    support_interface_fan_pwm: int | None = None
     support_min_island_area: float = 0.25
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
@@ -295,6 +297,10 @@ class SlicerConfig:
             flow = getattr(self, name)
             if not math.isfinite(flow) or not 0 < flow <= 2:
                 raise ValueError(f"{name} must be finite and in (0, 2]")
+        for name in ("support_fan_pwm", "support_interface_fan_pwm"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or not 0 <= value <= 255):
+                raise ValueError(f"{name} must be None or integer PWM 0..255")
         if self.support_min_island_area < 0:
             raise ValueError("support_min_island_area must be non-negative")
         if self.support_min_region_area < 0:

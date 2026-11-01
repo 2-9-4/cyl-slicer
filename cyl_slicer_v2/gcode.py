@@ -1445,6 +1445,24 @@ def _layer_fan_pwm(height_mm: float, config: SlicerConfig) -> int:
     return round(maximum * fraction)
 
 
+def _role_fan_override(role: str, config: SlicerConfig) -> tuple[int | None, str]:
+    """Explicit support/bridge fan override; never change normal layer fan.
+
+    Support PWM follows the opt-in material preset's ceiling if selected.
+    Existing explicitly calibrated bridge behavior remains independent.
+    """
+    if role == "BRIDGE" and config.bridge_mode == "print":
+        return config.bridge_fan_pwm, "bridge"
+    key = {"SUPPORT": "support_fan_pwm",
+           "SUPPORT_INTERFACE": "support_interface_fan_pwm"}.get(role)
+    if key is None:
+        return None, role.lower()
+    requested = getattr(config, key)
+    if requested is not None and config.material_fan_policy == "preset":
+        requested = min(requested, _MATERIAL_FAN_PWM_CEILING[config.material_profile])
+    return requested, role.lower()
+
+
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
     config.validate()
     state = GcodeState(radial=config.bed_radius)
@@ -1484,6 +1502,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SUPPORT_INTERFACE_PRINT_FEED_MM_MIN:{config.support_interface_print_feed_mm_per_min}",
         f";SUPPORT_FLOW_RATIO:{config.support_flow_ratio:g}",
         f";SUPPORT_INTERFACE_FLOW_RATIO:{config.support_interface_flow_ratio:g}",
+        *([f";SUPPORT_FAN_PWM:{config.support_fan_pwm}"]
+          if config.support_fan_pwm is not None else []),
+        *([f";SUPPORT_INTERFACE_FAN_PWM:{config.support_interface_fan_pwm}"]
+          if config.support_interface_fan_pwm is not None else []),
         f";DENSE_SPACING_MM:{config.dense_line_spacing:.6f}",
         f";BUILD_CYLINDER_RADIUS:{config.bed_radius:g}",
         f";RETRACT_MM:{config.retract_mm:g}",
@@ -1641,13 +1663,10 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                     f" MAX_UNSUPPORTED_MM:{wall.max_unsupported_run_mm:.4f}"
                     f" TOTAL_MM:{wall.total_length_mm:.4f}"
                 )
-            bridge_fan = (
-                path.role == "BRIDGE" and path_config.bridge_mode == "print"
-                and path_config.bridge_fan_pwm is not None
-                and path_config.bridge_fan_pwm != fan_pwm
-            )
-            if bridge_fan:
-                out.append(f"M106 S{path_config.bridge_fan_pwm} ; bridge fan override")
+            override_pwm, role_fan_name = _role_fan_override(path.role, path_config)
+            role_fan_active = override_pwm is not None and override_pwm != fan_pwm
+            if role_fan_active:
+                out.append(f"M106 S{override_pwm} ; {role_fan_name} fan override")
             out.extend(
                 emit_toolpath(
                     path,
@@ -1660,8 +1679,8 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                     preserve_short_segments=one_direction,
                 )
             )
-            if bridge_fan:
-                out.append(f"M106 S{fan_pwm} ; restore layer fan after bridge")
+            if role_fan_active:
+                out.append(f"M106 S{fan_pwm} ; restore layer fan after {role_fan_name}")
 
     if layers:
         # Z is radial lift above the mandrel. Park relative to the last emitted

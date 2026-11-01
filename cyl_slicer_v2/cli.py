@@ -221,6 +221,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Support extrusion multiplier relative to calibrated bead (default 1.0).")
     parser.add_argument("--support-interface-flow-ratio", type=float, default=1.0,
                         help="Support-interface extrusion multiplier (default 1.0).")
+    parser.add_argument("--support-fan-pwm", type=int, default=None,
+                        help="Opt-in M106 fan PWM for support paths; restore normal layer fan after each path.")
+    parser.add_argument("--support-interface-fan-pwm", type=int, default=None,
+                        help="Opt-in M106 fan PWM for dense support-interface paths, independently of support body.")
     parser.add_argument(
         "--raft-layers",
         type=int,
@@ -470,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         support_interface_print_feed_mm_per_min=args.support_interface_print_feed,
         support_flow_ratio=args.support_flow_ratio,
         support_interface_flow_ratio=args.support_interface_flow_ratio,
+        support_fan_pwm=_profile_value(args, "support_fan_pwm"),
+        support_interface_fan_pwm=_profile_value(args, "support_interface_fan_pwm"),
         support_min_island_area=_profile_value(args, "support_min_island_area"),
         support_min_region_area=_profile_value(args, "support_min_region_area"),
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),
