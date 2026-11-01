@@ -148,7 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Target final feed fraction at the seam; no filament is removed.")
     parser.add_argument("--wall-support-report", action=argparse.BooleanOptionalAction,
                         default=None, help="Annotate per-wall support fraction and longest unsupported span in physical mm.")
-    parser.add_argument("--wall-unsupported-print-feed", type=float, default=None,
+    parser.add_argument("--wall-unsupported-print-feed",
+                        dest="wall_unsupported_print_feed_mm_per_min",
+                        type=float, default=None,
                         help="Opt-in physical mm/min ceiling for perimeter paths whose longest unsupported "
                              "run exceeds --wall-unsupported-min-span-mm; does not change E.")
     parser.add_argument("--wall-unsupported-min-span-mm", type=float, default=None,
