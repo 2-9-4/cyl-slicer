@@ -850,6 +850,8 @@ def _should_retract_after_path(
     state: GcodeState,
     config: SlicerConfig,
     travel_region: BaseGeometry | None = None,
+    *,
+    keep_primed_for_outer: bool = False,
 ) -> bool:
     if config.retract_mm <= 0:
         return False
@@ -884,6 +886,11 @@ def _should_retract_after_path(
             # A bounded in-island detour can remain primed for short moves,
             # but longer travel still retracts to avoid oozing.
             return route_length > config.route_max_unretracted_mm
+        if (inside and keep_primed_for_outer
+                and travel_distance <= config.route_max_unretracted_mm + 1e-8):
+            # Explicit infill-first: preserve pressure for a bounded, verified
+            # travel within THIS model island, not through gaps or other parts.
+            return False
         if (inside and path.role in SUPPORT_ROLES and next_path.role in SUPPORT_ROLES
                 and travel_distance <= config.route_max_unretracted_mm + 1e-8):
             return False
@@ -1648,8 +1655,19 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         for index, (path, group_index) in enumerate(tagged_paths):
             path_config = island_configs.get(group_index, layer_config)
             path = _orient_path_for_current_position(path, state, path_config)
-            next_path = tagged_paths[index + 1][0] if index + 1 < len(tagged_paths) else None
-            retract_after = _should_retract_after_path(path, next_path, state, path_config, travel_region)
+            following = tagged_paths[index + 1] if index + 1 < len(tagged_paths) else None
+            next_path = following[0] if following is not None else None
+            keep_primed = (
+                path_config.island_print_order is not None
+                and path.role in _ISLAND_PRINT_STAGES["infill"]
+                and next_path is not None
+                and next_path.role == "EXTERNAL_PERIMETER"
+                and following[1] == group_index
+            )
+            retract_after = _should_retract_after_path(
+                path, next_path, state, path_config, travel_region,
+                keep_primed_for_outer=keep_primed,
+            )
             out.append(f";TYPE:{path.role}")
             if (path_config.wall_support_report and path.role in PERIMETER_ROLES
                     and layer.previous_occupied is not None):
