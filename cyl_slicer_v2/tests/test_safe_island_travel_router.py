@@ -3,12 +3,14 @@ from __future__ import annotations
 import math
 import unittest
 
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, Point, Polygon, box
+from unittest.mock import patch
 from shapely.ops import unary_union
 
 from cyl_slicer_v2.config import SlicerConfig
 from cyl_slicer_v2.gcode import (
-    _safe_island_travel_route, _should_retract_after_path, emit_gcode, emit_toolpath,
+    _metric_travel_islands, _travel_is_contained, _safe_island_travel_route,
+    _should_retract_after_path, emit_gcode, emit_toolpath,
 )
 from cyl_slicer_v2.models import GcodeState, LayerToolpaths, Toolpath
 from cyl_slicer_v2.periodic import periodic_copies
@@ -183,6 +185,39 @@ class SafeIslandRoutingTests(unittest.TestCase):
                          [s for s in routed if s.startswith("G1 X")])
         self.assertAlmostEqual(before.extrusion,
             3*self.cfg.extrusion_per_mm,places=6)
+
+    def test_many_detailed_boundary_vertices_retract_and_skip_expensive_geos(self):
+        # Real manufactured/voxelized surfaces can have thousands of tiny
+        # stair-step edges. No routing query may scale/buffer this polygon.
+        steps = 1800
+        coords = [(i / steps, .0001 if i % 2 else 0) for i in range(steps+1)]
+        coords += [(1., 10.), (0., 10.)]
+        huge = Polygon(coords)
+        self.assertTrue(huge.is_valid)
+        from cyl_slicer_v2.gcode import _TRAVEL_REGION_CACHE
+        _TRAVEL_REGION_CACHE.clear()
+        with patch("cyl_slicer_v2.gcode.affinity.scale",
+                   side_effect=AssertionError("complex island must not be scaled")):
+            self.assertEqual(_metric_travel_islands(huge, 30), ())
+            self.assertFalse(_travel_is_contained((.1, 5), (.9, 5), 30, huge))
+            self.assertIsNone(_safe_island_travel_route(
+                (.1, 5), (.9, 5), 30, huge, self.cfg))
+        # The fallback must NOT lose deposited lines or make a void-crossing
+        # travel appear verified safe for pressure priming.
+        cur = Toolpath("SOLID_INFILL", 30, [(.05, 5), (.1, 5)])
+        nxt = Toolpath("EXTERNAL_PERIMETER", 30, [(.9, 5), (.95, 5)])
+        self.assertTrue(_should_retract_after_path(
+            cur, nxt, GcodeState(theta_accum=.05, axial=5),
+            SlicerConfig(island_print_order=("infill","outer","inner")),
+            huge, keep_primed_for_outer=True))
+
+    def test_bound_box_rejection_avoids_geos_covers(self):
+        region = periodic_copies(box(.1, 0, .3, 3))
+        from cyl_slicer_v2.gcode import _metric_travel_islands
+        islands = _metric_travel_islands(region, 30)
+        self.assertTrue(islands)
+        # Neither endpoint is within any island's physical AABB.
+        self.assertFalse(_travel_is_contained((.4, 1), (.5, 1), 30, region))
 
     def test_validation(self):
         for fields in (

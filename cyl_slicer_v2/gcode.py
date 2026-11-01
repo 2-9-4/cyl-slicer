@@ -31,6 +31,10 @@ BIDIRECTIONAL_OUTPUT_ROLES = PERIMETER_ROLES | frozenset({"SUPPORT", "SUPPORT_IN
 MAX_MARLIN_Y_DEGREES = 3600.0
 # Numerical boundary tolerance in physical mm, far below output resolution.
 TRAVEL_CONTAINMENT_TOLERANCE_MM = 1e-7
+# An extremely detailed contour is not suitable for repeated GEOS
+# visibility/containment queries on every path of a production slice.
+# Conservative fallback: retract and use the regular Z-hop/travel behavior.
+MAX_ROUTABLE_ISLAND_BOUNDARY_POINTS = 1536
 
 
 @dataclass(frozen=True)
@@ -360,6 +364,7 @@ def _travel_polygon_parts(geom: BaseGeometry):
 class _TravelIsland:
     surface: Polygon
     clearance: BaseGeometry
+    bounds: tuple[float, float, float, float]
     rings: list[LineString]
     vertices: list[tuple[float, float]]
     routes: OrderedDict = field(default_factory=OrderedDict)
@@ -383,13 +388,25 @@ def _metric_travel_islands(travel_region: BaseGeometry, radius: float):
         return cached[1]
     result = []
     for polygon in _travel_polygon_parts(travel_region):
+        # Skip before buffering/scaling: a massive, deeply notched boundary
+        # can make even prepared point queries expensive thousands of times
+        # per layer. Neither a straight path nor a detour is declared safely
+        # contained without checking original geometry; falling back causes
+        # retraction/Z-hop, never an unsafe unretracted travel.
+        total_points = len(polygon.exterior.coords)
+        for hole in polygon.interiors:
+            total_points += len(hole.coords)
+            if total_points > MAX_ROUTABLE_ISLAND_BOUNDARY_POINTS:
+                break
+        if total_points > MAX_ROUTABLE_ISLAND_BOUNDARY_POINTS:
+            continue
         surface = affinity.scale(polygon, xfact=radius, yfact=1.0, origin=(0, 0))
         clearance = surface.buffer(TRAVEL_CONTAINMENT_TOLERANCE_MM)
         prepare(clearance)
         rings = [LineString(ring) for ring in (surface.exterior, *surface.interiors)]
         vertices = [point for ring in rings
                     for point in coalesce_collinear_points(list(ring.coords), 1.0)[:-1]]
-        result.append(_TravelIsland(surface, clearance, rings, vertices))
+        result.append(_TravelIsland(surface, clearance, clearance.bounds, rings, vertices))
     result = tuple(result)
     _TRAVEL_REGION_CACHE[key] = (travel_region, result)
     if len(_TRAVEL_REGION_CACHE) > 8:
@@ -405,11 +422,21 @@ def _local_travel_points(start, destination, radius):
             ((destination[0] - shift) * radius, destination[1]))
 
 
+def _both_travel_endpoints_in_bounds(start, end, bounds) -> bool:
+    min_x, min_y, max_x, max_y = bounds
+    return (min_x <= start[0] <= max_x and min_y <= start[1] <= max_y
+            and min_x <= end[0] <= max_x and min_y <= end[1] <= max_y)
+
+
 def _travel_is_contained(start, destination, radius, travel_region):
     _, start_mm, end_mm = _local_travel_points(start, destination, radius)
-    travel = LineString([start_mm, end_mm])
-    return any(island.clearance.covers(travel)
-               for island in _metric_travel_islands(travel_region, radius))
+    # Most periodic copies/independent islands fail this cheap AABB test.
+    # Build a GEOS line only if BOTH endpoints are in the same candidate.
+    for island in _metric_travel_islands(travel_region, radius):
+        if (_both_travel_endpoints_in_bounds(start_mm, end_mm, island.bounds)
+                and island.clearance.covers(LineString([start_mm, end_mm]))):
+            return True
+    return False
 
 
 def _boundary_travel_route(island, start, end, max_length, max_vertices):
@@ -504,10 +531,14 @@ def _safe_island_travel_route(
     if direct < 1e-7:
         return None
     shift, start_mm, end_mm = _local_travel_points(start, destination, radius)
+    # Do not build or test GEOS points for a candidate whose AABB excludes
+    # either endpoint. Particularly important for repeated periodic islands.
     s = Point(start_mm)
     e = Point(end_mm)
     straight = LineString([start_mm, end_mm])
     for island in _metric_travel_islands(travel_region, radius):
+        if not _both_travel_endpoints_in_bounds(start_mm, end_mm, island.bounds):
+            continue
         if not island.clearance.covers(s) or not island.clearance.covers(e):
             continue
         if island.clearance.covers(straight):
