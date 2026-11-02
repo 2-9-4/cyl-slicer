@@ -1234,3 +1234,34 @@ PYTHONPATH=. pytest -n auto --timeout=30
 The tests are staged to match the implementation pipeline: coordinates/config,
 fixtures, occupancy sampling, periodic geometry, layer classification, toolpath
 generation, G-code emission, and CLI smoke tests.
+
+
+## Experimental nonplanar top-surface *inspection* (issue #77)
+
+For future true surface-following cylindrical top skins, the slicer now has
+a standalone **geometry-only** probe. It intersects exact mesh triangles with
+rays in the radial plane and attempts to follow the unique outward-facing
+radial surface as a function \`r(theta, X)\`. A hybrid finish would later
+deposit ordinary radial slabs internally and follow this surface near the
+outside using simultaneous X/Y/Z motion.
+
+\`\`\`bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --point 20,15 --point 24,22 --max-segment-mm 0.4 \
+  --max-chord-error-mm 0.015 --max-slope 0.3
+\`\`\`
+
+Coordinates on each \`--point\` are **theta degrees, axial X mm**. Use
+continuous angles (e.g. 359, 361) for a ribbon crossing the periodic seam,
+not an abrupt 359→1 turn. Output JSON includes sampled radii, 3D cylindrical
+arc length, minimum radial-facing normal and rejection reasons. The probe
+rejects holes, multiple distinct outward sheets, excessive slopes, radial
+excursions and refinement budgets, rather than interpolating over them.
+Sampling resolution is finite and does **not** prove narrow holes are absent.
+
+**This emits no G-code and does not make a model printable.** In particular,
+neither per-segment volume/3D Marlin feed nor true nozzle/mandrel swept
+collision checking nor transition replacement of existing top shell has
+been implemented. Never convert these sample points directly into G-code
+without those safeguards (#78–#80). Existing slicer CLI, profile defaults
+and emitted G-code are unchanged.
