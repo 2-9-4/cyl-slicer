@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import math
 import unittest
 
@@ -13,7 +14,7 @@ class NonplanarProbeTests(unittest.TestCase):
         self.assertAlmostEqual(theta, math.radians(370))
         self.assertEqual(axial,19.5)
         for value in ("1", "1,2,3", "nan,20", "30,inf", "not_a_number,5"):
-            with self.subTest(value=value), self.assertRaises(ValueError):
+            with self.subTest(value=value), self.assertRaises(argparse.ArgumentTypeError):
                 degree_point(value)
 
     def test_candidate_json_does_not_claim_printable_or_change_gcode(self):
