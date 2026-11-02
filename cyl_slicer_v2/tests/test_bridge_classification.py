@@ -54,6 +54,53 @@ class BridgeClassificationTests(unittest.TestCase):
             (6.39-6.19 - (.42/15))*10,delta=.1)
         self.assertLess(bridge.area,2.5)
 
+    def test_mixed_two_anchor_and_one_anchor_lanes_are_separated(self):
+        # The left half has two bearings around a 2 mm axial void. The
+        # right half has only a lower bearing, so it is a cantilever.
+        current = box(0,0,1,10)
+        previous = unary_union([
+            box(0,0,1,4),
+            box(0,6,.45,10),
+        ])
+        verified = self.bridge(current,previous)
+        axial = verified["axial"]
+        self.assertFalse(axial.is_empty)
+        self.assertTrue(axial.covers(Point(.2,5)))
+        self.assertFalse(axial.covers(Point(.7,5)))
+        self.assertTrue(verified["radial"].is_empty)
+        self.assertLess(axial.area, .5 * current.area)
+        self.assertTrue(current.covers(axial))
+        for k in (-2,-1,1,4):
+            shifted = box(k*2*math.pi,0,1+k*2*math.pi,10)
+            moved_bearings = unary_union([
+                box(k*2*math.pi,0,1+k*2*math.pi,4),
+                box(k*2*math.pi,6,.45+k*2*math.pi,10),
+            ])
+            result = self.bridge(shifted, moved_bearings)["axial"]
+            self.assertAlmostEqual(result.area, axial.area,delta=1e-6)
+
+    def test_sub_bead_width_bridge_patch_remains_supported_not_bridge(self):
+        # A bearing pair with just 0.3 mm transverse width cannot fit a
+        # .42 mm bridge bead and must not become a micro bridge.
+        current=box(0,0,1,10)
+        previous=unary_union([box(0,0,1,4),box(0,6,.03,10)])
+        regions=self.bridge(current,previous)
+        self.assertTrue(all(x.is_empty for x in regions.values()))
+
+    def test_separate_narrow_bridging_strips_do_not_connect_across_cantilever(self):
+        current=box(0,0,1,10)
+        previous=unary_union([
+            box(0,0,1,4),
+            box(0,6,.32,10),
+            box(.68,6,1,10),
+        ])
+        regions=self.bridge(current,previous)
+        axial=regions["axial"]
+        self.assertTrue(axial.covers(Point(.15,5)))
+        self.assertTrue(axial.covers(Point(.85,5)))
+        self.assertFalse(axial.covers(Point(.5,5)))
+        self.assertGreater(len(getattr(axial, "geoms", [axial])),1)
+
     def test_no_previous_layer_has_no_fabricated_support(self):
         regions=self.bridge(box(0,0,1,10),GeometryCollection())
         self.assertTrue(all(x.is_empty for x in regions.values()))

@@ -1,7 +1,8 @@
 """Conservative, physical-mm two-ended bridge classification on a cylinder.
 
-Bridge paths are optional because the available mandrel rotates around gravity;
-firmware motion and hardware coupons must validate actual bridging performance.
+Bridge candidates are checked in narrow transverse bands, not assumed to be
+printable across an entire irregular unsupported polygon. Unverified regions
+retain ordinary support. Actual mandrel gravity/phase still needs coupons.
 """
 from __future__ import annotations
 
@@ -22,43 +23,101 @@ def _polygons(g):
             yield from _polygons(p)
 
 
-def _span_has_two_anchors(candidate, previous, axis, width, max_span):
-    """Validate a narrow, almost rectangular gap with BOTH ends supported.
+def _lines(geom):
+    """All nonempty pieces of a physical-mm scanline intersection."""
+    if isinstance(geom, LineString):
+        yield geom
+    elif hasattr(geom, "geoms"):
+        for part in geom.geoms:
+            yield from _lines(part)
 
-    Require independent bearing at >half of nine perpendicular samples and
-    a straight unsupported corridor. This deliberately rejects rounded,
-    branched or one-sided features rather than guessing a bridge direction.
+
+def _anchored_bridge_lanes(candidate, previous, axis, width, max_span):
+    """Conservatively classify *transverse lanes*, not a whole overhang.
+
+    Every printed region must have two independent previous-slab bearings.
+    Probe three transverse locations in each narrow band; all must have an
+    uninterrupted unsupported chord of printable length and supported ends.
+    A band with a missing/one-sided bearing is not converted to bridge.
+    Trim the edges of accepted runs by half a bead when adjacent bands fail,
+    keeping bridge beads away from the unverified part of an overhang.
     """
+    if candidate.interiors or candidate.is_empty or not candidate.is_valid:
+        return GeometryCollection()
     xmin, ymin, xmax, ymax = candidate.bounds
-    span = (xmax - xmin) if axis == "radial" else (ymax-ymin)
-    sideways = (ymax-ymin) if axis == "radial" else (xmax-xmin)
-    if not width * 1.5 <= span <= max_span or sideways <= width:
-        return False
-    if candidate.interiors or candidate.area < 0.70 * span * sideways:
-        return False
+    low, high = (ymin, ymax) if axis == "radial" else (xmin, xmax)
+    sideways = high - low
+    if sideways <= width or width <= 0 or max_span <= 0:
+        return GeometryCollection()
+    count = max(1, math.ceil(sideways / (0.5 * width)))
+    # A fine-textured candidate cannot cause unbounded geometry operations.
+    if count > 1024:
+        return GeometryCollection()
+    pitch = sideways / count
     offset = min(width * 0.25, 0.10)
-    supported = 0
-    for i in range(9):
-        fraction = (i + .5) / 9
-        if axis == "radial":
-            transverse = ymin + fraction * sideways
-            start = (xmin,transverse)
-            finish = (xmax,transverse)
-            a = (xmin-offset,transverse)
-            b = (xmax+offset,transverse)
+    approved = []
+    for k in range(count):
+        for fraction in (0.15, 0.5, 0.85):
+            transverse = low + (k + fraction) * pitch
+            if axis == "radial":
+                probe = LineString([(xmin-width, transverse),
+                                    (xmax+width, transverse)])
+            else:
+                probe = LineString([(transverse, ymin-width),
+                                    (transverse, ymax+width)])
+            segments = [s for s in _lines(candidate.intersection(probe))
+                        if s.length > 1e-8]
+            # Reject forks, holes and locally disconnected spans.
+            if len(segments) != 1:
+                break
+            ends = [p[0] if axis == "radial" else p[1]
+                    for p in segments[0].coords]
+            begin, end = min(ends), max(ends)
+            if not width * 1.5 <= end - begin <= max_span:
+                break
+            if axis == "radial":
+                start_bearing = Point(begin-offset, transverse)
+                end_bearing = Point(end+offset, transverse)
+            else:
+                start_bearing = Point(transverse, begin-offset)
+                end_bearing = Point(transverse, end+offset)
+            if not previous.covers(start_bearing) or not previous.covers(end_bearing):
+                break
         else:
-            transverse = xmin + fraction * sideways
-            start = (transverse,ymin)
-            finish = (transverse,ymax)
-            a = (transverse,ymin-offset)
-            b = (transverse,ymax+offset)
-        # The full proposed span must be inside the unsupported candidate
-        # and both ends must independently meet previously deposited material.
-        if (candidate.buffer(1e-7).covers(LineString([start,finish]))
-                and previous.covers(Point(a)) and previous.covers(Point(b))):
-            supported += 1
-    return supported >= 6
+            approved.append(k)
 
+    if not approved:
+        return GeometryCollection()
+    if len(approved) == count:
+        # Preserve the previous exact-region behavior for a wholly verified
+        # rectangular bridge (no extra edges, quantization or density drift).
+        return candidate
+
+    regions = []
+    runs = []
+    start = last = approved[0]
+    for index in approved[1:]:
+        if index != last + 1:
+            runs.append((start, last))
+            start = index
+        last = index
+    runs.append((start, last))
+    for first, last in runs:
+        # A .5*w safety margin on either side excludes bead centers near
+        # failed bands, while maintaining the original physical endpoints.
+        lower = low + first * pitch + width * 0.5
+        upper = low + (last + 1) * pitch - width * 0.5
+        if upper <= lower:
+            continue
+        window = (Polygon([(xmin-width, lower), (xmax+width, lower),
+                           (xmax+width, upper), (xmin-width, upper)])
+                  if axis == "radial"
+                  else Polygon([(lower, ymin-width), (upper, ymin-width),
+                                (upper, ymax+width), (lower, ymax+width)]))
+        clipped = candidate.intersection(window)
+        if not clipped.is_empty:
+            regions.append(clipped)
+    return unary_union(regions) if regions else GeometryCollection()
 
 def classify_bridge_regions(
     current,
@@ -87,16 +146,23 @@ def classify_bridge_regions(
     for polygon in _polygons(unsup):
         if polygon.is_empty or not polygon.is_valid:
             continue
-        possibilities = [
-            (axis, (polygon.bounds[2]-polygon.bounds[0]) if axis=="radial"
-                   else (polygon.bounds[3]-polygon.bounds[1]))
-            for axis in ("radial","axial")
-            if _span_has_two_anchors(polygon,prior_cover,axis,bead_width,max_span_mm)
-        ]
+        possibilities = []
+        for axis in ("radial", "axial"):
+            verified = _anchored_bridge_lanes(
+                polygon, prior_cover, axis, bead_width, max_span_mm,
+            )
+            if not verified.is_empty:
+                span = ((polygon.bounds[2]-polygon.bounds[0]) if axis=="radial"
+                        else (polygon.bounds[3]-polygon.bounds[1]))
+                possibilities.append((axis, verified, span))
         if not possibilities:
             continue
-        direction = min(possibilities,key=lambda p:p[1])[0]
-        directions[direction].append(polygon)
+        # Favor the orientation that safely bridges *more* of the region.
+        # When coverage ties, choose the shorter unsupported direction.
+        direction, footprint, _ = min(
+            possibilities, key=lambda p: (-p[1].area, p[2], p[0]),
+        )
+        directions[direction].append(footprint)
 
     out = {}
     for direction,parts in directions.items():

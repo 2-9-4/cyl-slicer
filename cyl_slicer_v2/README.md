@@ -568,9 +568,14 @@ before exploiting bearing diagnostics for speed, bridging or support removal.
 `--bridge-mode print` detects short, nearly straight **two-bearing**
 unsupported corridors in the physical cylindrical distance metric. Both
 anchor ends must meet the previous deposited layer; a one-ended cantilever,
-a long span above `--bridge-max-span-mm` (default 8 mm), or a branched/irregular
-gap retains normal support instead. Detection spans the periodic 0/360°
-seam. Confirmed bridge infill is laid along the anchored direction at the
+a long span above `--bridge-max-span-mm` (default 8 mm), or an unverified
+branch retains normal support instead. The detector partitions mixed
+two-ended/one-ended overhangs into narrow physical-mm transverse lanes,
+probes both anchors at three offsets per lane, and retains only continuous,
+verified spans. For partial-width bridges it also leaves a half-bead margin
+beside unverified lanes. This prevents a safe bridge along one side of an
+overhang from incorrectly deleting the support requirement beneath a
+neighboring cantilever. Detection spans the periodic 0/360° seam. Confirmed bridge infill is laid along the anchored direction at the
 calibrated dense bead pitch, including a small `--bridge-anchor-overlap-mm`
 (default 0.2) into solid bearing material, and excluded from other fill so
 filament is not intentionally printed twice. Support propagation omits
