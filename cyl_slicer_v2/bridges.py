@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from shapely.geometry import Point, LineString, GeometryCollection, Polygon, MultiPolygon
+from shapely.geometry import Point, LineString, GeometryCollection, Polygon, MultiPolygon, box
 from shapely.ops import unary_union
 from shapely import affinity
 
@@ -49,12 +49,28 @@ def _anchored_bridge_lanes(candidate, previous, axis, width, max_span):
     sideways = high - low
     if sideways <= width or width <= 0 or max_span <= 0:
         return GeometryCollection()
+    offset = min(width * 0.25, 0.10)
+
+    # Only exact rectangular corridors with two *continuous* bearing
+    # lines may bypass O(transverse span / bead width) individual probes.
+    # Checking sampled bearing points would be unsafe for narrow notches.
+    span = (xmax - xmin) if axis == "radial" else (ymax - ymin)
+    if (width * 1.5 <= span <= max_span
+            and candidate.equals(box(xmin, ymin, xmax, ymax))):
+        if axis == "radial":
+            bearing_a = LineString([(xmin - offset, ymin), (xmin - offset, ymax)])
+            bearing_b = LineString([(xmax + offset, ymin), (xmax + offset, ymax)])
+        else:
+            bearing_a = LineString([(xmin, ymin - offset), (xmax, ymin - offset)])
+            bearing_b = LineString([(xmin, ymax + offset), (xmax, ymax + offset)])
+        if previous.covers(bearing_a) and previous.covers(bearing_b):
+            return candidate
+
     count = max(1, math.ceil(sideways / (0.5 * width)))
     # A fine-textured candidate cannot cause unbounded geometry operations.
     if count > 1024:
         return GeometryCollection()
     pitch = sideways / count
-    offset = min(width * 0.25, 0.10)
     approved = []
     for k in range(count):
         for fraction in (0.15, 0.5, 0.85):

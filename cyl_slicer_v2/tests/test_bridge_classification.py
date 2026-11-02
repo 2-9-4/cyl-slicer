@@ -101,6 +101,37 @@ class BridgeClassificationTests(unittest.TestCase):
         self.assertFalse(axial.covers(Point(.5,5)))
         self.assertGreater(len(getattr(axial, "geoms", [axial])),1)
 
+    def test_full_rectangular_bridge_has_exact_bearing_fast_path(self):
+        from unittest.mock import patch
+        from cyl_slicer_v2.bridges import _anchored_bridge_lanes
+        # 180 mm wide rectangle: avoid hundreds of repeated line probes.
+        previous = unary_union([
+            box(0, 3.5, 180, 4.15),
+            box(0, 5.85, 180, 6.5),
+        ])
+        rectangle = box(0, 4.2, 180, 5.8)
+        with patch("cyl_slicer_v2.bridges._lines",
+                   side_effect=AssertionError("expected exact fast path")):
+            result = _anchored_bridge_lanes(
+                rectangle, previous, "axial", .42, 8,
+            )
+        self.assertTrue(result.equals(rectangle))
+
+    def test_rectangular_gap_with_incomplete_bearings_uses_lane_checks(self):
+        from cyl_slicer_v2.bridges import _anchored_bridge_lanes
+        candidate = box(0, 4.2, 10, 5.8)
+        previous = unary_union([
+            box(0, 3.5, 10, 4.15),
+            box(0, 5.85, 4, 6.5),
+            box(6, 5.85, 10, 6.5),
+        ])
+        result = _anchored_bridge_lanes(candidate,previous,"axial",.42,8)
+        self.assertFalse(result.is_empty)
+        self.assertTrue(result.covers(Point(2,5)))
+        self.assertTrue(result.covers(Point(8,5)))
+        self.assertFalse(result.covers(Point(5,5)))
+        self.assertLess(result.area,candidate.area)
+
     def test_no_previous_layer_has_no_fabricated_support(self):
         regions=self.bridge(box(0,0,1,10),GeometryCollection())
         self.assertTrue(all(x.is_empty for x in regions.values()))

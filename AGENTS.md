@@ -26,7 +26,10 @@
   polygons based on a majority of two-ended samples. Check transverse
   physical-mm lanes for continuous spans and independent bearings at both
   ends; retain support in rejected/one-ended lanes, including across 2pi.
-  Bridge print mode remains opt-in pending rotating-mandrel validation.
+  A rectangular bridge may bypass stripe sampling only when both complete
+  physical bearing lines are covered by the previous slab; never replace this
+  with a few sampled points or a majority vote. Bridge print mode remains
+  opt-in pending rotating-mandrel validation.
 - Optional unsupported-wall feed limits must use the physical longest
   unsupported perimeter run from the previous radial slab; never use theta
   radians as millimeters or presume bearing on the first printed slab.

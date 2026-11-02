@@ -575,7 +575,10 @@ probes both anchors at three offsets per lane, and retains only continuous,
 verified spans. For partial-width bridges it also leaves a half-bead margin
 beside unverified lanes. This prevents a safe bridge along one side of an
 overhang from incorrectly deleting the support requirement beneath a
-neighboring cantilever. Detection spans the periodic 0/360° seam. Confirmed bridge infill is laid along the anchored direction at the
+neighboring cantilever. Fully rectangular unsupported corridors with
+continuous bearing **lines** on both ends take a fast path that avoids
+hundreds of per-lane polygon intersections on wide bridges; a small
+bearing gap disables the shortcut. Detection spans the periodic 0/360° seam. Confirmed bridge infill is laid along the anchored direction at the
 calibrated dense bead pitch, including a small `--bridge-anchor-overlap-mm`
 (default 0.2) into solid bearing material, and excluded from other fill so
 filament is not intentionally printed twice. Support propagation omits
