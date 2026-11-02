@@ -69,7 +69,7 @@ class AdaptiveRadialSlabTests(unittest.TestCase):
     def test_minimum_thickness_fails_instead_of_violating_requested_cusp(self):
         mesh=slope_mesh()
         from dataclasses import replace
-        c=replace(cfg(),adaptive_cusp_error_mm=.04)
+        c=replace(cfg(),adaptive_cusp_error_mm=.03)
         with self.assertRaisesRegex(ValueError,"Adaptive cusp target"):
             layer_slabs(mesh,c)
 
