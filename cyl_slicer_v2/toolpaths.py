@@ -455,6 +455,21 @@ def _registered_axial_grid(radius: float, spacing: float, config: SlicerConfig) 
         else:
             raise ValueError("nested axial grid ring alignment did not converge")
     step = TWO_PI / count
+    # Fixed-outer retains every track on smaller radii. Check the REAL
+    # pitch at this radius, after integer ring quantization, so a very
+    # small cylinder does not silently receive extreme over-density.
+    # Nested-mode dyadic thinning remains unchanged and separately honors
+    # the new globally aligned periodic ring from PR #76.
+    if config.axial_grid_mode == "fixed-outer":
+        density_ratio = spacing / (radius * step)
+        if density_ratio > config.axial_grid_max_density_ratio + 1e-9:
+            raise ValueError(
+                f"Fixed-outer axial grid would be {density_ratio:.2f}x denser "
+                f"than the requested spacing at R={radius:g} mm "
+                f"(limit {config.axial_grid_max_density_ratio:g}x). "
+                "Use --axial-grid-mode nested or explicitly raise "
+                "--axial-grid-max-density-ratio after checking small-radius overlap."
+            )
     stride = 1
     if config.axial_grid_mode == "nested":
         # Adjacent live tracks remain at most spacing mm apart on this

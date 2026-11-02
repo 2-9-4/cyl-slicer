@@ -179,6 +179,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "fallback to bed radius in standalone calls. Fix both references for separate jobs.")
     parser.add_argument("--axial-grid-phase-deg", type=float, default=None,
                         help="Fixed angular grid phase in degrees for fixed-outer/nested modes.")
+    parser.add_argument("--axial-grid-max-density-ratio", type=float, default=None,
+                        help="Fixed-outer safety limit: refuse physical track pitch more than this "
+                             "factor denser than requested (default 4); nested avoids severe overfill.")
     parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default=None,
                         help="Legacy crosshatched grid on every layer or one alternating grid axis per layer.")
     parser.add_argument("--solid-infill-pattern", choices=("axial", "alternate"), default=None,
@@ -531,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
         axial_grid_outer_radius_mm=_profile_value(args, "axial_grid_outer_radius_mm"),
         axial_grid_inner_radius_mm=_profile_value(args, "axial_grid_inner_radius_mm"),
         axial_grid_phase_deg=_profile_value(args, "axial_grid_phase_deg"),
+        axial_grid_max_density_ratio=_profile_value(args, "axial_grid_max_density_ratio"),
         sparse_infill_pattern=_profile_value(args, "sparse_infill_pattern"),
         solid_infill_pattern=_profile_value(args, "solid_infill_pattern"),
         monotonic_top_skin=_profile_value(args, "monotonic_top_skin"),

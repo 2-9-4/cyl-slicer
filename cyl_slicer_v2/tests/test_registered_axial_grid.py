@@ -180,21 +180,55 @@ class RegisteredAxialGridTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"outer radius"):
             build_layer_toolpaths(layers[0],cfg)
 
+    def test_fixed_outer_refuses_excessive_small_radius_density(self):
+        cfg=self.cfg(axial_grid_max_density_ratio=4)
+        geom=box(0,0,2*math.pi,10)
+        with self.assertRaisesRegex(ValueError,"Fixed-outer axial grid would be"):
+            thetas(geom,8,1.5,cfg)
+        # The nested grid keeps parent's exact registration but backs off
+        # the number of live tracks when radius falls by a large factor.
+        nested=self.cfg(axial_grid_mode="nested", axial_grid_inner_radius_mm=8)
+        self.assertTrue(thetas(geom,8,1.5,nested))
+        self.assertGreater(len(thetas(geom,8,1.5,nested)),1)
+        # An explicitly calibrated density budget can permit fixed-outer,
+        # but the caller must choose it rather than silently overfilling.
+        override=self.cfg(axial_grid_max_density_ratio=10)
+        actual=thetas(geom,8,1.5,override)
+        self.assertGreater(len(actual),len(thetas(geom,8,1.5,nested)))
+        self.assertEqual(thetas(geom,30,1.5,cfg),thetas(geom,60,1.5,cfg))
+        # Per-layer mode remains unchanged regardless of a fixed-outer guard.
+        unregistered=self.cfg(axial_grid_mode="per-layer")
+        self.assertTrue(thetas(geom,8,1.5,unregistered))
+
+    def test_dense_role_uses_its_own_density_budget(self):
+        cfg=self.cfg()
+        # Same radius: a dense 0.4-mm role can overfill while a sparse
+        # 2-mm role is also dense by the same *ratio*: the guard is
+        # dimensionless and applies to both, not just infill.
+        with self.assertRaisesRegex(ValueError,"Fixed-outer axial grid"):
+            _registered_axial_grid(10,0.4,cfg)
+        with self.assertRaisesRegex(ValueError,"Fixed-outer axial grid"):
+            _registered_axial_grid(10,2.0,cfg)
+        self.assertTrue(_registered_axial_grid(20,2.0,cfg))
+
     def test_validation_and_profiles(self):
         for profile in ("quality","legacy-cli","library"):
             args = build_parser().parse_args(["--profile",profile])
             self.assertEqual(_profile_value(args,"axial_grid_mode"),"per-layer")
             self.assertIsNone(_profile_value(args,"axial_grid_outer_radius_mm"))
+            self.assertEqual(_profile_value(args,"axial_grid_max_density_ratio"),4)
             self.assertIsNone(_profile_value(args,"axial_grid_inner_radius_mm"))
             selected = build_parser().parse_args(["--profile",profile,
                         "--axial-grid-mode","nested",
                         "--axial-grid-outer-radius-mm","60",
                         "--axial-grid-inner-radius-mm","18",
-                        "--axial-grid-phase-deg","25"])
+                        "--axial-grid-phase-deg","25",
+                        "--axial-grid-max-density-ratio","8"])
             for key,value in (("axial_grid_mode","nested"),
                               ("axial_grid_outer_radius_mm",60),
                               ("axial_grid_inner_radius_mm",18),
-                              ("axial_grid_phase_deg",25)):
+                              ("axial_grid_phase_deg",25),
+                              ("axial_grid_max_density_ratio",8)):
                 self.assertEqual(_profile_value(selected,key),value)
         for arg in ({"axial_grid_mode":"magic"},
                     {"axial_grid_outer_radius_mm":0},
@@ -203,7 +237,10 @@ class RegisteredAxialGridTests(unittest.TestCase):
                     {"axial_grid_inner_radius_mm":float("nan")},
                     {"axial_grid_inner_radius_mm":61},
                     {"axial_grid_phase_deg":360},
-                    {"axial_grid_phase_deg":float("nan")}):
+                    {"axial_grid_phase_deg":float("nan")},
+                    {"axial_grid_max_density_ratio":0},
+                    {"axial_grid_max_density_ratio":float("inf")},
+                    {"axial_grid_max_density_ratio":float("nan")}):
             with self.subTest(arg=arg),self.assertRaises(ValueError):
                 replace(self.cfg(),**arg).validate()
 

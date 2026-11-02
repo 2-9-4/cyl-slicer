@@ -19,7 +19,10 @@
   across the *whole job's* inner-to-outer deposited radial faces; an odd
   base ring may require extra angular tracks to avoid over-dense seam gaps.
   Never infer this lower reference independently per worker or island.
-  Keep it opt-in until printed density/support coupons validate the behavior.
+  Fixed-outer mode must reject gross small-radius overfill using its actual
+  physical pitch and configurable density budget; nested can drop children
+  instead. Keep these modes opt-in until printed density/support coupons
+  validate behavior.
 - Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors. A single 3- or 4-arm branch may be recovered only from a bounded, fully verified medial tree, with original polygon bead-sweep containment and nearly disjoint trunk/side-arm footprints. Each extra side arm must also avoid all previously accepted arms; reject multi-junction, holed, cyclic or ambiguous graph topology.
 - Opt-in bottom support interfaces must seed only from exposed model
   outer radial faces with immediately adjacent support and propagate through
