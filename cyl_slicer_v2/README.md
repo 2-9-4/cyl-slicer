@@ -678,24 +678,29 @@ radius, moving the previous layer's tracks. Three modes are available:
   lattice chosen so circumferential spacing at the **outermost physical
   deposited radius** does not exceed the configured spacing. Every smaller
   layer retains exactly those angular tracks, making the bottom denser.
-- `--axial-grid-mode nested`: use that same global angular lattice, but
-  select power-of-two subsets on smaller radii. New tracks appear at
+- `--axial-grid-mode nested`: use a global angular lattice with its full
+  ring track count rounded upward to a multiple of every dyadic stride active
+  between the inner and outer deposited radii. New tracks appear at
   deterministic halfway angular positions as circumference grows; existing
-  tracks stay registered. The maximum angular gap at a given radius is
-  bounded by the role's requested mm spacing. **This inserts new tracks,
-  not connected Y-shaped extrusion branches.** Physical support at line
-  onset still needs testing.
+  tracks stay registered. This prevents a one-track, over-dense gap at
+  the 0/2π seam when the original outer count is odd. The physical gap is
+  uniform around a full ring at each active stride and never exceeds the
+  role's requested mm spacing. **This inserts new tracks, not connected
+  Y-shaped extrusion branches.** Physical support at line onset needs testing.
 
-`build_toolpaths()` automatically derives one outer reference radius
-from the entire job (including actual variable-height slab outer faces)
-before parallel workers start. Standalone `build_layer_toolpaths()` must
-instead receive `axial_grid_outer_radius_mm` explicitly. To force the
-same registration across independently sliced chunks, pass
-`--axial-grid-outer-radius-mm 60` (using your actual target physical
-radius), optionally `--axial-grid-phase-deg 0`. Example:
+`build_toolpaths()` automatically derives the outer reference radius and,
+for nested mode, the innermost deposited face from the entire job (including
+variable-height slabs) before parallel workers start. Standalone
+`build_layer_toolpaths()` requires `axial_grid_outer_radius_mm`; nested mode
+also uses `axial_grid_inner_radius_mm`, falling back to the configured build
+cylinder radius if omitted. A standalone layer below that lower reference is
+rejected rather than silently creating a crowded periodic seam. To maintain
+identical tracks across independently sliced chunks, pass both references
+(the actual physical deposited radii), optionally `--axial-grid-phase-deg 0`. Example:
 
 ```bash
 ./slice_fast.sh model.stl --axial-grid-mode nested
+./slice_fast.sh model.stl --axial-grid-mode nested --axial-grid-inner-radius-mm 30 --axial-grid-outer-radius-mm 60
 ./slice_fast.sh model.stl --axial-grid-mode fixed-outer --axial-grid-outer-radius-mm 60
 ```
 
