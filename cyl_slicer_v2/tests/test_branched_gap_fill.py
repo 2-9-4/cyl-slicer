@@ -89,7 +89,11 @@ class BranchGapFillTests(unittest.TestCase):
 
     def test_four_arm_cross_uses_one_trunk_and_two_nonoverlapping_arms(self):
         cross=unary_union([box(5.85,0,6.15,8),box(3,3.85,9,4.15)])
-        result=paths(cross).get("GAP_FILL",[])
+        roles=paths(cross)
+        self.assertFalse(roles.get("EXTERNAL_PERIMETER"),
+                         "a microscopic eroded junction is not a printable wall")
+        self.assertFalse(roles.get("INTERNAL_PERIMETER"))
+        result=roles.get("GAP_FILL",[])
         self.assertEqual(len(result),3)
         sweeps=deposited_footprints(result)
         self.assertGreater(sum(footprint.area for footprint in sweeps),3.2)
