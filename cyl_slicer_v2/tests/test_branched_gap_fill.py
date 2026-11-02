@@ -87,6 +87,47 @@ class BranchGapFillTests(unittest.TestCase):
             sweeps=deposited_footprints(result)
             self.assertLessEqual(sweeps[0].intersection(sweeps[1]).area,.0011)
 
+    def test_four_arm_cross_uses_one_trunk_and_two_nonoverlapping_arms(self):
+        cross=unary_union([box(5.85,0,6.15,8),box(3,3.85,9,4.15)])
+        roles=paths(cross)
+        self.assertFalse(roles.get("EXTERNAL_PERIMETER"),
+                         "a microscopic eroded junction is not a printable wall")
+        self.assertFalse(roles.get("INTERNAL_PERIMETER"))
+        result=roles.get("GAP_FILL",[])
+        self.assertEqual(len(result),3)
+        sweeps=deposited_footprints(result)
+        self.assertGreater(sum(footprint.area for footprint in sweeps),3.2)
+        for p,footprint in zip(result,sweeps):
+            self.assertEqual(len(p.points)-1,len(p.segment_widths))
+            self.assertTrue(all(.22<=w<=.42 for w in p.segment_widths))
+            self.assertLess(footprint.difference(cross).area,.015)
+        for i in range(3):
+            for j in range(i+1,3):
+                self.assertLessEqual(sweeps[i].intersection(sweeps[j]).area,.0011)
+        for shift in (-2*math.pi,2*math.pi):
+            other=paths(affinity.translate(cross,xoff=shift*R)).get("GAP_FILL",[])
+            self.assertEqual(len(other),3)
+            for a,b in zip(result,other):
+                self.assertAlmostEqual(
+                    LineString([(t*R,x) for t,x in a.points]).length,
+                    LineString([(t*R,x) for t,x in b.points]).length,delta=.02)
+
+    def test_four_arm_extrusion_matches_individual_bead_area(self):
+        cross=unary_union([box(5.85,0,6.15,8),box(3,3.85,9,4.15)])
+        c=SlicerConfig(retract_mm=0,z_hop_height=0,cooling_min_layer_time_s=0)
+        for path in paths(cross,c).get("GAP_FILL",[]):
+            state=GcodeState(theta_accum=path.points[0][0],axial=path.points[0][1],
+                             radial=R+c.layer_height/2)
+            moves=[line for line in emit_toolpath(path,state,c,0,retract_after=False)
+                   if line.startswith("G1 X") and " E" in line]
+            self.assertTrue(moves)
+            actual=float(moves[-1].split(" E",1)[1].split()[0])
+            expected=sum(math.hypot((b[0]-a[0])*R,b[1]-a[1]) *
+                         (c.layer_height*(w-c.layer_height)+math.pi*c.layer_height**2/4)
+                         /c.bead_area*c.extrusion_per_mm
+                         for a,b,w in zip(path.points,path.points[1:],path.segment_widths))
+            self.assertAlmostEqual(actual,expected,delta=.0002)
+
     def test_multi_junction_and_holed_regions_are_not_fabricated(self):
         c=SlicerConfig()
         multiple=unary_union([shape(),box(5.85,3,8,3.3)])

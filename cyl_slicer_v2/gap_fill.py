@@ -178,6 +178,14 @@ def narrow_gap_fill_paths(model, perimeter_paths, radius, config):
     width=config.nozzle_width
     # Only the edge band is eligible: the interior may be deliberately sparse.
     core=physical.buffer(-width*.5)
+    # At a thin cross/T junction, a minuscule island can survive the
+    # half-bead inward buffer even though no printable interior exists.
+    # Subtracting that artifact would create a *new* artificial hole in
+    # the edge band, hiding valid single-junction medial recovery. Only
+    # discard cores below a tiny fraction of the minimum bead footprint;
+    # genuine model holes are preserved in physical itself.
+    if not core.is_empty and core.area < (config.gap_fill_min_width_mm*.1)**2:
+        core=GeometryCollection()
     edge=physical.difference(core) if not core.is_empty else physical
     footprints=[]
     for path in perimeter_paths:

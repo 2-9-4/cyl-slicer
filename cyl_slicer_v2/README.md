@@ -611,10 +611,11 @@ GAP_FILL centerline with a calibrated width and E for every segment. Default
 minimum deposited gap width is 0.22 mm (at 0.16 mm layer height), bounded
 above by the 0.42 mm nominal bead. Short, *multi-junction*, sharply curved, and
 sub-minimum features remain conservatively rejected rather than fabricated
-across empty space. A narrow T/Y-shaped **single three-arm junction** may
-now be recovered: the slicer creates a bounded-resolution medial skeleton,
-traces one continuous trunk through its only junction and one side arm
-trimmed to meet that trunk without duplicate deposited area. Every proposed
+across empty space. Narrow T/Y-shaped **three-arm** and **four-arm cross**
+single-junction regions can be recovered: the slicer creates a bounded
+medial skeleton, traces one continuous trunk through the junction and trims
+each remaining arm until the original material polygon contains its entire
+bead footprint without overlapping the trunk or an earlier side arm. Every proposed
 variable-width strand is checked against the **original exact polygon**
 after the raster candidate step, and the branch/trunk footprints must be
 nearly disjoint. Disconnected/multi-fork/cyclic/holed or ambiguous pixel

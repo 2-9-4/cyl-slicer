@@ -371,6 +371,16 @@ def perimeter_paths(
 ) -> list[Toolpath]:
     paths = []
     for poly in _polygon_parts(geom):
+        # A thin intersection can leave a microscopic positive-area
+        # inset at a cross junction. Its centerline forms a tiny closed
+        # loop (much smaller than one bead), and falsely consumes the
+        # junction footprint before gap fill recovers the real arms.
+        # Ignore only sub-printable artifacts, never legitimate contour
+        # loops or model holes. This is coupled to gap-fill recovery;
+        # legacy no-gap-fill behavior remains unchanged.
+        if (config.gap_fill_enabled
+                and poly.area * radius < (config.gap_fill_min_width_mm*.1)**2):
+            continue
         paths.extend(_ring_to_paths(poly.exterior, role, radius, config, theta_window))
         for interior in poly.interiors:
             paths.extend(_ring_to_paths(interior, role, radius, config, theta_window))
