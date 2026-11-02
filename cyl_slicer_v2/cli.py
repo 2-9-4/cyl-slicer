@@ -174,6 +174,9 @@ def build_parser() -> argparse.ArgumentParser:
                                            "fixed-outer keeps all lines; nested adds dyadic children on larger radii.")
     parser.add_argument("--axial-grid-outer-radius-mm", type=float, default=None,
                         help="Physical outer grid reference radius in mm; inferred from full job when omitted.")
+    parser.add_argument("--axial-grid-inner-radius-mm", type=float, default=None,
+                        help="Nested grid minimum deposited radius (mm); inferred from full job or "
+                             "fallback to bed radius in standalone calls. Fix both references for separate jobs.")
     parser.add_argument("--axial-grid-phase-deg", type=float, default=None,
                         help="Fixed angular grid phase in degrees for fixed-outer/nested modes.")
     parser.add_argument("--sparse-infill-pattern", choices=("both", "alternate"), default=None,
@@ -526,6 +529,7 @@ def main(argv: list[str] | None = None) -> int:
         infill_spacing=_profile_value(args, "infill_spacing"),
         axial_grid_mode=_profile_value(args, "axial_grid_mode"),
         axial_grid_outer_radius_mm=_profile_value(args, "axial_grid_outer_radius_mm"),
+        axial_grid_inner_radius_mm=_profile_value(args, "axial_grid_inner_radius_mm"),
         axial_grid_phase_deg=_profile_value(args, "axial_grid_phase_deg"),
         sparse_infill_pattern=_profile_value(args, "sparse_infill_pattern"),
         solid_infill_pattern=_profile_value(args, "solid_infill_pattern"),
