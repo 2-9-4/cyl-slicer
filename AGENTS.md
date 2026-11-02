@@ -4,6 +4,13 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Nonplanar topography inspection is analysis-only: do not emit true X/Y/Z
+  extrusion from radial sampling until conformal shell ownership, full
+  swept printhead/mandrel clearance, machine Z limits, local bead packing
+  and physical 3D length/E/feed conversions have dedicated verification.
+  Reject ambiguous radial sheets, holes, steep slopes and subdivision
+  overruns. Exact mesh triangle sampling alone does not prove collision
+  safety. Preserve all legacy G-code by default.
 - Adaptive radial scheduling may only subdivide complete-terminal
   deposited slabs; preserve exact radial envelope, explicitly calibrated
   first slab, per-slab nozzle outer faces and bead-model E. Use a
