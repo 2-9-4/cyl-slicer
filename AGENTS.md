@@ -14,7 +14,11 @@
   outer radial faces with immediately adjacent support and propagate through
   consecutive support slabs. Keep top and bottom interface deposition disjoint
   and separate from sparse support; preserve wedges, periodic theta and role
-  speed/flow/fan defaults. An optional support-bottom contact clearance must
+  speed/flow/fan defaults. Independent bottom interface speed, flow and
+  fan override must fall back to the top-interface policy when unspecified;
+  preserve physical Marlin feed conversion, E exactly except intentional
+  flow multipliers, and restore the layer fan after a role override.
+  An optional support-bottom contact clearance must
   compare actual deposited radial faces (not rounded layer counts), carve only
   the identified contacting footprint, and never jump an existing gap.
 - Cross-layer island cooling reordering must match islands by periodic
