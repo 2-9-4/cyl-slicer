@@ -228,6 +228,74 @@ class SeamPolicyTests(unittest.TestCase):
             with self.subTest(fields=fields),self.assertRaises(ValueError):
                 SlicerConfig(**fields).validate()
 
+
+    def test_hidden_corner_prefers_reentrant_vertex_independent_of_winding_and_period(self):
+        from cyl_slicer_v2.config import SlicerConfig as QualitySlicerConfig
+        # L-shaped polygon: (.55, 4) is the only reentrant corner. Its
+        # sharpness is equal to the *exposed* convex 90-degree corners.
+        original = Toolpath("EXTERNAL_PERIMETER", 30, [
+            (.1, 0), (.9, 0), (.9, 4), (.55, 4), (.55, 10),
+            (.1, 10), (.1, 0),
+        ], closed=True, segment_widths=[.22, .26, .31, .37, .41, .29])
+        config = QualitySlicerConfig(seam_policy="hidden-corner", seam_angle_deg=2)
+        from cyl_slicer_v2.gcode import _segment_width_ratio
+        def material(path):
+            return sum(cylindrical_distance(a, b, path.radius) *
+                       _segment_width_ratio(w, config)
+                       for a, b, w in zip(path.points, path.points[1:],
+                                          path.segment_widths))
+        expected = material(original)
+        for reverse in (False, True):
+            loop = (list(reversed(original.points)) if reverse
+                    else list(original.points))
+            widths = (list(reversed(original.segment_widths)) if reverse
+                      else list(original.segment_widths))
+            for turns in (-3, 0, 4):
+                test = Toolpath("EXTERNAL_PERIMETER", original.radius,
+                    [(t + turns * 2 * math.pi, x) for t, x in loop],
+                    closed=True, segment_widths=widths)
+                with self.subTest(reverse=reverse, turns=turns):
+                    result = _orient_path_for_current_position(
+                        test, GcodeState(theta_accum=.9, axial=0), config)
+                    self.assertAlmostEqual(result.points[0][0],
+                                           .55+turns*2*math.pi, places=8)
+                    self.assertAlmostEqual(result.points[0][1],4,places=8)
+                    self.assertAlmostEqual(length(result),length(test),places=8)
+                    self.assertAlmostEqual(oriented_area(result),oriented_area(test),places=8)
+                    self.assertAlmostEqual(material(result),expected,places=8)
+
+    def test_hidden_corner_respects_axial_and_angle_exclusions_then_falls_back(self):
+        from cyl_slicer_v2.config import SlicerConfig as QualitySlicerConfig
+        l = Toolpath("INTERNAL_PERIMETER", 30,
+                     [(.1,0),(.9,0),(.9,4),(.55,4),(.55,10),(.1,10),(.1,0)],
+                     closed=True)
+        blocked = _orient_path_for_current_position(l,GcodeState(),
+            QualitySlicerConfig(seam_policy="hidden-corner", seam_angle_deg=31,
+                                seam_exclude_axial_mm=(3,5)))
+        self.assertNotEqual(blocked.points[0],(.55,4))
+        self.assertFalse(3 <= blocked.points[0][1] < 5)
+        forbidden = _orient_path_for_current_position(l,GcodeState(),
+            QualitySlicerConfig(seam_policy="hidden-corner", seam_angle_deg=31,
+                                seam_exclude_deg=(30,33)))
+        self.assertNotEqual(forbidden.points[0],(.55,4))
+        # Convex-only rings must remain printable via corner fallback.
+        plain = rect(.1,.9)
+        chosen = _orient_path_for_current_position(plain,GcodeState(),
+            QualitySlicerConfig(seam_policy="hidden-corner",seam_angle_deg=51))
+        self.assertIn(chosen.points[0],plain.points[:-1])
+        self.assertAlmostEqual(length(chosen),length(plain),places=9)
+
+    def test_hidden_corner_cli_and_validation(self):
+        from cyl_slicer_v2.cli import build_parser, _profile_value
+        for profile in ("quality","legacy-cli","library"):
+            parser=build_parser()
+            self.assertEqual(_profile_value(parser.parse_args(["--profile",profile]),
+                                            "seam_policy"),"nearest")
+            self.assertEqual(_profile_value(parser.parse_args(["--profile",profile,
+                 "--seam-policy","hidden-corner"]), "seam_policy"),"hidden-corner")
+        self.assertRaises(ValueError,
+            SlicerConfig(seam_policy="not-an-option").validate)
+
     def test_invalid_seam_inputs(self):
         cases = (
             {"seam_policy": "scatter"},
