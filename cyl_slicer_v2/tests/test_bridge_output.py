@@ -49,6 +49,27 @@ class BridgeOutputTests(unittest.TestCase):
         # All printed bridges are still a subset of the actual model slab.
         self.assertTrue(upper.occupied.covers(upper.bridge_regions["axial"]))
 
+    def test_only_verified_two_bearing_lanes_release_support_requirement(self):
+        lower, upper = samples()
+        lower.occupied = unary_union([
+            box(0,0,1,4),
+            box(0,6,.45,10),
+        ])
+        upper.needs_support = box(0,4,1,10)
+        upper.support_interface_target = upper.needs_support
+        c=SlicerConfig(bridge_mode="print",wall_count=2)
+        _assign_printable_bridges([lower,upper],c)
+        self.assertIsNotNone(upper.bridge_regions)
+        approved=upper.bridge_regions["axial"]
+        self.assertFalse(approved.is_empty)
+        from shapely.geometry import Point
+        self.assertTrue(approved.covers(Point(.2,5)))
+        self.assertFalse(approved.covers(Point(.7,5)))
+        # One-ended overhang retains support classification on its corridor,
+        # rather than being swallowed by the adjacent supported bridge.
+        self.assertTrue(upper.needs_support.covers(Point(.7,5)))
+        self.assertFalse(upper.needs_support.covers(Point(.2,5)))
+
     def test_bridge_infill_oriented_to_two_anchors_and_not_double_printed(self):
         config = SlicerConfig(bridge_mode="print",wall_count=2)
         lower,upper = samples()
