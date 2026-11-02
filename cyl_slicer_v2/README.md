@@ -1241,17 +1241,17 @@ generation, G-code emission, and CLI smoke tests.
 For future true surface-following cylindrical top skins, the slicer now has
 a standalone **geometry-only** probe. It intersects exact mesh triangles with
 rays in the radial plane and attempts to follow the unique outward-facing
-radial surface as a function \`r(theta, X)\`. A hybrid finish would later
+radial surface as a function `r(theta, X)`. A hybrid finish would later
 deposit ordinary radial slabs internally and follow this surface near the
 outside using simultaneous X/Y/Z motion.
 
-\`\`\`bash
+```bash
 .venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
   --point 20,15 --point 24,22 --max-segment-mm 0.4 \
   --max-chord-error-mm 0.015 --max-slope 0.3
-\`\`\`
+```
 
-Coordinates on each \`--point\` are **theta degrees, axial X mm**. Use
+Coordinates on each `--point` are **theta degrees, axial X mm**. Use
 continuous angles (e.g. 359, 361) for a ribbon crossing the periodic seam,
 not an abrupt 359→1 turn. Output JSON includes sampled radii, 3D cylindrical
 arc length, minimum radial-facing normal and rejection reasons. The probe
