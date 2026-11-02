@@ -678,6 +678,11 @@ radius, moving the previous layer's tracks. Three modes are available:
   lattice chosen so circumferential spacing at the **outermost physical
   deposited radius** does not exceed the configured spacing. Every smaller
   layer retains exactly those angular tracks, making the bottom denser.
+  Because a wide radius ratio can cause very severe overfill, this mode
+  refuses actual physical pitch more than 4× denser than the requested
+  role spacing (configurable with `--axial-grid-max-density-ratio N`).
+  Use `nested` instead to reduce inner track count; raise the budget only
+  after verifying deposited bead overlap and material flow on the printer.
 - `--axial-grid-mode nested`: use that same global angular lattice, but
   select power-of-two subsets on smaller radii. New tracks appear at
   deterministic halfway angular positions as circumference grows; existing
@@ -697,6 +702,8 @@ radius), optionally `--axial-grid-phase-deg 0`. Example:
 ```bash
 ./slice_fast.sh model.stl --axial-grid-mode nested
 ./slice_fast.sh model.stl --axial-grid-mode fixed-outer --axial-grid-outer-radius-mm 60
+# Opt in to additional fixed-outer density only with explicit physical review:
+./slice_fast.sh model.stl --axial-grid-mode fixed-outer --axial-grid-max-density-ratio 6
 ```
 
 Registration applies to axial sparse fill, axial solid skin, support-cross

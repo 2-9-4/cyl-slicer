@@ -427,6 +427,20 @@ def _registered_axial_grid(radius: float, spacing: float, config: SlicerConfig) 
         raise ValueError("axial_grid_outer_radius_mm must include all printed radii")
     count = max(1, math.ceil(TWO_PI * outer / spacing - 1e-10))
     step = TWO_PI / count
+    # A fixed-outer lattice stays dense as circumference shrinks. Its
+    # physical pitch is radius*step, not the requested outer-layer
+    # spacing. Refuse a gross excess of tracks before generating G-code.
+    # Nested mode separately thins its active dyadic subset on small radii.
+    if config.axial_grid_mode == "fixed-outer":
+        density_ratio = spacing / (radius * step)
+        if density_ratio > config.axial_grid_max_density_ratio + 1e-9:
+            raise ValueError(
+                f"Fixed-outer axial grid would be {density_ratio:.2f}x denser "
+                f"than the requested spacing at R={radius:g} mm "
+                f"(limit {config.axial_grid_max_density_ratio:g}x). "
+                "Use --axial-grid-mode nested or explicitly raise "
+                "--axial-grid-max-density-ratio after checking small-radius overlap."
+            )
     stride = 1
     if config.axial_grid_mode == "nested":
         # Adjacent live tracks remain at most spacing mm apart on this
