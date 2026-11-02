@@ -67,7 +67,7 @@ class RegisteredAxialGridTests(unittest.TestCase):
                          math.ceil(TAU*60/4-1e-10))
 
     def test_nested_tracks_are_registered_subsets_and_never_exceed_gap(self):
-        cfg = self.cfg(axial_grid_mode="nested")
+        cfg = self.cfg(axial_grid_mode="nested", axial_grid_inner_radius_mm=18)
         geom = box(0, 0, TAU, 10)
         previous = set()
         for r in (18, 22, 30, 39, 50, 60):
@@ -83,11 +83,13 @@ class RegisteredAxialGridTests(unittest.TestCase):
                            len(thetas(geom,18,2,cfg)))
 
     def test_nested_periodicity_even_when_outer_count_is_odd(self):
-        cfg = self.cfg(axial_grid_mode="nested")
-        # 60 mm circumference with 2mm target gives an odd 189 tracks.
+        cfg = self.cfg(axial_grid_mode="nested", axial_grid_inner_radius_mm=18)
+        # Initial N=189 is odd. A periodic stride-2 lattice must pad it;
+        # otherwise its last-to-first gap is only half the normal pitch.
+        self.assertEqual(math.ceil(TAU * 60 / 2 - 1e-10) % 2, 1)
         step, _, count, stride = _registered_axial_grid(18, 2, cfg)
-        self.assertEqual(count % 2, 1)
         self.assertGreater(stride, 1)
+        self.assertEqual(count % stride, 0)
         for lo in (.03, 1.23, 5.95):
             baseline = thetas(box(lo, 0, lo + .21, 3), 18, 2, cfg)
             for turns in (-3, -1, 1, 7):
@@ -96,6 +98,42 @@ class RegisteredAxialGridTests(unittest.TestCase):
                 self.assertEqual(len(baseline), len(shifted))
                 for a, b in zip(baseline, shifted):
                     self.assertAlmostEqual(b - a, turns*TAU, delta=2e-9)
+
+    def test_nested_seam_gap_matches_every_other_gap_at_all_active_strides(self):
+        cfg = self.cfg(axial_grid_mode="nested", axial_grid_inner_radius_mm=7)
+        geom = box(0, 0, TAU, 6)
+        prior = set()
+        for radius in (7, 10, 18, 30, 45, 60):
+            step, _, count, stride = _registered_axial_grid(radius, 2, cfg)
+            self.assertEqual(count % stride, 0)
+            live = thetas(geom, radius, 2, cfg)
+            self.assertEqual(len(live), count // stride)
+            gaps = [(b - a) * radius for a, b in zip(live, live[1:])]
+            gaps.append((live[0] + TAU - live[-1]) * radius)
+            self.assertLessEqual(max(gaps), 2 + 1e-7)
+            self.assertLess(max(gaps) - min(gaps), 1e-7)
+            self.assertTrue(prior.issubset(set(live)))
+            prior = set(live)
+
+    def test_nested_inner_reference_is_global_including_parallel_workers(self):
+        cfg = replace(self.cfg(), axial_grid_mode="nested",
+                      axial_grid_inner_radius_mm=None,
+                      axial_grid_outer_radius_mm=None,
+                      infill_spacing=2, sparse_infill_pattern="both")
+        geom = box(.02, 0, .9, 12)
+        layers = [slab(i, r, model=geom) for i, r in enumerate((16, 24, 38, 59))]
+        serial = build_toolpaths(layers, replace(cfg, toolpath_workers=1))
+        parallel = build_toolpaths(layers, replace(cfg, toolpath_workers=2))
+        for one, two in zip(serial, parallel):
+            self.assertEqual([p.points for p in one.paths_by_role.get("INFILL_AXIAL", [])],
+                             [p.points for p in two.paths_by_role.get("INFILL_AXIAL", [])])
+        # A standalone nested call cannot silently assume an inner reference
+        # larger than the geometry, or the seam may have extra-close tracks.
+        with self.assertRaisesRegex(ValueError, "inner_radius_mm"):
+            build_layer_toolpaths(layers[0], replace(cfg, axial_grid_outer_radius_mm=60))
+        safe = replace(cfg, axial_grid_outer_radius_mm=60,
+                       axial_grid_inner_radius_mm=16 - cfg.layer_height * .5)
+        self.assertTrue(build_layer_toolpaths(layers[0], safe).paths_by_role["INFILL_AXIAL"])
 
     def test_roles_have_their_own_spacing_for_infill_and_support(self):
         model = box(.05,0,.5,20)
@@ -142,7 +180,6 @@ class RegisteredAxialGridTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"outer radius"):
             build_layer_toolpaths(layers[0],cfg)
 
-
     def test_fixed_outer_refuses_excessive_small_radius_density(self):
         cfg=self.cfg(axial_grid_max_density_ratio=4)
         geom=box(0,0,2*math.pi,10)
@@ -150,7 +187,7 @@ class RegisteredAxialGridTests(unittest.TestCase):
             thetas(geom,8,1.5,cfg)
         # The nested grid keeps parent's exact registration but backs off
         # the number of live tracks when radius falls by a large factor.
-        nested=self.cfg(axial_grid_mode="nested")
+        nested=self.cfg(axial_grid_mode="nested", axial_grid_inner_radius_mm=8)
         self.assertTrue(thetas(geom,8,1.5,nested))
         self.assertGreater(len(thetas(geom,8,1.5,nested)),1)
         # An explicitly calibrated density budget can permit fixed-outer,
@@ -180,19 +217,25 @@ class RegisteredAxialGridTests(unittest.TestCase):
             self.assertEqual(_profile_value(args,"axial_grid_mode"),"per-layer")
             self.assertIsNone(_profile_value(args,"axial_grid_outer_radius_mm"))
             self.assertEqual(_profile_value(args,"axial_grid_max_density_ratio"),4)
+            self.assertIsNone(_profile_value(args,"axial_grid_inner_radius_mm"))
             selected = build_parser().parse_args(["--profile",profile,
                         "--axial-grid-mode","nested",
                         "--axial-grid-outer-radius-mm","60",
+                        "--axial-grid-inner-radius-mm","18",
                         "--axial-grid-phase-deg","25",
                         "--axial-grid-max-density-ratio","8"])
             for key,value in (("axial_grid_mode","nested"),
                               ("axial_grid_outer_radius_mm",60),
+                              ("axial_grid_inner_radius_mm",18),
                               ("axial_grid_phase_deg",25),
                               ("axial_grid_max_density_ratio",8)):
                 self.assertEqual(_profile_value(selected,key),value)
         for arg in ({"axial_grid_mode":"magic"},
                     {"axial_grid_outer_radius_mm":0},
                     {"axial_grid_outer_radius_mm":float("inf")},
+                    {"axial_grid_inner_radius_mm":0},
+                    {"axial_grid_inner_radius_mm":float("nan")},
+                    {"axial_grid_inner_radius_mm":61},
                     {"axial_grid_phase_deg":360},
                     {"axial_grid_phase_deg":float("nan")},
                     {"axial_grid_max_density_ratio":0},

@@ -426,11 +426,40 @@ def _registered_axial_grid(radius: float, spacing: float, config: SlicerConfig) 
     if radius > outer + 1e-7:
         raise ValueError("axial_grid_outer_radius_mm must include all printed radii")
     count = max(1, math.ceil(TWO_PI * outer / spacing - 1e-10))
+    if config.axial_grid_mode == "nested":
+        # On a periodic ring, N not divisible by the dyadic stride creates
+        # one undersized last-to-first gap. For example N=189, stride=2
+        # yields one single-step seam and 94 double-step gaps. Round N up
+        # to a multiple of the largest stride reachable at the innermost
+        # deposited face, preserving uniform circular pitch on every slab.
+        inner = config.axial_grid_inner_radius_mm
+        if inner is None:
+            inner = config.bed_radius  # Standalone fallback; jobs infer this.
+        if inner <= 0 or inner > outer + 1e-7:
+            raise ValueError("nested axial grid needs a positive inner radius "
+                             "no greater than its outer radius")
+        if radius < inner - 1e-7:
+            raise ValueError("axial_grid_inner_radius_mm must include all printed radii")
+        # Padding N can make another subdivision level eligible. Converge
+        # before committing the global ring size, independent of this slab.
+        for _ in range(64):
+            step = TWO_PI / count
+            largest_stride = 1
+            while (largest_stride * 2 < count
+                   and step * inner * (largest_stride * 2) <= spacing + 1e-10):
+                largest_stride *= 2
+            next_count = count + (-count) % largest_stride
+            if next_count == count:
+                break
+            count = next_count
+        else:
+            raise ValueError("nested axial grid ring alignment did not converge")
     step = TWO_PI / count
-    # A fixed-outer lattice stays dense as circumference shrinks. Its
-    # physical pitch is radius*step, not the requested outer-layer
-    # spacing. Refuse a gross excess of tracks before generating G-code.
-    # Nested mode separately thins its active dyadic subset on small radii.
+    # Fixed-outer retains every track on smaller radii. Check the REAL
+    # pitch at this radius, after integer ring quantization, so a very
+    # small cylinder does not silently receive extreme over-density.
+    # Nested-mode dyadic thinning remains unchanged and separately honors
+    # the new globally aligned periodic ring from PR #76.
     if config.axial_grid_mode == "fixed-outer":
         density_ratio = spacing / (radius * step)
         if density_ratio > config.axial_grid_max_density_ratio + 1e-9:
@@ -1205,14 +1234,22 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
 
 def build_toolpaths(layers: list[LayerSlice], config: SlicerConfig) -> list[LayerToolpaths]:
     all_layers = [*gap_support_slices(layers, config), *layers]
-    if config.axial_grid_mode != "per-layer" and config.axial_grid_outer_radius_mm is None and all_layers:
-        # One radius shared by all workers, model islands, support, and raft.
-        # Use the physical deposited outer face, not a local model/island
-        # bounding box or the sample radius of a truncated worker batch.
-        outer = max(layer.radius + 0.5 * (
-            layer.deposited_thickness if layer.deposited_thickness is not None
-            else config.layer_height) for layer in all_layers)
-        config = replace(config, axial_grid_outer_radius_mm=outer)
+    if all_layers and config.axial_grid_mode != "per-layer":
+        # Resolve BOTH physical slab faces once for the entire job before
+        # dispatching parallel workers. The nested ring size must not vary
+        # with the current island, layer, or worker chunk.
+        faces = [
+            (layer.radius - 0.5 * thickness, layer.radius + 0.5 * thickness)
+            for layer in all_layers
+            for thickness in [layer.deposited_thickness
+                              if layer.deposited_thickness is not None
+                              else config.layer_height]
+        ]
+        if config.axial_grid_outer_radius_mm is None:
+            config = replace(config, axial_grid_outer_radius_mm=max(hi for _, hi in faces))
+        if (config.axial_grid_mode == "nested"
+                and config.axial_grid_inner_radius_mm is None):
+            config = replace(config, axial_grid_inner_radius_mm=min(lo for lo, _ in faces))
     worker_count = min(config.toolpath_workers, len(all_layers))
     if worker_count <= 1:
         return [build_layer_toolpaths(layer, config) for layer in all_layers]
