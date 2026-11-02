@@ -1,4 +1,4 @@
-"""Conservative one-junction medial recovery for thin branched edge gaps.
+"""Conservative single-junction medial recovery for thin branched edge gaps.
 
 Raster skeletons only nominate paths. Every extruded variable-width bead
 sweep is checked against the exact polygon, and arms must not overlap.
@@ -15,7 +15,7 @@ from shapely.ops import unary_union
 
 def branched_gap_paths(poly, radius, nominal_width, minimum_width,
                        sample_step, minimum_length):
-    """Print a one-junction/three-arm tree as a trunk and trimmed side arm."""
+    """Print a one-junction three- or four-arm tree with trimmed side arms."""
     if not isinstance(poly, Polygon) or poly.is_empty or poly.interiors:
         return []
     ring=list(poly.exterior.coords)[:-1]
@@ -91,11 +91,12 @@ def branched_gap_paths(poly, radius, nominal_width, minimum_width,
                         continue  # Suppress diagonal shortcut at corner.
                     near.add(candidate)
         graph[(r,c)]=near
-    junctions=[n for n,near in graph.items() if len(near)==3]
-    ends=[n for n,near in graph.items() if len(near)==1]
-    if (len(junctions)!=1 or len(ends)!=3
-            or any(len(near) not in (1,2,3) for near in graph.values())):
-        return []
+    junctions=[n for n,near in graph.items() if len(near)>2]
+    ends=sorted(n for n,near in graph.items() if len(near)==1)
+    if (len(junctions)!=1 or len(ends) not in (3,4)
+            or len(graph[junctions[0]])!=len(ends)
+            or any(len(near) not in (1,2,len(ends)) for near in graph.values())):
+        return []  # Cyclic, multi-junction and ambiguous trees rejected.
     junction=junctions[0]
     arms=[]
     for endpoint in ends:
@@ -114,10 +115,10 @@ def branched_gap_paths(poly, radius, nominal_width, minimum_width,
     def xy(node):
         r,c=node
         return float(px[c-1]),float(py[r-1])
-    pair=max(itertools.combinations(range(3),2),
+    pair=max(itertools.combinations(range(len(arms)),2),
              key=lambda ij:math.dist(xy(arms[ij[0]][-1]),xy(arms[ij[1]][-1])))
     trunk=list(reversed(arms[pair[0]]))+arms[pair[1]][1:]
-    side=arms[next(i for i in range(3) if i not in pair)]
+    side_arms=[arms[i] for i in range(len(arms)) if i not in pair]
     def candidate(nodes):
         points=[xy(n) for n in nodes]
         widths=[]
@@ -143,21 +144,30 @@ def branched_gap_paths(poly, radius, nominal_width, minimum_width,
     main=candidate(trunk)
     if main is None:
         return []
-    branch=None
-    for trim in range(1,len(side)-1):
-        branch=candidate(side[trim:])
-        if branch is None:
-            return []
-        if (branch[2].intersection(main[2]).area<=.001
-                and LineString(branch[0]).distance(LineString(main[0]))
-                    <=nominal_width*.8):
+    accepted=[main]
+    for side in side_arms:
+        choice=None
+        # Width-aware footprint validation against every already printed
+        # arm, not merely no-intersection of the path centerlines.
+        for trim in range(1,len(side)-1):
+            branch=candidate(side[trim:])
+            if branch is None:
+                continue
+            if any(branch[2].intersection(other[2]).area>.001
+                   for other in accepted):
+                continue
+            if (LineString(branch[0]).distance(LineString(main[0]))
+                    >nominal_width*.8):
+                continue
+            choice=branch
             break
-    else:
-        return []
+        if choice is None:
+            return []
+        accepted.append(choice)
     from .gap_fill import _compact
     from .models import Toolpath
     output=[]
-    for points,widths,_ in (main,branch):
+    for points,widths,_ in accepted:
         coords=[(x/radius,y) for x,y in points]
         coords,widths=_compact(coords,widths,radius)
         output.append(Toolpath("GAP_FILL",radius,coords,segment_widths=widths))
