@@ -71,7 +71,10 @@
   preserving winding and deposited length. Seam cuts on variable-width loops
   must split/rotate their segment_widths alongside edges, conserving E exactly.
   Physical axial targets and half-open exclusion windows must be tested as
-  actual geometric edge intersections, not nearest sampled vertices.
+  actual geometric edge intersections, not nearest sampled vertices. Hidden
+  corner preference must classify concavity relative to the signed polygon
+  orientation (reversed winding and 2pi translations invariant), keep
+  exclusions strict, and fall back safely when a loop is convex.
   Keep intentional zero-distance calibration bands intact.
 - Keep Marlin's native Y position bounded as well as emitted Y values. The target
   firmware enables `POWER_LOSS_RECOVERY`: use `M400`, `G92.9 Y<wrapped phase>`,

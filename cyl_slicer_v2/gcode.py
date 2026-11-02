@@ -727,6 +727,14 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
     center = 0.5 * (min(p[0] for p in loop) + max(p[0] for p in loop))
     current_theta = _nearest_theta(state.theta_accum, center)
     current = (current_theta * radius, state.axial)
+    # Signed ring area provides *orientation-invariant* concavity: a locally
+    # negative cross at a CCW corner, or positive at a CW corner, is inward.
+    # Use the actual unwrapped contour coordinates so a 2pi shift preserves
+    # the result; orientation reversal must not change which corner is hidden.
+    ring_area2 = sum(
+        a[0] * b[1] - b[0] * a[1]
+        for a, b in zip(path.points[:-1], path.points[1:])
+    )
     best = None
 
     for index, (a, b) in enumerate(zip(path.points[:-1], path.points[1:])):
@@ -781,6 +789,7 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
                 for shift in (-1, 0, 1)
             )
             turn = 0.0
+            inward = False
             if fraction < 1e-10 or fraction > 1.0 - 1e-10:
                 vertex = index if fraction < 1e-10 else (index + 1) % n
                 prev_pt = loop[(vertex - 1) % n]
@@ -792,7 +801,20 @@ def _rotate_preferred_seam(path: Toolpath, state: GcodeState, config: SlicerConf
                 if denom > 1e-12:
                     turn = 1.0 - max(-1.0, min(1.0,
                         (u[0] * v[0] + u[1] * v[1]) / denom))
-            if config.seam_policy == "corner":
+                    cross = u[0] * v[1] - u[1] * v[0]
+                    # Ignore near-collinear numerical noise: a genuine
+                    # hidden corner must have a measurable physical turn.
+                    inward = (abs(ring_area2) > 1e-10 and
+                              turn > 1e-5 and
+                              ring_area2 * cross < -1e-10)
+            if config.seam_policy == "hidden-corner":
+                # A reentrant corner is preferred over *every* protruding
+                # corner even if it is farther from the requested phase.
+                # If none survives exclusion rules this falls back to the
+                # ordinary strongest-corner policy (never silently violate
+                # exclusion zones).
+                cost = (not inward, -round(turn, 9), angular_cost, axial_cost, travel)
+            elif config.seam_policy == "corner":
                 cost = (-round(turn, 9), angular_cost, axial_cost, travel)
             elif config.seam_policy == "aligned":
                 cost = (angular_cost, axial_cost, travel, -turn)

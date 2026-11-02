@@ -21,7 +21,7 @@ class SlicerConfig:
     wall_order: str = "outer-first"  # Inside-out for overhangs if selected.
     # Opt-in three-stage model-island order. None keeps legacy role sequencing.
     island_print_order: tuple[str, str, str] | None = None
-    seam_policy: str = "nearest"  # nearest | aligned | corner, for closed loops only.
+    seam_policy: str = "nearest"  # nearest | aligned | corner | hidden-corner
     seam_angle_deg: float = 180.0  # Cylinder phase target for aligned/corner.
     seam_exclude_deg: tuple[float, float] | None = None
     seam_axial_target_mm: float | None = None  # Optional physical X anchor after angle preference.
@@ -255,8 +255,8 @@ class SlicerConfig:
                      or len(self.island_print_order) != 3
                      or set(self.island_print_order) != {"infill", "outer", "inner"})):
             raise ValueError("island_print_order must be a permutation of infill,outer,inner")
-        if self.seam_policy not in {"nearest", "aligned", "corner"}:
-            raise ValueError("seam_policy must be nearest, aligned or corner")
+        if self.seam_policy not in {"nearest", "aligned", "corner", "hidden-corner"}:
+            raise ValueError("seam_policy must be nearest, aligned, corner or hidden-corner")
         if not math.isfinite(self.seam_angle_deg) or not 0 <= self.seam_angle_deg < 360:
             raise ValueError("seam_angle_deg must be in [0, 360)")
         if self.seam_exclude_deg is not None:

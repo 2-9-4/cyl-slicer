@@ -422,14 +422,21 @@ start at the contour point nearest the selected cylinder phase (180° is the
 default target); if the ray intersects an edge, it can split the edge without
 changing its geometry or extrusion length. `--seam-policy corner` prefers
 the sharpest actual polygon corner, with the target angle and travel distance
-as tie-breakers. These policies are especially useful for stacking starts over
-successive layers or hiding them at corners.
+as tie-breakers. `--seam-policy hidden-corner` specifically prefers **inward
+(reentrant) corners** on the unwrapped cylindrical contour and uses corner
+sharpness, angular phase, axial target and travel as tie-breakers. It respects
+the contour winding, including reversed loops and rotations through 0/360°.
+If there is no eligible inward corner it falls back to the ordinary sharpest
+corner. Exclusions always take priority, even if they eliminate every inward
+corner. These policies help stack starts over layers or conceal them in
+corners, but concavity of a 2D contour is not a guarantee that a seam will
+be invisible from every viewing angle.
 
 Use `--seam-axial-target-mm 12` to anchor the seam near physical axial
 X=12 mm as well as its chosen angular phase. For `aligned`, angular phase
-takes priority, then the axial target, then entry travel. For `corner`,
-the highest-curvature vertex takes priority, followed by angular phase,
-axial target and travel. On a constant-theta edge, the slicer can split
+takes priority, then the axial target, then entry travel. For `corner` and `hidden-corner`,
+the preferred type and highest-curvature vertex take priority, followed by
+angular phase, axial target and travel. On a constant-theta edge, the slicer can split
 the edge exactly at that axial target; this only changes the start
 location, not the deposited shape or filament.
 

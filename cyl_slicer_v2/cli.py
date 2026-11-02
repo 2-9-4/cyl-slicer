@@ -136,8 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Model print order on every layer, within each connected island; "
                              "three stages infill,outer,inner in any order. "
                              "--island-print-order is the backwards-compatible alias.")
-    parser.add_argument("--seam-policy", choices=("nearest", "aligned", "corner"), default="nearest",
-                        help="Closed-wall start selection; nearest preserves current toolpath behavior.")
+    parser.add_argument("--seam-policy", choices=("nearest", "aligned", "corner", "hidden-corner"), default="nearest",
+                        help="Closed-wall start selection; hidden-corner prioritizes inward/reentrant vertices "
+                             "and falls back to corners when none are eligible. Nearest is the default.")
     parser.add_argument("--seam-angle-deg", type=float, default=180.0,
                         help="Cylinder angular phase target for aligned seams and corner tie-breaking.")
     parser.add_argument("--seam-exclude-deg", type=float, nargs=2, default=None, metavar=("START", "END"),
