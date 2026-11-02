@@ -97,6 +97,82 @@ class SupportRoleFlowSpeedTests(unittest.TestCase):
         self.assertIn(";SUPPORT_INTERFACE_FLOW_RATIO:1.1", b)
         self.assertIn(";SUPPORT_PRINT_FEED_MM_MIN:600", b)
 
+
+    def test_bottom_interface_inherits_then_overrides_speed_flow_and_fan_independently(self):
+        from cyl_slicer_v2.gcode import _role_fan_override
+        base = SlicerConfig(
+            layer_height=.2, feed_mm_per_min=1200,
+            support_interface_print_feed_mm_per_min=600,
+            support_interface_flow_ratio=.8,
+            support_interface_fan_pwm=125,
+        )
+        self.assertEqual(_role_print_settings("SUPPORT_BOTTOM_INTERFACE",base),(600,.8))
+        self.assertEqual(_role_fan_override("SUPPORT_BOTTOM_INTERFACE",base)[0],125)
+        self.assertEqual(_role_print_settings("SUPPORT_INTERFACE",base),(600,.8))
+        overridden = SlicerConfig(
+            layer_height=.2, feed_mm_per_min=1200,
+            support_interface_print_feed_mm_per_min=600,
+            support_bottom_interface_print_feed_mm_per_min=350,
+            support_interface_flow_ratio=.8,
+            support_bottom_interface_flow_ratio=1.15,
+            support_interface_fan_pwm=125,
+            support_bottom_interface_fan_pwm=0,
+        )
+        self.assertEqual(_role_print_settings("SUPPORT_BOTTOM_INTERFACE",overridden),(350,1.15))
+        self.assertEqual(_role_print_settings("SUPPORT_INTERFACE",overridden),(600,.8))
+        self.assertEqual(_role_fan_override("SUPPORT_BOTTOM_INTERFACE",overridden)[0],0)
+        self.assertEqual(_role_fan_override("SUPPORT_INTERFACE",overridden)[0],125)
+        for role,feed,flow in (("SUPPORT_INTERFACE",600,.8),
+                               ("SUPPORT_BOTTOM_INTERFACE",350,1.15)):
+            e,f=last_extrusion(output(single(role),overridden))
+            self.assertAlmostEqual(e,10*overridden.extrusion_per_mm*flow,delta=1e-5)
+            self.assertAlmostEqual(f,feed,delta=.01)
+        code=emit_gcode([LayerToolpaths(0,30.1,{
+            "SUPPORT_INTERFACE":[single("SUPPORT_INTERFACE")],
+            "SUPPORT_BOTTOM_INTERFACE":[single("SUPPORT_BOTTOM_INTERFACE")],
+        })],overridden)
+        self.assertIn("M106 S125",code)
+        self.assertIn("M106 S0",code)
+        self.assertIn(";SUPPORT_BOTTOM_INTERFACE_FLOW_RATIO:1.15",code)
+
+    def test_bottom_interface_respects_cooling_cap_and_mixed_axis_conversion(self):
+        c=SlicerConfig(layer_height=.2,feed_mm_per_min=300,
+            support_interface_print_feed_mm_per_min=1000,
+            support_bottom_interface_print_feed_mm_per_min=1100,
+            support_bottom_interface_flow_ratio=.75)
+        self.assertEqual(_role_print_settings("SUPPORT_BOTTOM_INTERFACE",c),(300,.75))
+        e,f=last_extrusion(output(single("SUPPORT_BOTTOM_INTERFACE",rotary=True),c))
+        self.assertAlmostEqual(e,.2*30.1*c.extrusion_per_mm*.75,delta=1e-5)
+        self.assertAlmostEqual(f,_surface_feed_for_marlin(0,.2,30.1,300),delta=.06)
+
+    def test_bottom_interface_cli_profiles_and_invalid_values(self):
+        from cyl_slicer_v2.cli import _profile_value
+        for profile in ("quality","legacy-cli","library"):
+            parser=build_parser()
+            args=parser.parse_args(["--profile",profile])
+            for name in ("support_bottom_interface_print_feed_mm_per_min",
+                         "support_bottom_interface_flow_ratio",
+                         "support_bottom_interface_fan_pwm"):
+                self.assertIsNone(_profile_value(args,name))
+            specified=parser.parse_args(["--profile",profile,
+                "--support-bottom-interface-print-feed","450",
+                "--support-bottom-interface-flow-ratio","1.1",
+                "--support-bottom-interface-fan-pwm","0"])
+            self.assertEqual(_profile_value(specified,"support_bottom_interface_print_feed_mm_per_min"),450)
+            self.assertEqual(_profile_value(specified,"support_bottom_interface_flow_ratio"),1.1)
+            self.assertEqual(_profile_value(specified,"support_bottom_interface_fan_pwm"),0)
+        for options in (
+            {"support_bottom_interface_print_feed_mm_per_min":0},
+            {"support_bottom_interface_print_feed_mm_per_min":float("nan")},
+            {"support_bottom_interface_flow_ratio":0},
+            {"support_bottom_interface_flow_ratio":float("inf")},
+            {"support_bottom_interface_fan_pwm":-1},
+            {"support_bottom_interface_fan_pwm":256},
+            {"support_bottom_interface_fan_pwm":12.5},
+        ):
+            with self.subTest(options=options),self.assertRaises(ValueError):
+                SlicerConfig(**options).validate()
+
     def test_cli_settings_and_invalid_parameters(self):
         args = build_parser().parse_args([
             "--support-print-feed", "700",

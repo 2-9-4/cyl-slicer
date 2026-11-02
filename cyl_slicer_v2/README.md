@@ -716,10 +716,17 @@ and the support directly above those faces, then follows that support
 footprint upward through up to the requested number of **consecutive**
 radial slabs. It does not grow through voids or consume neighboring,
 independent support islands. The separate `SUPPORT_BOTTOM_INTERFACE`
-G-code role uses its own configurable physical-mm pitch and inherits the
-existing support-interface material speed/flow/fan policy; overlapping
-top-facing interface takes precedence, so material cannot be deposited
-twice. Support wedge cutouts, 0/2π periodic contact, and radial slab
+G-code role uses its own configurable physical-mm pitch. By default it
+inherits the existing top support-interface speed/flow/fan policy; independently
+override these with `--support-bottom-interface-print-feed 450`,
+`--support-bottom-interface-flow-ratio 0.95`, and
+`--support-bottom-interface-fan-pwm 180` (physical mm/min, unitless
+extrusion multiplier, and 0–255 PWM respectively). Explicit fan PWM `0`
+turns off the fan for the bottom contact only, restoring the normal layer
+fan afterward. The role's speed remains a ceiling after cooling and
+volumetric constraints; it never increases the print speed above those caps.
+Overlapping top-facing interface takes precedence, so material cannot
+be deposited twice. Support wedge cutouts, 0/2π periodic contact, and radial slab
 thickness geometry are respected.
 
 The default is **zero bottom interface layers**, preserving previous

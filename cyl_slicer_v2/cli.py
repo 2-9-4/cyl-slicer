@@ -281,14 +281,24 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Physical mm/min max print speed for support; default standard speed.")
     parser.add_argument("--support-interface-print-feed", type=float, default=None,
                         help="Physical mm/min max print speed for support interface; default standard speed.")
+    parser.add_argument("--support-bottom-interface-print-feed",
+                        dest="support_bottom_interface_print_feed_mm_per_min",
+                        type=float, default=None,
+                        help="Physical mm/min speed ceiling for support touching a model from above; "
+                             "default inherits top support interface.")
     parser.add_argument("--support-flow-ratio", type=float, default=1.0,
                         help="Support extrusion multiplier relative to calibrated bead (default 1.0).")
     parser.add_argument("--support-interface-flow-ratio", type=float, default=1.0,
                         help="Support-interface extrusion multiplier (default 1.0).")
+    parser.add_argument("--support-bottom-interface-flow-ratio", type=float, default=None,
+                        help="Bottom support-interface extrusion multiplier; default inherits top interface.")
     parser.add_argument("--support-fan-pwm", type=int, default=None,
                         help="Opt-in M106 fan PWM for support paths; restore normal layer fan after each path.")
     parser.add_argument("--support-interface-fan-pwm", type=int, default=None,
                         help="Opt-in M106 fan PWM for dense support-interface paths, independently of support body.")
+    parser.add_argument("--support-bottom-interface-fan-pwm", type=int, default=None,
+                        help="Opt-in M106 PWM for dense support-base paths, default inherits top interface; "
+                             "zero explicitly disables the fan during bottom interface deposition.")
     parser.add_argument(
         "--raft-layers",
         type=int,
@@ -564,10 +574,16 @@ def main(argv: list[str] | None = None) -> int:
         support_spacing=args.support_spacing,
         support_print_feed_mm_per_min=args.support_print_feed,
         support_interface_print_feed_mm_per_min=args.support_interface_print_feed,
+        support_bottom_interface_print_feed_mm_per_min=_profile_value(
+            args, "support_bottom_interface_print_feed_mm_per_min"),
         support_flow_ratio=args.support_flow_ratio,
         support_interface_flow_ratio=args.support_interface_flow_ratio,
+        support_bottom_interface_flow_ratio=_profile_value(
+            args, "support_bottom_interface_flow_ratio"),
         support_fan_pwm=_profile_value(args, "support_fan_pwm"),
         support_interface_fan_pwm=_profile_value(args, "support_interface_fan_pwm"),
+        support_bottom_interface_fan_pwm=_profile_value(
+            args, "support_bottom_interface_fan_pwm"),
         support_min_island_area=_profile_value(args, "support_min_island_area"),
         support_min_region_area=_profile_value(args, "support_min_region_area"),
         support_bearing_min_area=_profile_value(args, "support_bearing_min_area"),

@@ -1262,7 +1262,16 @@ def _role_print_settings(role: str, config: SlicerConfig) -> tuple[float, float]
     if role == "SUPPORT":
         maximum = config.support_print_feed_mm_per_min
         return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_flow_ratio
-    if role in {"SUPPORT_INTERFACE", "SUPPORT_BOTTOM_INTERFACE"}:
+    if role == "SUPPORT_BOTTOM_INTERFACE":
+        maximum = config.support_bottom_interface_print_feed_mm_per_min
+        if maximum is None:
+            maximum = config.support_interface_print_feed_mm_per_min
+        flow = config.support_bottom_interface_flow_ratio
+        if flow is None:
+            flow = config.support_interface_flow_ratio
+        return (min(config.feed_mm_per_min, maximum) if maximum is not None
+                else config.feed_mm_per_min), flow
+    if role == "SUPPORT_INTERFACE":
         maximum = config.support_interface_print_feed_mm_per_min
         return min(config.feed_mm_per_min, maximum) if maximum is not None else config.feed_mm_per_min, config.support_interface_flow_ratio
     return config.feed_mm_per_min, 1.0
@@ -1630,10 +1639,12 @@ def _role_fan_override(role: str, config: SlicerConfig) -> tuple[int | None, str
         return config.bridge_fan_pwm, "bridge"
     key = {"SUPPORT": "support_fan_pwm",
            "SUPPORT_INTERFACE": "support_interface_fan_pwm",
-           "SUPPORT_BOTTOM_INTERFACE": "support_interface_fan_pwm"}.get(role)
+           "SUPPORT_BOTTOM_INTERFACE": "support_bottom_interface_fan_pwm"}.get(role)
     if key is None:
         return None, role.lower()
     requested = getattr(config, key)
+    if role == "SUPPORT_BOTTOM_INTERFACE" and requested is None:
+        requested = config.support_interface_fan_pwm
     if requested is not None and config.material_fan_policy == "preset":
         requested = min(requested, _MATERIAL_FAN_PWM_CEILING[config.material_profile])
     return requested, role.lower()
@@ -1684,6 +1695,15 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";SUPPORT_INTERFACE_PRINT_FEED_MM_MIN:{config.support_interface_print_feed_mm_per_min}",
         f";SUPPORT_FLOW_RATIO:{config.support_flow_ratio:g}",
         f";SUPPORT_INTERFACE_FLOW_RATIO:{config.support_interface_flow_ratio:g}",
+        *([f";SUPPORT_BOTTOM_INTERFACE_PRINT_FEED_MM_MIN:"
+           f"{config.support_bottom_interface_print_feed_mm_per_min}"]
+          if config.support_bottom_interface_print_feed_mm_per_min is not None else []),
+        *([f";SUPPORT_BOTTOM_INTERFACE_FLOW_RATIO:"
+           f"{config.support_bottom_interface_flow_ratio:g}"]
+          if config.support_bottom_interface_flow_ratio is not None else []),
+        *([f";SUPPORT_BOTTOM_INTERFACE_FAN_PWM:"
+           f"{config.support_bottom_interface_fan_pwm}"]
+          if config.support_bottom_interface_fan_pwm is not None else []),
         *([f";SUPPORT_BOTTOM_INTERFACE_LAYERS:{config.support_bottom_interface_layers}",
            f";SUPPORT_BOTTOM_INTERFACE_SPACING_MM:"
            f"{config.support_bottom_interface_spacing or config.support_interface_spacing or config.dense_line_spacing:g}"]

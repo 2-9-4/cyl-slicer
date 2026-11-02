@@ -62,10 +62,14 @@ class SlicerConfig:
     support_spacing: float = 1.5
     support_print_feed_mm_per_min: float | None = None
     support_interface_print_feed_mm_per_min: float | None = None
+    # None means inherit the corresponding top-interface material control.
+    support_bottom_interface_print_feed_mm_per_min: float | None = None
     support_flow_ratio: float = 1.0
     support_interface_flow_ratio: float = 1.0
+    support_bottom_interface_flow_ratio: float | None = None
     support_fan_pwm: int | None = None  # None: normal layer fan.
     support_interface_fan_pwm: int | None = None
+    support_bottom_interface_fan_pwm: int | None = None
     support_min_island_area: float = 0.25
     support_min_region_area: float = 1.0
     support_bearing_min_area: float = 1.0
@@ -340,7 +344,8 @@ class SlicerConfig:
             raise ValueError("bridge_fan_pwm must be None or PWM 0..255")
         if self.support_spacing <= 0:
             raise ValueError("support_spacing must be positive")
-        for name in ("support_print_feed_mm_per_min", "support_interface_print_feed_mm_per_min"):
+        for name in ("support_print_feed_mm_per_min", "support_interface_print_feed_mm_per_min",
+                     "support_bottom_interface_print_feed_mm_per_min"):
             speed = getattr(self, name)
             if speed is not None and (not math.isfinite(speed) or speed <= 0):
                 raise ValueError(f"{name} must be finite and positive when set")
@@ -348,7 +353,13 @@ class SlicerConfig:
             flow = getattr(self, name)
             if not math.isfinite(flow) or not 0 < flow <= 2:
                 raise ValueError(f"{name} must be finite and in (0, 2]")
-        for name in ("support_fan_pwm", "support_interface_fan_pwm"):
+        bottom_flow = self.support_bottom_interface_flow_ratio
+        if bottom_flow is not None and (
+            not math.isfinite(bottom_flow) or not 0 < bottom_flow <= 2
+        ):
+            raise ValueError("support_bottom_interface_flow_ratio must be finite and in (0, 2] when set")
+        for name in ("support_fan_pwm", "support_interface_fan_pwm",
+                     "support_bottom_interface_fan_pwm"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or not 0 <= value <= 255):
                 raise ValueError(f"{name} must be None or integer PWM 0..255")
