@@ -746,6 +746,41 @@ below, so check adhesion, overhang stiffness and release behavior with
 physical coupons before use. Do not use a large bottom gap where those
 columns need the model as a rigid foundation.
 
+## Adaptive radial layer heights (issue #17)
+
+The opt-in `--radial-layer-mode adaptive` retains the existing
+**complete-terminal physical radial envelope** and refines individual
+deposited slabs according to a conservative facet-normal cusp-height bound.
+Example:
+
+```bash
+./slice_fast.sh model.stl --radial-layer-mode adaptive \\
+  --adaptive-cusp-error-mm 0.08 --adaptive-min-layer-height-mm 0.04
+```
+
+Each coarse slab is checked against nearby mesh triangles. A facet's unit
+normal component projected into the cylinder's radial XY plane is an
+**upper bound** on its local radial-normal component: after an increment
+`h`, the normal-direction cusp is bounded by `h * |n_xy|`.
+The implementation checks conservative XY bounding-box radial intervals,
+which can refine extra slabs but avoids missing triangles crossing
+multiple angular sectors. If a requested bound cannot be satisfied at or
+above the configured minimum layer height, slicing raises a descriptive
+error instead of generating unprintably thin beads or silently exceeding
+the target. An explicitly specified first-layer thickness is preserved
+as a calibrated exception. No adaptive setting changes `fixed` or
+`complete-terminal` output.
+
+Subdivisions preserve exact radial faces and nominal terminal rebalancing;
+each refined layer has its own midpoint sampling radius, nozzle outer-face
+radius, rounded/rectangular bead area, infill pitch, physical-mm support
+contact gap and matched filament E. Foundation/raft slabs use the existing
+complete-terminal schedule because they are not cut by model-surface
+geometry. This is a conservative **facet-slope heuristic**, not a
+full print-error simulation or a guarantee of print-surface roughness.
+Validate maximum volumetric flow and actual radial positioning on printer
+coupons before routine use.
+
 ## Cross-layer island revisit ordering (issue #9)
 
 `--cooling-revisit-order avoid-last` is an opt-in scheduling improvement

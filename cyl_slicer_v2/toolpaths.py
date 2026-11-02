@@ -1066,7 +1066,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
                      else config.effective_support_gap_layers * config.layer_height)
     support_outer_limit = model_inner - requested_gap
 
-    if config.radial_layer_mode == "complete-terminal":
+    if config.radial_layer_mode in {"complete-terminal", "adaptive"}:
         # The model is sampled at its slab midpoint, so foundation slabs must
         # stop at the physical contact limit derived from its INNER DEPOSITED
         # FACE. An ordinary fixed-height loop based on sample centers can
@@ -1132,7 +1132,7 @@ def gap_support_slices(layers: list[LayerSlice], config: SlicerConfig) -> list[L
         count = int(math.floor((remaining + 1e-10) / h))
         heights = [h] * count
         remainder = remaining - count * h
-        if config.radial_layer_mode == "complete-terminal" and remainder > 1e-9:
+        if config.radial_layer_mode in {"complete-terminal", "adaptive"} and remainder > 1e-9:
             if remainder >= h * 0.5 - 1e-9:
                 heights.append(remainder)
             elif heights:

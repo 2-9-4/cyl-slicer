@@ -4,6 +4,13 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Adaptive radial scheduling may only subdivide complete-terminal
+  deposited slabs; preserve exact radial envelope, explicitly calibrated
+  first slab, per-slab nozzle outer faces and bead-model E. Use a
+  conservative projected facet-normal cusp bound across triangles active
+  in physical radius. Fail when a requested cusp bound cannot meet the
+  minimum printable thickness rather than silently creating slivers.
+  Preserve default fixed schedules and complete-terminal foundations.
 - Registered axial infill grids must use one 2π-periodic angular phase/step
   across radial layers and clipped islands. Fixed-outer preserves all tracks
   (can overfill small radii); nested dyadic insertion must preserve parent
