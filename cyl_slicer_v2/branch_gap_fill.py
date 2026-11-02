@@ -127,7 +127,14 @@ def branched_gap_paths(poly, radius, nominal_width, minimum_width,
             # to avoid extra material from pixel-edge quantization.
             raw=min(nominal_width,
                     2*min(dist[r0-1,c0-1],dist[r1-1,c1-1])-.8*pitch)
-            w=math.floor((raw+1e-10)*100)/100
+            # Raster EDT overestimates clearance when a skeleton pixel is
+            # offset from the *exact* centerline of a narrow arm. Measure
+            # the whole segment against the real polygon boundary, not
+            # just its sample endpoints; reduce width rather than wrongly
+            # discarding an otherwise printable narrow cross.
+            seg=LineString([xy((r0,c0)),xy((r1,c1))])
+            clearance=2*poly.boundary.distance(seg)-.003
+            w=math.floor((min(raw,clearance)+1e-10)*100)/100
             if w<minimum_width-1e-9:
                 return None
             widths.append(w)
