@@ -191,10 +191,18 @@ def narrow_gap_fill_paths(model, perimeter_paths, radius, config):
     if edge.is_empty:
         return []
     result=[]
+    from .branch_gap_fill import branched_gap_paths
     for poly in _polygons(edge):
+        minimum=max(config.min_path_length,config.gap_fill_min_length_mm)
+        branch=branched_gap_paths(
+            poly,radius,width,config.gap_fill_min_width_mm,
+            config.gap_fill_sample_step_mm,minimum,
+        )
+        if branch:
+            result.extend(branch)
+            continue  # Do not double print the same junction as a strip.
         result.extend(_narrow_polygon_paths(
             poly,radius,width,config.gap_fill_min_width_mm,
-            config.gap_fill_sample_step_mm,
-            max(config.min_path_length,config.gap_fill_min_length_mm),
+            config.gap_fill_sample_step_mm,minimum,
         ))
     return result

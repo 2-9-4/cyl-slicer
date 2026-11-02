@@ -16,7 +16,7 @@
   (can overfill small radii); nested dyadic insertion must preserve parent
   angular positions and never silently claim actual connected branching.
   Keep it opt-in until printed density/support coupons validate the behavior.
-- Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors; reject unsafe branched centerlines.
+- Narrow-feature fill must keep per-segment physical bead-width metadata and matched E; never lose widths through simplification, path reversal, or joining. Restrict thin-wall recovery to unprinted edge bands, not deliberately sparse interiors. A single 3-arm branch may be recovered only from a bounded, fully verified medial tree, with original polygon bead-sweep containment and nearly disjoint trunk/side-arm footprints; reject multi-junction, holed, cyclic or ambiguous graph topology.
 - Opt-in bottom support interfaces must seed only from exposed model
   outer radial faces with immediately adjacent support and propagate through
   consecutive support slabs. Keep top and bottom interface deposition disjoint

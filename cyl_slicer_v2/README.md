@@ -609,8 +609,17 @@ edge-band** material rather than intentionally sparse infill, measures
 cross-section widths in physical R×theta/axial millimeters, and emits one
 GAP_FILL centerline with a calibrated width and E for every segment. Default
 minimum deposited gap width is 0.22 mm (at 0.16 mm layer height), bounded
-above by the 0.42 mm nominal bead. Short, branched, sharply curved and
-sub-minimum features are rejected rather than fabricated across empty space.
+above by the 0.42 mm nominal bead. Short, *multi-junction*, sharply curved, and
+sub-minimum features remain conservatively rejected rather than fabricated
+across empty space. A narrow T/Y-shaped **single three-arm junction** may
+now be recovered: the slicer creates a bounded-resolution medial skeleton,
+traces one continuous trunk through its only junction and one side arm
+trimmed to meet that trunk without duplicate deposited area. Every proposed
+variable-width strand is checked against the **original exact polygon**
+after the raster candidate step, and the branch/trunk footprints must be
+nearly disjoint. Disconnected/multi-fork/cyclic/holed or ambiguous pixel
+graphs fall back to the existing conservative strip detector. The raster
+has a firm cell budget to avoid runaway cost on complex typography.
 Gently curving narrow strips can now pass the local chord/inside-swept-footprint
 checks even if their overall rotated bounding box is wider than a bead.
 An area bound excludes broad plates and folded centerlines before sampling;
