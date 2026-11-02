@@ -113,6 +113,30 @@ class AdaptiveRadialSlabTests(unittest.TestCase):
         e=float(moves[-1].split(" E",1)[1].split()[0])
         self.assertAlmostEqual(e,10*c.for_deposited_thickness(height).extrusion_per_mm,delta=1e-4)
 
+    def test_full_mesh_slice_toolpath_and_gcode_keep_each_adaptive_slab(self):
+        from cyl_slicer_v2.layers import slice_mesh
+        from cyl_slicer_v2.toolpaths import build_toolpaths
+        from dataclasses import replace
+        mesh=trimesh.creation.box(extents=(4,4,8))
+        mesh.apply_translation((30,0,0))
+        c=replace(cfg(),wall_count=1,generate_gap_support=False)
+        expected=layer_slabs(mesh,c)
+        sliced=slice_mesh(mesh,c)
+        self.assertEqual(len(sliced),len(expected))
+        self.assertTrue(any(not part.occupied.is_empty for part in sliced))
+        for layer,(radius,height) in zip(sliced,expected):
+            self.assertAlmostEqual(layer.radius,radius,places=9)
+            self.assertAlmostEqual(layer.deposited_thickness,height,places=9)
+        result=build_toolpaths(sliced,c)
+        self.assertEqual(len(result),len(expected))
+        for path_layer,(_,height) in zip(result,expected):
+            self.assertAlmostEqual(path_layer.deposited_thickness,height,places=9)
+            self.assertAlmostEqual(path_layer.deposition_radius(c.layer_height),
+                path_layer.radius+height/2,places=9)
+        code=emit_gcode(result,c)
+        self.assertEqual(code.count(";DEPOSITED_THICKNESS:"),len(expected))
+        self.assertIn("G1 X",code)
+
     def test_support_foundation_uses_exact_faces_in_adaptive_mode(self):
         c=cfg(support_gap_layers=0,raft_layers=0)
         empty=GeometryCollection()
