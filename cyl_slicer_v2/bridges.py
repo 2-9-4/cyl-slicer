@@ -157,10 +157,12 @@ def classify_bridge_regions(
                 possibilities.append((axis, verified, span))
         if not possibilities:
             continue
-        # Favor the orientation that safely bridges *more* of the region.
-        # When coverage ties, choose the shorter unsupported direction.
+        # Prefer the shorter physical span if both axes can bridge.
+        # Favor more verified area only to break equal-span ties. Never
+        # replace a short supported bridge with a longer cross-axis span
+        # simply because a separate part of the polygon also has bearings.
         direction, footprint, _ = min(
-            possibilities, key=lambda p: (-p[1].area, p[2], p[0]),
+            possibilities, key=lambda p: (p[2], -p[1].area, p[0]),
         )
         directions[direction].append(footprint)
 
