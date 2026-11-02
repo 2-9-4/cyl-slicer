@@ -119,8 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layer-height", type=float, default=None)
     parser.add_argument("--first-layer-height", type=float, default=None,
                         help="First radial slab thickness in mm (default: layer height).")
-    parser.add_argument("--radial-layer-mode", choices=("fixed", "complete-terminal"), default=None,
-                        help="Fixed midpoint slabs (default), or experimental complete-terminal slabs with bounded partial thickness.")
+    parser.add_argument("--radial-layer-mode", choices=("fixed", "complete-terminal", "adaptive"), default=None,
+                        help="Fixed midpoint slabs (default), complete-terminal slabs, or opt-in facet-slope adaptive radial subdivisions.")
+    parser.add_argument("--adaptive-cusp-error-mm", type=float, default=None,
+                        help="Adaptive-mode conservative radial facet-normal cusp bound in mm (default 0.08).")
+    parser.add_argument("--adaptive-min-layer-height-mm", type=float, default=None,
+                        help="Adaptive-mode minimum printable radial slab thickness in mm (default 0.04); "
+                             "fail rather than silently exceed the cusp target if impossible.")
     parser.add_argument("--filament-diameter", type=float, default=1.75, help="Filament diameter in mm.")
     parser.add_argument("--nozzle-diameter", type=float, default=None,
                         help="Physical nozzle orifice diameter in mm; independent of line width.")
@@ -489,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
         layer_height=_profile_value(args, "layer_height"),
         first_layer_height=_profile_value(args, "first_layer_height"),
         radial_layer_mode=_profile_value(args, "radial_layer_mode"),
+        adaptive_cusp_error_mm=_profile_value(args, "adaptive_cusp_error_mm"),
+        adaptive_min_layer_height_mm=_profile_value(args, "adaptive_min_layer_height_mm"),
         filament_diameter=args.filament_diameter,
         nozzle_diameter=_profile_value(args, "nozzle_diameter"),
         theta_step_deg=args.theta_step_deg,

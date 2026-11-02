@@ -580,13 +580,96 @@ def propagate_solid_surfaces(layers: list[LayerSlice], config: SlicerConfig) -> 
             target.bottom_surfaces = _safe_union([target.bottom_surfaces, carry])
 
 
+def _adaptive_subdivide_slabs(
+    mesh: trimesh.Trimesh,
+    coarse: list[tuple[float, float]],
+    config: SlicerConfig,
+) -> list[tuple[float, float]]:
+    """Refine terminal-complete radial slabs against a conservative cusp bound.
+
+    For a radius increment h and a triangle facet whose normal projects with
+    magnitude |n_xy| into the radial plane, the *normal* stair-step bound is
+    h*|n_r| <= h*|n_xy|. Use the latter as a conservative, rotation-independent
+    bound. Triangle projected XY AABBs conservatively bound their radial
+    interval, so facets are never silently missed by inter-slab selection.
+
+    An event sweep/heap costs O(faces log faces + slabs log faces), rather than
+    comparing every triangle to every radial slab. Only *subdivide* complete
+    terminal slabs: original faces, first-layer settings, model envelope and
+    support contact reference faces are never moved/extended.
+    """
+    if not coarse or len(mesh.faces) == 0:
+        return coarse
+
+    import heapq
+
+    triangles = mesh.vertices[mesh.faces, :2]
+    minimum = triangles.min(axis=1)
+    maximum = triangles.max(axis=1)
+    # Closest point of each projected bounding rectangle to the XY axis.
+    # May overestimate the set of active facets but never underestimate it.
+    nearest = np.where(minimum > 0, minimum,
+                       np.where(maximum < 0, -maximum, 0.0))
+    face_lo = np.linalg.norm(nearest, axis=1)
+    face_hi = np.linalg.norm(triangles, axis=2).max(axis=1)
+    projected = np.clip(np.linalg.norm(mesh.face_normals[:, :2], axis=1), 0, 1)
+    n = len(coarse)
+    edges = np.array(
+        [coarse[0][0] - coarse[0][1]*0.5,
+         *(radius + height*0.5 for radius, height in coarse)],
+        dtype=float,
+    )
+    starts = np.searchsorted(edges, face_lo - 1e-9, side="left") - 1
+    ends = np.searchsorted(edges, face_hi + 1e-9, side="right") - 1
+    events: list[list[tuple[float, int]]] = [[] for _ in range(n)]
+    for first, last, weight in zip(starts, ends, projected):
+        if not math.isfinite(weight) or weight <= 1e-12 or first >= n or last < 0:
+            continue
+        events[max(0, int(first))].append((-float(weight), min(n-1, int(last))))
+
+    heap: list[tuple[float, int]] = []
+    output: list[tuple[float, float]] = []
+    for i, (radius, thickness) in enumerate(coarse):
+        for event in events[i]:
+            heapq.heappush(heap, event)
+        while heap and heap[0][1] < i:
+            heapq.heappop(heap)
+        # Honor the explicitly calibrated first layer, even if it exceeds
+        # the cusp target; subsequent layers still use their own bounds.
+        if i == 0 and config.first_layer_height is not None:
+            output.append((radius, thickness))
+            continue
+        weight = -heap[0][0] if heap else 0.0
+        if weight <= 1e-12:
+            output.append((radius, thickness))
+            continue
+        limit = config.adaptive_cusp_error_mm / weight
+        divisions = max(1, math.ceil(thickness / limit - 1e-10))
+        if divisions > 128 or thickness / divisions < config.adaptive_min_layer_height_mm - 1e-9:
+            raise ValueError(
+                "Adaptive cusp target cannot be met within the minimum layer "
+                "height: increase --adaptive-cusp-error-mm or decrease "
+                "--adaptive-min-layer-height-mm"
+            )
+        if divisions == 1:
+            output.append((radius, thickness))
+            continue
+        lower = radius - thickness * 0.5
+        sub_height = thickness / divisions
+        for j in range(divisions):
+            output.append((float(lower + (j + 0.5) * sub_height),
+                           float(sub_height)))
+    return output
+
+
 def layer_slabs(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[tuple[float, float]]:
     """Sample midpoint radius and physical thickness for each radial slab.
 
     The original fixed schedule remains byte-for-byte equivalent by default.
     The opt-in complete-terminal schedule covers the exact requested radial
     interval; its final two slabs share a tiny remainder rather than creating
-    an unreliable, arbitrarily thin extrusion.
+    an unreliable, arbitrarily thin extrusion. Adaptive mode refines this
+    complete schedule using conservative projected triangle normal bounds.
     """
     r_min_mesh, r_max_mesh = radial_bounds(mesh)
     r_min = config.min_radius if config.min_radius is not None else r_min_mesh
@@ -647,7 +730,9 @@ def layer_slabs(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[tuple[float
     for height in heights:
         slabs.append((float(edge + 0.5 * height), float(height)))
         edge += height
-    return prefix + slabs
+    coarse = prefix + slabs
+    return (_adaptive_subdivide_slabs(mesh, coarse, config)
+            if config.radial_layer_mode == "adaptive" else coarse)
 
 
 def layer_radii(mesh: trimesh.Trimesh, config: SlicerConfig) -> list[float]:
@@ -742,7 +827,7 @@ def slice_mesh(
                 is_full_wrap=full_flags[i],
                 support_interface_target=interface_target,
                 previous_occupied=(prev if i > 0 else None),
-                deposited_thickness=(slabs[i][1] if config.radial_layer_mode == "complete-terminal"
+                deposited_thickness=(slabs[i][1] if config.radial_layer_mode in {"complete-terminal", "adaptive"}
                                      or (i == 0 and config.first_layer_height is not None) else None),
             )
         )

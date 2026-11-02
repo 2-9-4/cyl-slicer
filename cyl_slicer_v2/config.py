@@ -10,7 +10,11 @@ from .calibration import CalibrationSweep
 class SlicerConfig:
     layer_height: float = 0.16
     first_layer_height: float | None = None  # None uses layer_height.
-    radial_layer_mode: str = "fixed"  # fixed | complete-terminal (opt-in)
+    radial_layer_mode: str = "fixed"  # fixed | complete-terminal | adaptive
+    # Adaptive mode subdivides full/terminal radial slabs by a conservative
+    # projected facet-normal cusp bound; defaults do not change fixed mode.
+    adaptive_cusp_error_mm: float = 0.08
+    adaptive_min_layer_height_mm: float = 0.04
     nozzle_width: float = 0.42  # Deposited track width; not physical nozzle orifice.
     nozzle_diameter: float | None = 0.4
     # "rounded" is the calibrated quality approximation. "rectangular"
@@ -222,10 +226,19 @@ class SlicerConfig:
                        extrusion_per_mm=self.extrusion_per_mm * area / self.bead_area)
 
     def validate(self) -> None:
-        if self.radial_layer_mode not in {"fixed", "complete-terminal"}:
-            raise ValueError("radial_layer_mode must be fixed or complete-terminal")
+        if self.radial_layer_mode not in {"fixed", "complete-terminal", "adaptive"}:
+            raise ValueError("radial_layer_mode must be fixed, complete-terminal or adaptive")
         if not math.isfinite(self.layer_height) or self.layer_height <= 0:
             raise ValueError("layer_height must be finite and positive")
+        if (not math.isfinite(self.adaptive_cusp_error_mm)
+                or self.adaptive_cusp_error_mm <= 0):
+            raise ValueError("adaptive_cusp_error_mm must be finite and positive")
+        if (not math.isfinite(self.adaptive_min_layer_height_mm)
+                or self.adaptive_min_layer_height_mm <= 0):
+            raise ValueError("adaptive_min_layer_height_mm must be finite and positive")
+        if (self.radial_layer_mode == "adaptive"
+                and self.adaptive_min_layer_height_mm > self.layer_height * 0.5 + 1e-9):
+            raise ValueError("adaptive minimum layer height must be <= half the nominal layer height")
         if self.first_layer_height is not None:
             if not math.isfinite(self.first_layer_height) or self.first_layer_height <= 0:
                 raise ValueError("first_layer_height must be finite and positive")
