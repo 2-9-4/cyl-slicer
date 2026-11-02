@@ -39,6 +39,9 @@ class SlicerConfig:
     # nested dyadic track insertion with fixed angular registration.
     axial_grid_mode: str = "per-layer"  # per-layer | fixed-outer | nested
     axial_grid_outer_radius_mm: float | None = None  # Inferred by build_toolpaths.
+    # Nested-mode lower radius makes the periodic dyadic ring size divisible
+    # by every active stride, avoiding a crowded seam at odd track counts.
+    axial_grid_inner_radius_mm: float | None = None  # Inferred by build_toolpaths.
     axial_grid_phase_deg: float = 0.0
     sparse_infill_pattern: str = "alternate"  # optional alternating single-grid layer.
     solid_infill_pattern: str = "alternate"  # optional alternating exposed fill angle.
@@ -309,6 +312,14 @@ class SlicerConfig:
                 and (not math.isfinite(self.axial_grid_outer_radius_mm)
                      or self.axial_grid_outer_radius_mm <= 0)):
             raise ValueError("axial_grid_outer_radius_mm must be finite and positive")
+        if (self.axial_grid_inner_radius_mm is not None
+                and (not math.isfinite(self.axial_grid_inner_radius_mm)
+                     or self.axial_grid_inner_radius_mm <= 0)):
+            raise ValueError("axial_grid_inner_radius_mm must be finite and positive")
+        if (self.axial_grid_inner_radius_mm is not None
+                and self.axial_grid_outer_radius_mm is not None
+                and self.axial_grid_inner_radius_mm > self.axial_grid_outer_radius_mm):
+            raise ValueError("axial_grid_inner_radius_mm must not exceed the outer radius")
         if not math.isfinite(self.axial_grid_phase_deg) or not 0 <= self.axial_grid_phase_deg < 360:
             raise ValueError("axial_grid_phase_deg must be in [0, 360)")
         if self.sparse_infill_pattern not in {"both", "alternate"}:
