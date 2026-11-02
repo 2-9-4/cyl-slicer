@@ -106,8 +106,8 @@ class BridgeClassificationTests(unittest.TestCase):
         from cyl_slicer_v2.bridges import _anchored_bridge_lanes
         # 180 mm wide rectangle: avoid hundreds of repeated line probes.
         previous = unary_union([
-            box(0, 3.5, 180, 4.1),
-            box(0, 5.9, 180, 6.5),
+            box(0, 3.5, 180, 4.15),
+            box(0, 5.85, 180, 6.5),
         ])
         rectangle = box(0, 4.2, 180, 5.8)
         with patch("cyl_slicer_v2.bridges._lines",
@@ -121,9 +121,9 @@ class BridgeClassificationTests(unittest.TestCase):
         from cyl_slicer_v2.bridges import _anchored_bridge_lanes
         candidate = box(0, 4.2, 10, 5.8)
         previous = unary_union([
-            box(0, 3.5, 10, 4.1),
-            box(0, 5.9, 4, 6.5),
-            box(6, 5.9, 10, 6.5),
+            box(0, 3.5, 10, 4.15),
+            box(0, 5.85, 4, 6.5),
+            box(6, 5.85, 10, 6.5),
         ])
         result = _anchored_bridge_lanes(candidate,previous,"axial",.42,8)
         self.assertFalse(result.is_empty)
