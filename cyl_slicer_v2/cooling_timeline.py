@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import re
 
-TOKEN = re.compile(r"(?<![A-Za-z])([XYZEF])(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+))")
+TOKEN = re.compile(r"(?<![A-Za-z])([XYZEF])(-?(?:\d+(?:\.\d*)?|\.\d+))")
 
 
 def _coordinates(line: str) -> dict[str, float]:
