@@ -21,7 +21,7 @@ def layer(index, angle=.1, support=False):
 
 def motion_commands(code):
     return [line for line in code.splitlines()
-            if re.match(r"^(G[01]|G92(?:\\.9)?|M106|M204|M201|M900)\\b",line)]
+            if re.match(r"^(G[01]|G92(?:\.9)?|M106|M204|M201|M900)\b",line)]
 
 
 class CoolingRevisitTimelineTests(unittest.TestCase):
