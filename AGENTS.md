@@ -46,6 +46,13 @@
   radians as millimeters or presume bearing on the first printed slab.
   Apply a per-path feed ceiling without modifying filament E/width or
   the bridge/support/fan policies. Leave unset until measured on hardware.
+- Post-G-code cooling revisit reports must calculate a *lower bound* on
+  actual elapsed time using emitted modal G0/G1 planner F, native rotary
+  degree distances, standalone E-only retraction/priming, and non-moving
+  G92/G92.9 coordinate rebases. Match periodic island positions and support
+  classification. Do not certify a target from an optimistic or guessed
+  acceleration model; `NOT_PROVEN` is not equivalent to a real-time violation.
+  The report must leave every motion, E, fan and feed unchanged.
 - For cooling, estimate each island's deposited path lengths in physical
   theta*radius/axial mm and respect role-specific maximum speeds and the
   machine's configured minimum speed. Cooling timing estimates must be

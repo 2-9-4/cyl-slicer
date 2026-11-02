@@ -812,6 +812,35 @@ history without firmware acceleration/travel timing and physical tests.
 It inserts no G4 dwell; the default remains nearest-first until printed
 coupons validate improved layer adhesion/heat management.
 
+## G-code-based island revisit timeline (issue #9)
+
+`--cooling-revisit-report` enables a second, **post-G-code** motion audit.
+Unlike the deposited-length-only layer estimate, it includes emitted G0/G1
+travels, print moves, and standalone E retractions/priming in the same modal
+Marlin coordinate system and **actual planner F values**. For mixed X/Y moves
+the planner's native Y units are degrees, and it correctly treats `G92.9`
+and `G92` as *coordinate resets, not time-consuming moves*. The audit
+matches model islands separately from support islands by their 2π-periodic
+physical positions, and annotates the time between the previous island's
+**last deposited move** and the next visit's **first deposited move**:
+
+```bash
+./slice_fast.sh part.stl --cooling-revisit-report \\
+  --cooling-min-revisit-time-s 5 --cooling-revisit-order avoid-last
+```
+
+The output includes `;COOLING_REVISIT_LOWER_BOUND_S:...` comments, matched
+prior layer and local island indexes. A requested target is reported as
+`CERTIFIED_LOWER_BOUND` when the minimum accumulated ideal-motion time is
+already sufficient, or `NOT_PROVEN` when it is not. `NOT_PROVEN` is
+**not** a claim that the printer violates the target: actual acceleration,
+planner cornering, M400, heaters, command buffering and unexpected pauses
+may make the wall-clock delay longer. The timer **never inserts G4/dwells,
+changes material E, or changes requested feed/fan**. The audit assumes the
+slicer's absolute-position Marlin output; it does not predict actual
+acceleration or temperature. Defaults remain off, and ambiguous full-wrap
+islands cannot be reliably matched.
+
 ## Opt-in speed ceiling for partially supported walls (issue #10)
 
 With `--wall-unsupported-print-feed 600`, the slicer measures each model

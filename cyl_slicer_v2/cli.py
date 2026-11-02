@@ -252,6 +252,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "on the next layer when another matched island exists.")
     parser.add_argument("--cooling-revisit-match-mm", type=float, default=None,
                         help="Maximum physical displacement for recognizing the same island between radial layers.")
+    parser.add_argument("--cooling-revisit-report", action=argparse.BooleanOptionalAction,
+                        default=None,
+                        help="Annotate a conservative G-code motion-time lower bound between successive island deposits.")
+    parser.add_argument("--cooling-min-revisit-time-s", type=float, default=None,
+                        help="Opt-in revisit target in seconds; emit NOT_PROVEN diagnostics when the "
+                             "motion-time lower bound cannot certify the target. No dwell is inserted.")
     parser.add_argument("--retract-mm", type=float, default=None, help="Filament retraction distance in mm between paths.")
     parser.add_argument("--z-hop-height", type=float, default=0.4, help="Radial Z-hop lift in mm for risky travel moves.")
     parser.add_argument("--z-hop-min-travel", type=float, default=5.0, help="Minimum travel distance in mm that triggers Z-hop.")
@@ -564,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
         cooling_min_print_speed_mm_per_min=_profile_value(args, "cooling_min_print_speed_mm_per_min"),
         cooling_revisit_order=_profile_value(args, "cooling_revisit_order"),
         cooling_revisit_match_mm=_profile_value(args, "cooling_revisit_match_mm"),
+        cooling_revisit_report=_profile_value(args, "cooling_revisit_report"),
+        cooling_min_revisit_time_s=_profile_value(args, "cooling_min_revisit_time_s"),
         z_hop_height=args.z_hop_height,
         z_hop_min_travel=args.z_hop_min_travel,
         route_travel_inside_island=_profile_value(args, "route_travel_inside_island"),

@@ -1728,6 +1728,9 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
         f";COOLING_MIN_ISLAND_PRINT_TIME_S:{config.cooling_min_island_print_time_s:g}",
         f";COOLING_MIN_PRINT_SPEED_MM_MIN:{config.cooling_min_print_speed_mm_per_min:g}",
         f";COOLING_REVISIT_ORDER:{config.cooling_revisit_order}",
+        *([f";COOLING_REVISIT_LOWER_BOUND_REPORT:true",
+           f";COOLING_MIN_REVISIT_TIME_S:{config.cooling_min_revisit_time_s:g}"]
+          if config.cooling_revisit_report or config.cooling_min_revisit_time_s > 0 else []),
         "G90 ; absolute positioning",
         "M82 ; absolute extrusion mode",
         *_reset_rotary_axis(state, reset_extrusion=True),
@@ -1880,7 +1883,19 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
                         f" TARGET_S:{layer_config.cooling_min_island_print_time_s:g}"
                         f" ESTIMATE_S:{duration:.4f}"
                     )
+        tagged_group_for_report = None
         for index, (path, group_index) in enumerate(tagged_paths):
+            if (config.cooling_revisit_report or config.cooling_min_revisit_time_s > 0):
+                if tagged_group_for_report != group_index:
+                    tagged_group_for_report = group_index
+                    groups = list(layer.island_paths) if layer.island_paths else [layer.paths_by_role]
+                    anchor = _island_revisit_anchor(groups[group_index])
+                    if anchor is not None:
+                        out.append(
+                            f";COOLING_REVISIT_GROUP:{group_index}"
+                            f" THETA_RAD:{anchor[0]:.12f} AXIAL_MM:{anchor[1]:.6f}"
+                            f" SUPPORT:{int(anchor[2])}"
+                        )
             path_config = island_configs.get(group_index, layer_config)
             path = _orient_path_for_current_position(path, state, path_config)
             following = tagged_paths[index + 1] if index + 1 < len(tagged_paths) else None
@@ -1972,7 +1987,14 @@ def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
             ";end of slice",
         ]
     )
-    return "\n".join(out) + "\n"
+    code = "\n".join(out) + "\n"
+    if config.cooling_revisit_report or config.cooling_min_revisit_time_s > 0:
+        from .cooling_timeline import annotate_revisit_timeline
+        return annotate_revisit_timeline(
+            code, match_mm=config.cooling_revisit_match_mm,
+            target_s=config.cooling_min_revisit_time_s,
+        )
+    return code
 
 
 X_RE = re.compile(r"\bX(-?\d+(?:\.\d+)?)")

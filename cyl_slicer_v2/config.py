@@ -149,6 +149,10 @@ class SlicerConfig:
     # the end of one radial slab and the beginning of the next.
     cooling_revisit_order: str = "nearest"  # nearest | avoid-last
     cooling_revisit_match_mm: float = 10.0  # Max physical centroid drift to recognize an island.
+    # Opt-in post-emission G-code motion timeline. Reports a guaranteed
+    # lower bound, not firmware-exact clock time or an enforced dwell.
+    cooling_revisit_report: bool = False
+    cooling_min_revisit_time_s: float = 0.0
     min_path_length: float = 0.1
     max_axial_segment: float = 1.5  # Secondary cap on curved-face intersection samples.
     intersection_curve_error_mm: float = 0.01  # Maximum physical unwrapped chord deviation.
@@ -506,6 +510,11 @@ class SlicerConfig:
         if (not math.isfinite(self.cooling_revisit_match_mm)
                 or self.cooling_revisit_match_mm <= 0):
             raise ValueError("cooling_revisit_match_mm must be finite and positive")
+        if not isinstance(self.cooling_revisit_report, bool):
+            raise ValueError("cooling_revisit_report must be bool")
+        if (not math.isfinite(self.cooling_min_revisit_time_s)
+                or self.cooling_min_revisit_time_s < 0):
+            raise ValueError("cooling_min_revisit_time_s must be finite and non-negative")
         if (self.cooling_min_layer_time_s > 0
                 and self.cooling_min_print_speed_mm_per_min > self.feed_mm_per_min):
             raise ValueError("cooling minimum print speed cannot exceed normal print speed")
