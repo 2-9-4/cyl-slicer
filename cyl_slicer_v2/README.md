@@ -1251,6 +1251,34 @@ outside using simultaneous X/Y/Z motion.
   --max-chord-error-mm 0.015 --max-slope 0.3
 ```
 
+For automatic **surface-patch discovery**, scan a bounded grid of physical
+angular and axial coordinates:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --scan --theta-range-deg 0 360 --axial-range-mm 15 75 \
+  --theta-cells 72 --axial-cells 32 \
+  --max-slope 0.3 --max-chord-error-mm 0.03 \
+  --max-cell-excursion-mm 0.5
+```
+
+The scanner caches 9 exact triangle probes per candidate grid cell (shared
+corners, edge midpoints and centers) and rejects inaccessible/ambiguous
+radial surfaces, local steepness, large radial interpolation error, and
+any cell crossed by a mesh's open, nonmanifold or sharp radial-crease
+edge. This last conservative edge test rejects holes even when smaller than
+the probe grid. Candidate cells are joined into connected patches; adjacent
+cells at 0/360 degrees are one patch rather than separate seams. JSON has a
+row-wise candidate mask, reason counts, patch bounds, radial extrema, and
+estimated **unwrapped** area. An axial triangle-bin index avoids scanning
+the entire mesh for each probe when many triangles occupy different X ranges.
+
+Use smaller cells for detailed geometry; a large cell touched by an edge is
+rejected rather than guessed printable. The grid and edge tests still cannot
+prove all geometric or moving-nozzle clearance conditions, particularly
+closed-mesh occlusions, so this remains an **analysis-only candidate**.
+No variable-Z printing is enabled by `--scan`.
+
 Coordinates on each `--point` are **theta degrees, axial X mm**. Use
 continuous angles (e.g. 359, 361) for a ribbon crossing the periodic seam,
 not an abrupt 359→1 turn. Output JSON includes sampled radii, 3D cylindrical
