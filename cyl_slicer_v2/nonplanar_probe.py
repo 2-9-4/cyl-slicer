@@ -153,6 +153,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="Reject scan cells touched by mesh edges with sharper dihedral.")
     parser.add_argument("--min-patch-cells", type=int, default=4)
     parser.add_argument("--max-scan-cells", type=int, default=12000)
+    parser.add_argument("--raster-preview", action="store_true",
+                        help="Suggest surface-following axial finish lines for accepted scan cells; JSON only.")
+    parser.add_argument("--raster-pitch-mm", type=float, default=.42)
+    parser.add_argument("--raster-edge-inset-mm", type=float, default=.21)
+    parser.add_argument("--raster-min-path-mm", type=float, default=.5)
+    parser.add_argument("--raster-max-paths", type=int, default=2048)
+    parser.add_argument("--raster-max-points", type=int, default=100000)
+    parser.add_argument("--raster-include-points", action="store_true")
     parser.add_argument("--max-segment-mm", type=float, default=0.5)
     parser.add_argument("--max-chord-error-mm", type=float, default=0.015)
     parser.add_argument("--max-slope", type=float, default=0.3)
@@ -170,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.scan and args.point:
         parser.error("--scan and --point cannot be used together")
+    if args.raster_preview and not args.scan:
+        parser.error("--raster-preview requires --scan")
+    if args.raster_include_points and not args.raster_preview:
+        parser.error("--raster-include-points requires --raster-preview")
     if args.scan and args.motion_plan:
         parser.error("--motion-plan requires a specified --point ribbon, not --scan")
     if args.motion_plan and args.bead_area_mm2 is None:
@@ -196,6 +208,21 @@ def main(argv: list[str] | None = None) -> int:
                 max_cells=args.max_scan_cells,
                 min_patch_cells=args.min_patch_cells,
             )
+            if args.raster_preview:
+                from .nonplanar_raster import propose_axial_conformal_rasters
+                result["raster_preview"] = propose_axial_conformal_rasters(
+                    mesh, result,
+                    nominal_surface_pitch_mm=args.raster_pitch_mm,
+                    allowed_surface_slope=args.max_slope,
+                    edge_inset_mm=args.raster_edge_inset_mm,
+                    min_path_length_mm=args.raster_min_path_mm,
+                    max_segment_mm=args.max_segment_mm,
+                    max_radial_chord_error_mm=args.max_chord_error_mm,
+                    max_radial_excursion_mm=args.max_excursion_mm,
+                    max_paths=args.raster_max_paths,
+                    max_total_points=args.raster_max_points,
+                    include_points=args.raster_include_points,
+                )
         except ValueError as exc:
             parser.error(str(exc))
     else:

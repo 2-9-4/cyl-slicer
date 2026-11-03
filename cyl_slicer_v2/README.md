@@ -1381,3 +1381,29 @@ This is **not** an approved material flow profile or printable path.
 Upstream surface chord/patch verification, actual collision with the full
 head and printed material, top-shell replacement, safe travel, machine
 acceleration and live XYZ emission remain unsolved.
+
+### Candidate axial conformal raster preview (issue #80)
+
+The geometry-only inspection command can now propose axial surface-following
+finishing ribbons from automatic candidate surface patches:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --scan --theta-cells 72 --axial-cells 32 \
+  --raster-preview --raster-pitch-mm 0.42 \
+  --raster-edge-inset-mm 0.21 --raster-include-points
+```
+
+One globally registered angular track lattice spans the requested window;
+each track is clipped to **contiguous accepted axial scan cells**. A masked
+hole or rejected mesh feature breaks the line, even if its endpoints are
+otherwise close. Each ribbon samples the true radial mesh surface, checks
+slope, chord and travel limits, and optionally emits XYZ candidate points
+inside JSON, never printer G-code. A conservative angular pitch correction
+uses the configured maximum slope and outer radius; full **surface metric
+bead-width coverage is not yet guaranteed**. Very dense tracks and large
+candidate geometry are limited by explicit finite path/point budgets.
+
+This preview does **not** replace or deposit top skin, confirm nozzle and
+heater clearances, validate backing support, or plan safe retractions/travels.
+It must not be treated as a printable nonplanar finishing mode.

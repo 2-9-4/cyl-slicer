@@ -12,6 +12,12 @@
   undeclared heater-block/gantry shapes remain unresolved. Fail closed on
   ambiguous intervals and subdivision/node budgets, never promote the
   analytic body-section test to full XYZ extrusion authorization.
+- Experimental conformal finish raster previews must use one globally
+  registered angular track lattice and clip each axial run to contiguous
+  accepted patch-grid cells; rejected/ambiguous cells must break paths.
+  The preview may report topology-clipped XYZ centerlines but must not
+  imply surface-metric bead coverage, material ownership, support, clearance,
+  or printability, and must NEVER be emitted as printer G-code by default.
 - Candidate nonplanar surface patches must sample corners, edge midpoints
   and centers, reject any projected open/nonmanifold/radial-crease edge that
   touches a cell, and join 0/2pi neighbors only for true full-turn scans.

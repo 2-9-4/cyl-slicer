@@ -88,6 +88,37 @@ class NonplanarProbeTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(SystemExit):
                 main(["unused.stl",*args])
 
+    def test_automatic_scan_raster_preview_remains_nonprinting(self):
+        mesh=cylindrical_shell(lambda theta,axial:30+.07*axial,
+                               theta_segments=96)
+        output=io.StringIO()
+        with patch("cyl_slicer_v2.nonplanar_probe.load_mesh",return_value=mesh):
+            with redirect_stdout(output):
+                code=main(["unused.stl","--scan","--raster-preview",
+                           "--theta-cells","12","--axial-cells","6",
+                           "--axial-range-mm","1","7",
+                           "--max-chord-error-mm",".05",
+                           "--raster-pitch-mm","4",
+                           "--raster-include-points"])
+        self.assertEqual(code,0)
+        report=json.loads(output.getvalue())
+        self.assertEqual(report["status"],"geometry_candidates_only")
+        preview=report["raster_preview"]
+        self.assertEqual(preview["status"],"candidate_axial_rasters_only")
+        self.assertFalse(preview["nonplanar_extrusion_enabled"])
+        self.assertFalse(preview["actual_surface_coverage_certified"])
+        self.assertFalse(preview["full_head_collision_certified"])
+        self.assertGreater(preview["candidate_count"],40)
+        self.assertTrue(preview["paths"][0]["points"])
+
+    def test_raster_preview_flags_are_scoped_to_scan(self):
+        for args in (
+            ["--raster-preview","--point","10,2","--point","20,4"],
+            ["--raster-include-points","--scan"],
+        ):
+            with self.subTest(args=args),self.assertRaises(SystemExit):
+                main(["unused.stl",*args])
+
     def test_rejected_candidates_have_explicit_reason(self):
         mesh=cylindrical_shell(lambda theta,axial: 30+.4*axial)
         result=analyze_ribbon(mesh,[degree_point("10,1"),degree_point("10,6")],
