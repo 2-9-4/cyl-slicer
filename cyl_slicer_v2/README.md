@@ -1265,3 +1265,31 @@ collision checking nor transition replacement of existing top shell has
 been implemented. Never convert these sample points directly into G-code
 without those safeguards (#78–#80). Existing slicer CLI, profile defaults
 and emitted G-code are unchanged.
+
+
+### Nonplanar XYZ motion metrics (experimental, issue #78)
+
+The analysis-only `nonplanar_motion.evaluate_conformal_move()` gives
+accurate **simultaneous** axial X, rotary Y and radial Z path length,
+Marlin-native feed and deposited filament volume for a candidate segment.
+For machine-linear `theta(t)`, `X(t)` and `r(t)`, true Cartesian speed is
+
+```
+sqrt( dX^2 + dR^2 + [r(t) * dTheta]^2 )
+```
+
+integrated over the whole move. Native Marlin planner length is instead
+`sqrt(dX^2 + degrees(dTheta)^2 + dR^2)`. The resulting feed request
+is bounded by **maximum instantaneous** physical speed, not merely the
+mid-radius average, and can be capped by a volumetric flow budget.
+Filament E is proportional to true integrated 3D deposited length, using
+the segment's bead cross-sectional area.
+
+For simultaneous rotation/radial changes, equal native time increments
+do not imply equal physical path increments. Therefore the analysis also
+reports the maximum local volume-per-mm error if a single command
+extrudes E linearly; it flags long segments needing subdivision.
+This does not approve live printing: dynamic Z acceleration, toolhead
+clearance, real nozzle contact, thermal effects and the replacement of
+old radial top skin still require separate validation. Existing emitted
+G-code is unchanged.
