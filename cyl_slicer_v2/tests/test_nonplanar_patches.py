@@ -65,9 +65,14 @@ class PatchScannerTests(unittest.TestCase):
         self.assertGreater(result["rejection_counts"].get(
             "missing_or_ambiguous_surface",0),0)
 
-    def test_excessive_slope_fails_every_cell(self):
+    def test_excessive_slope_and_excursion_are_independent_guards(self):
         mesh=cylindrical_shell(lambda t,x:30+.65*x)
-        result=scan(mesh)
+        default=scan(mesh)
+        self.assertEqual(default["accepted_cells"],0)
+        self.assertGreater(default["rejection_counts"].get("radial_excursion",0),0)
+        # Allow the larger within-cell height range but retain the same
+        # steep-surface slope ceiling. Now the slope guard should reject.
+        result=scan(mesh,max_cell_excursion_mm=2.0)
         self.assertEqual(result["accepted_cells"],0)
         self.assertGreater(result["rejection_counts"].get("radial_slope",0),0)
 
