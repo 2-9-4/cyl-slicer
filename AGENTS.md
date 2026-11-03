@@ -4,6 +4,13 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Simultaneous nonplanar XYZ moves need physical 3D polar arc integration
+  with r(t), rather than a constant-radius 2D hypotenuse. Marlin Y is
+  degrees, Z is radial mm: bound native F by the maximum instantaneous
+  physical speed, preserve integrated bead-area E and cap volumetric flow.
+  Native-linear E is not uniform physical E/mm when r changes; subdivide
+  moves with excessive local volume variation. Do not enable live emitter
+  until swept collision and top-shell replacement are verified.
 - Nonplanar topography inspection is analysis-only: do not emit true X/Y/Z
   extrusion from radial sampling until conformal shell ownership, full
   swept printhead/mandrel clearance, machine Z limits, local bead packing
