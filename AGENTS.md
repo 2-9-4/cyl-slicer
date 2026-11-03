@@ -4,6 +4,14 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- A continuous nonplanar head-section audit may certify only the explicitly
+  declared radial cylindrical hardware sections vs supplied triangles, using
+  conservative triangle/pose interval bounds and recursive refinement.
+  Such a result is NOT certification of the complete toolhead or print: the
+  tip contact area, mandrel, prior deposited layers, machine range and
+  undeclared heater-block/gantry shapes remain unresolved. Fail closed on
+  ambiguous intervals and subdivision/node budgets, never promote the
+  analytic body-section test to full XYZ extrusion authorization.
 - Candidate nonplanar surface patches must sample corners, edge midpoints
   and centers, reject any projected open/nonmanifold/radial-crease edge that
   touches a cell, and join 0/2pi neighbors only for true full-turn scans.
