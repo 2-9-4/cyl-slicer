@@ -1404,6 +1404,8 @@ def emit_toolpath(
     travel_region: BaseGeometry | None = None,
     preserve_short_segments: bool = False,
 ) -> list[str]:
+    if path.point_radii is not None or path.segment_areas_mm2 is not None:
+        raise ValueError("Conformal XYZ candidates are not printable: missing top-shell ownership, backing and full-head safety verification")
     if len(path.points) < 2:
         return []
     accum = _unwrap_toolpath_thetas(path, state.theta_accum, config)
@@ -1651,6 +1653,13 @@ def _role_fan_override(role: str, config: SlicerConfig) -> tuple[int | None, str
 
 
 def emit_gcode(layers: list[LayerToolpaths], config: SlicerConfig) -> str:
+    # Reject *before* preheating/homing/startup output or reordering: other
+    # toolpath helpers assume one constant physical radius per role path.
+    if any(path.point_radii is not None or path.segment_areas_mm2 is not None
+           for layer in layers
+           for paths in layer.paths_by_role.values()
+           for path in paths):
+        raise ValueError("Conformal XYZ candidate paths require exclusive top-skin ownership and full-head clearance; emit_gcode refuses unverified printing")
     config.validate()
     state = GcodeState(radial=config.bed_radius)
     output_x_offset = _output_x_offset(layers, config)
