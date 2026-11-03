@@ -128,7 +128,7 @@ def propose_axial_conformal_rasters(
                     max_radial_chord_error_mm=max_radial_chord_error_mm,
                     max_radial_slope=allowed_surface_slope,
                     max_total_radial_excursion_mm=max_radial_excursion_mm,
-                    max_points=min(4096,max_total_points),
+                    max_points=4096,
                 )
             except ValueError:
                 skip["failed_surface_ribbon"]+=1
