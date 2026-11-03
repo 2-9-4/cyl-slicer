@@ -38,6 +38,12 @@ class Toolpath:
     closed: bool = False
     # Each segment may carry its own physical bead width in mm.
     segment_widths: list[float] | None = None
+    # Experimental conformal TOP_SKIN *candidate* pointwise absolute physical
+    # radii and per-segment bead area in mm². Production emit_gcode must reject
+    # these until top-shell ownership and whole-machine clearance are verified.
+    # New fields trail the positional legacy API so old Toolpath stays intact.
+    point_radii: list[float] | None = None
+    segment_areas_mm2: list[float] | None = None
 
 
 @dataclass
