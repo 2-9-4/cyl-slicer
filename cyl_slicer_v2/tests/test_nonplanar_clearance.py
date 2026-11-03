@@ -46,7 +46,7 @@ class NozzleInterferenceTests(unittest.TestCase):
     def test_unresolved_external_coverage_is_not_assumed_safe(self):
         mesh=cylindrical_shell(lambda t,x:30,
                                theta_segments=32,
-                               theta_min=.36,theta_max=.44)
+                               theta_min=.38,theta_max=.42)
         sampler=RadialSurfaceSampler(mesh)
         result=probe_nozzle_ribbon(sampler,[(.4,4)],profile())
         self.assertEqual(result["status"],"unresolved_neighbors")
