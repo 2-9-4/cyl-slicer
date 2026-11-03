@@ -1446,3 +1446,33 @@ scheme. Live conformal finishing must still replace precisely owned
 conventional top-shell volume and independently certify all physical
 clearances, machine limits and timing before this path can be wired to
 production emission.
+
+### Experimental top-skin ownership reservation audit (issue #78)
+
+`nonplanar_ownership.audit_conformal_top_skin_ownership()` now checks
+whether a candidate variable-radius `TOP_SKIN` path could **eventually**
+replace one *whole*, existing conventional top-skin toolpath for an
+identified radial layer. The audit accepts the **actual** `LayerSlice`
+and `LayerToolpaths` outputs, and does not alter their lists.
+
+The first version deliberately requires `monotonic_top_skin=True`:
+with the default combined `SOLID_INFILL` role, top and bottom skins
+cannot yet be separated reliably enough to remove old material.
+The audit rejects partial path matches, unexposed/buried regions,
+conformal bead corridors crossing the exposed top-surface boundary,
+missing backing from immediately earlier radial layers, conflicting
+perimeters/bridges/support paths, candidates outside the same radial
+slab, and large differences in intended plastic volume. Cartesian
+radius and rotary angle are handled in physical theta*R/axial units,
+including ordinary +360-degree periodic translations.
+
+An accepted result is only
+`exclusive_legacy_TOP_SKIN_replacement_candidate`: it names a
+specific `role_path_index` under `paths_by_role["TOP_SKIN"]` for
+future atomic replacement, compares old/new geometric plastic volume,
+and lists outstanding safety gates. **It never removes that path** and
+`nonplanar_extrusion_enabled` is always false. Actual replacement
+must remove *the same Toolpath object* from both
+`paths_by_role` and the matching `island_paths` group, preserve all
+other roles, integrate backing/ownership across radial slabs, and
+certify full-head/mandrel/printed-layer clearance and travel.
