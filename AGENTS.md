@@ -23,6 +23,15 @@
   touches a cell, and join 0/2pi neighbors only for true full-turn scans.
   A finite mesh sampling grid is not a proof against every narrow occlusion,
   and the patch mask is not a collision clearance certificate.
+- Experimental conformal top-skin ownership audits must identify WHOLE
+  already-generated TOP_SKIN toolpaths, never silently erase partial
+  SOLID_INFILL, bridge, walls or support. Require exposed surface, fully
+  backed material, bounded physical radial slab extent, appropriate
+  geometric centerline matching and old/new plastic volume budget.
+  Ownership reservation is READ ONLY and does not authorize nonplanar
+  G-code. Actual transfer must remove a role path atomically from both
+  paths_by_role and every island_paths alias before adding conformal
+  deposition; never duplicate or drop old material.
 - Experimental Toolpath.point_radii and segment_areas_mm2 are
   **candidate-only**: production emit_toolpath/emit_gcode must reject them
   before printing unless exact exclusive top-shell volume ownership and
