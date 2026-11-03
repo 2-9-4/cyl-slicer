@@ -82,7 +82,7 @@ class NonplanarContinuousSweepTests(unittest.TestCase):
 
     def test_triangle_spatial_refinement_rejects_false_box_overlap(self):
         mesh=trimesh.Trimesh(vertices=np.asarray([
-            [31,0,0],[31,0,8],[31,1,0]],dtype=float),
+            [31,0,0],[31,1,0],[31,1,8]],dtype=float),
             faces=[[0,1,2]],process=False)
         section=[RadialHeadSection(.5,1.5,.12)]
         # Axial 4.5 is outside this triangle at theta 0; coarse triangle
@@ -160,10 +160,10 @@ class NonplanarContinuousSweepTests(unittest.TestCase):
             {"section_count":0},
         ):
             with self.subTest(opts=opts),self.assertRaises(ValueError):
-                cone_head_sections(flat_tip_radius_mm=.2,
-                                   cone_half_angle_deg=30,
-                                   cone_height_mm=1,
-                                   min_height_mm=.2,**opts)
+                args={"flat_tip_radius_mm":.2,"cone_half_angle_deg":30,
+                      "cone_height_mm":1,"min_height_mm":.2}
+                args.update(opts)
+                cone_head_sections(**args)
 
 
 if __name__ == "__main__":
