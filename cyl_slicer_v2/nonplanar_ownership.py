@@ -18,6 +18,7 @@ island_paths; never mutate one alias while leaving the other intact.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 import math
 from typing import Sequence
 
@@ -261,3 +262,118 @@ def audit_conformal_top_skin_ownership(
         ],
     })
     return result
+
+
+@dataclass(frozen=True)
+class StagedConformalTransfer:
+    """Unprintable candidate layer-path snapshot and validated ownership audit."""
+
+    layer_toolpaths: tuple[LayerToolpaths, ...]
+    ownership_report: dict
+
+
+def stage_conformal_top_skin_replacement(
+    layers: Sequence[LayerSlice],
+    generated: Sequence[LayerToolpaths],
+    candidate: Toolpath,
+    config: SlicerConfig,
+    *,
+    target_layer_index: int,
+    **audit_options,
+) -> StagedConformalTransfer:
+    """Stage exactly one complete path replacement in COPIED toolpath maps.
+
+    This only transitions data ownership after an accepted conservative
+    audit; it is NOT a live conformal print/export operation. The new
+    Toolpath has point_radii and segment_areas_mm2, so production
+    emit_gcode() is deliberately blocked by its existing fail-closed
+    gate. The original layers/role lists/island groups are unchanged.
+
+    When island_paths exists, every TOP_SKIN Toolpath should appear
+    exactly once in both paths_by_role and an island group by object
+    identity. A stale, missing, ambiguous or duplicate alias is a
+    hard error: never let a path still appear in the output after it
+    has been notionally transferred.
+    """
+    report=audit_conformal_top_skin_ownership(
+        layers, generated, candidate, config,
+        target_layer_index=target_layer_index, **audit_options
+    )
+    if report["status"]!="exclusive_legacy_TOP_SKIN_replacement_candidate":
+        raise ValueError("cannot stage nonplanar ownership: "+str(report["reason"]))
+
+    matching=[layer for layer in generated
+              if layer.layer_index==target_layer_index]
+    if len(matching)!=1:
+        raise ValueError("cannot stage ambiguous toolpath layer")
+    target=matching[0]
+    reserved=report["reserved_legacy_paths"]
+    if len(reserved)!=1:
+        raise ValueError("cannot stage ambiguous legacy top-skin reservation")
+    index=reserved[0]["role_path_index"]
+    role_paths=target.paths_by_role.get("TOP_SKIN",[])
+    if not 0<=index<len(role_paths):
+        raise ValueError("reserved top-skin path index is stale")
+    old=role_paths[index]
+    if sum(existing is old for existing in role_paths)!=1:
+        raise ValueError("legacy top-skin path has duplicate role ownership")
+    if any(existing is candidate
+           for other_layer in generated
+           for paths in other_layer.paths_by_role.values()
+           for existing in paths):
+        raise ValueError("conformal candidate is already registered to a print role")
+    if any(existing is candidate
+           for other_layer in generated
+           for group in other_layer.island_paths
+           for paths in group.values()
+           for existing in paths):
+        raise ValueError("conformal candidate is already registered to an island group")
+
+    alias_count=0
+    for group in target.island_paths:
+        for role,paths in group.items():
+            for old_alias in paths:
+                if old_alias is old:
+                    if role!="TOP_SKIN":
+                        raise ValueError("stale legacy TOP_SKIN alias has a different role")
+                    alias_count+=1
+    if target.island_paths and alias_count!=1:
+        raise ValueError("legacy TOP_SKIN island alias must occur exactly once")
+
+    # Clone all lists and dictionaries, not only the edited role, so no
+    # accidental append/sort on the staged output can mutate an old alias.
+    new_roles={role:list(paths) for role,paths in target.paths_by_role.items()}
+    new_roles["TOP_SKIN"][index]=candidate
+    new_islands=[]
+    for group in target.island_paths:
+        clone={}
+        for role,paths in group.items():
+            clone[role]=[candidate if old_alias is old else old_alias
+                         for old_alias in paths]
+        new_islands.append(clone)
+
+    # Physical material is not yet changed: this "transferred" Toolpath
+    # remains explicitly unprintable by the production emitter.
+    updated=replace(target,paths_by_role=new_roles,island_paths=new_islands)
+    staged=tuple(updated if layer.layer_index==target_layer_index else layer
+                 for layer in generated)
+    if (sum(item is candidate for paths in updated.paths_by_role.values()
+            for item in paths)!=1
+        or any(item is old for paths in updated.paths_by_role.values()
+               for item in paths)
+        or (new_islands and
+            (sum(item is candidate for group in new_islands
+                 for paths in group.values() for item in paths)!=1
+             or any(item is old for group in new_islands
+                    for paths in group.values() for item in paths)))):
+        raise AssertionError("staged top-skin replacement broke single-ownership invariants")
+    return StagedConformalTransfer(
+        layer_toolpaths=staged,
+        ownership_report={
+            **report,
+            "ownership_transfer_staged":True,
+            "production_printing_blocked":True,
+            "transferred_path_count":1,
+            "warning":"Only in-memory ownership was transferred; no whole-printer collision, safe travel or conformal printing is authorized.",
+        },
+    )
