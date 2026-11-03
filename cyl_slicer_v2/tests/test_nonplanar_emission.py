@@ -147,7 +147,7 @@ class ConformalCandidateEmissionTests(unittest.TestCase):
         for candidate in cases:
             with self.subTest(candidate=candidate),self.assertRaises(ValueError):
                 preview_conformal_toolpath_xyz(candidate,cfg())
-        with self.assertRaisesRegex(ValueError,"closed"):
+        with self.assertRaisesRegex(ValueError,"open, unowned"):
             preview_conformal_toolpath_xyz(replace(path(),closed=True),cfg())
         with self.assertRaisesRegex(ValueError,"segment_widths"):
             preview_conformal_toolpath_xyz(replace(path(),segment_widths=[.3]),cfg())
