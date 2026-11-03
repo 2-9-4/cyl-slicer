@@ -98,9 +98,12 @@ class StagedConformalOwnershipTests(unittest.TestCase):
         cfg,layers,generated,candidate=fixture()
         old=generated[1].paths_by_role["TOP_SKIN"][
              len(generated[1].paths_by_role["TOP_SKIN"])//2]
-        next(group for group in generated[1].island_paths
-             if any(path is old for paths in group.values() for path in paths))[
-                 "TOP_SKIN"].append(old)
+        owner=next(group for group in generated[1].island_paths
+                   if any(path is old for paths in group.values() for path in paths))
+        # In the normal producer the island role may share the SAME list
+        # as paths_by_role. Copy first so only the ISLAND alias becomes
+        # duplicated; the audit must pass and the staging guard must catch it.
+        owner["TOP_SKIN"]=[*owner["TOP_SKIN"],old]
         with self.assertRaisesRegex(ValueError,"island alias must occur exactly once"):
             stage_conformal_top_skin_replacement(
                 layers,generated,candidate,cfg,target_layer_index=1)
