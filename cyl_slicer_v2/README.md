@@ -1466,13 +1466,25 @@ slab, and large differences in intended plastic volume. Cartesian
 radius and rotary angle are handled in physical theta*R/axial units,
 including ordinary +360-degree periodic translations.
 
-An accepted result is only
+An accepted audit result is only
 `exclusive_legacy_TOP_SKIN_replacement_candidate`: it names a
-specific `role_path_index` under `paths_by_role["TOP_SKIN"]` for
-future atomic replacement, compares old/new geometric plastic volume,
-and lists outstanding safety gates. **It never removes that path** and
-`nonplanar_extrusion_enabled` is always false. Actual replacement
-must remove *the same Toolpath object* from both
-`paths_by_role` and the matching `island_paths` group, preserve all
-other roles, integrate backing/ownership across radial slabs, and
-certify full-head/mandrel/printed-layer clearance and travel.
+specific `role_path_index` under `paths_by_role["TOP_SKIN"]`,
+compares old/new geometric plastic volume, and lists remaining safety
+gates. The audit itself never mutates a path.
+
+After a positive audit,
+`nonplanar_ownership.stage_conformal_top_skin_replacement()` can create
+a **separate immutable-by-convention snapshot** of `LayerToolpaths`:
+it copies the target role list and every island group, swaps the *same*
+original `TOP_SKIN` object for the candidate everywhere, and rejects
+missing, duplicate or stale island aliases. The original toolpath lists
+are unchanged, and the new data cannot accidentally print the legacy
+path AND the new one. It returns a `StagedConformalTransfer` containing
+the staged layer paths and validated audit.
+
+**This is not yet a printable replacement.** The staged conformal path
+has `point_radii`, so `emit_gcode()` still refuses it. The actual
+deposition engine must independently validate 3D bead occupation,
+upper/lower shell/step transitions, complete heater/mandrel/printed-layer
+clearance, safe travel, acceleration, phase rebasing and real-world
+printer behavior before it can consume staged paths.
