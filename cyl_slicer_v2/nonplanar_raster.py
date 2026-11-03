@@ -93,8 +93,8 @@ def propose_axial_conformal_rasters(
     projected_pitch=nominal_surface_pitch_mm / math.sqrt(1+allowed_surface_slope**2)
     track_count=max(1,math.ceil(
         (theta_max-theta_min)*outer_radius / projected_pitch - 1e-10))
-    if track_count*rows>max_paths*max(rows,1)*64:
-        raise ValueError("angular raster lattice exceeds finite path budget")
+    if track_count>max(4096,4*max_paths):
+        raise ValueError("angular raster lattice exceeds finite track budget")
     angular_step=(theta_max-theta_min)/track_count
 
     sampler=RadialSurfaceSampler(mesh)
