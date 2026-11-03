@@ -20,11 +20,16 @@ class NozzleInterferenceTests(unittest.TestCase):
         sampler=RadialSurfaceSampler(cylindrical_shell(lambda t,x:30,
                                       theta_segments=120))
         result=probe_nozzle_ribbon(sampler,[(.5,4)],profile())
-        self.assertEqual(result["status"],"no_sampled_interference")
+        # A polygonal approximation of a perfect cylinder can produce
+        # sub-0.01mm ridge interference at the very edge of a flat tip.
+        # Report that as marginal, not a hard collision or a safety pass.
+        self.assertIn(result["status"],("no_sampled_interference",
+                                        "marginal_clearance"))
         self.assertFalse(result["candidate_is_collision_certified"])
         self.assertEqual(result["unknown_samples"],0)
         self.assertGreater(result["probes"],30)
-        self.assertGreaterEqual(result["min_sampled_clearance_mm"],-1e-8)
+        self.assertGreaterEqual(result["min_sampled_clearance_mm"],
+                                -profile().geometry_tolerance_mm-1e-8)
 
     def test_neighboring_radial_boss_protrudes_into_tip(self):
         mesh=cylindrical_shell(lambda t,x:30 if x<4 else 31,
@@ -82,6 +87,7 @@ class NozzleInterferenceTests(unittest.TestCase):
             {"scan_radius_mm":0},
             {"neighbor_step_mm":float("nan")},
             {"contact_allowance_mm":-1},
+            {"geometry_tolerance_mm":-1},
             {"max_total_probes":0},
         ):
             with self.subTest(profile=changed),self.assertRaises(ValueError):
