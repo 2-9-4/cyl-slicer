@@ -41,7 +41,13 @@ def analyze_ribbon(mesh: trimesh.Trimesh,
                    max_chord_error_mm: float = 0.015,
                    max_slope: float = 0.3,
                    max_excursion_mm: float = 1.0,
-                   max_points: int = 4096) -> dict:
+                   max_points: int = 4096,
+                   motion_bead_area_mm2: float | None = None,
+                   motion_feed_mm_per_min: float = 2700,
+                   motion_filament_diameter_mm: float = 1.75,
+                   motion_max_e_error_fraction: float = 0.01,
+                   motion_max_segments: int = 8192,
+                   motion_max_volumetric_flow_mm3_s: float | None = None) -> dict:
     """Produce a numerical report; never claim swept-tool clearance."""
     try:
         sampler = RadialSurfaceSampler(mesh)
@@ -61,7 +67,7 @@ def analyze_ribbon(mesh: trimesh.Trimesh,
         }
     radii = [point.radius for point in ribbon]
     lengths = [segment_surface_length(a, b) for a, b in zip(ribbon, ribbon[1:])]
-    return {
+    result = {
         "status": "geometry_candidate_only",
         "nonplanar_extrusion_enabled": False,
         "warning": "No printhead swept-collision, bead ownership, or actual deposition validation.",
@@ -78,6 +84,52 @@ def analyze_ribbon(mesh: trimesh.Trimesh,
             for point in ribbon
         ],
     }
+    if motion_bead_area_mm2 is not None:
+        from .nonplanar_plan import plan_conformal_motion
+        try:
+            plan = plan_conformal_motion(
+                ribbon,
+                physical_feed_mm_per_min=motion_feed_mm_per_min,
+                bead_area_mm2=motion_bead_area_mm2,
+                filament_diameter_mm=motion_filament_diameter_mm,
+                max_local_volume_error_fraction=motion_max_e_error_fraction,
+                max_volumetric_flow_mm3_s=motion_max_volumetric_flow_mm3_s,
+                max_segments=motion_max_segments,
+            )
+        except ValueError as exc:
+            return {
+                "status": "rejected",
+                "reason": str(exc),
+                "nonplanar_extrusion_enabled": False,
+            }
+        result["motion_plan"] = {
+            "status": "analysis_only_no_gcode",
+            "warning": "Machine-linear conformal E/feed analysis only: NO approved nozzle clearance, support or shell replacement.",
+            "native_marlin_y_units": "degrees",
+            "segment_count": len(plan.segments),
+            "original_segment_count": plan.input_segment_count,
+            "split_count": plan.split_count,
+            "physical_length_mm": plan.physical_length_mm,
+            "filament_length_mm": plan.filament_length_mm,
+            "max_local_e_error_fraction": plan.largest_volume_error_fraction,
+            "segments": [
+                {
+                    "start": {"theta_deg": math.degrees(seg.start[0]),
+                              "axial_mm": seg.start[1],
+                              "radius_mm": seg.start[2]},
+                    "end": {"theta_deg": math.degrees(seg.end[0]),
+                            "axial_mm": seg.end[1],
+                            "radius_mm": seg.end[2]},
+                    "physical_length_mm": seg.metrics.length_mm,
+                    "marlin_native_length_mm": seg.metrics.marlin_native_length,
+                    "marlin_feed_mm_per_min": seg.metrics.marlin_feed_mm_per_min,
+                    "cumulative_filament_mm": seg.cumulative_e_end_mm,
+                    "max_local_e_error_fraction": seg.metrics.max_local_volume_error_fraction,
+                }
+                for seg in plan.segments
+            ],
+        }
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,9 +158,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-slope", type=float, default=0.3)
     parser.add_argument("--max-excursion-mm", type=float, default=1.0)
     parser.add_argument("--max-points", type=int, default=4096)
+    parser.add_argument("--motion-plan", action="store_true",
+                        help="Also analyze XYZ segment F/E (JSON only, never G-code).")
+    parser.add_argument("--bead-area-mm2", type=float,
+                        help="Required with --motion-plan; measured bead cross-section in mm².")
+    parser.add_argument("--physical-feed-mm-per-min", type=float, default=2700)
+    parser.add_argument("--filament-diameter-mm", type=float, default=1.75)
+    parser.add_argument("--motion-max-e-error-fraction", type=float, default=0.01)
+    parser.add_argument("--motion-max-segments", type=int, default=8192)
+    parser.add_argument("--motion-volumetric-limit-mm3-s", type=float)
     args = parser.parse_args(argv)
     if args.scan and args.point:
         parser.error("--scan and --point cannot be used together")
+    if args.scan and args.motion_plan:
+        parser.error("--motion-plan requires a specified --point ribbon, not --scan")
+    if args.motion_plan and args.bead_area_mm2 is None:
+        parser.error("--motion-plan requires explicit --bead-area-mm2")
+    if args.bead_area_mm2 is not None and not args.motion_plan:
+        parser.error("--bead-area-mm2 requires --motion-plan")
     if not args.scan and (not args.point or len(args.point) < 2):
         parser.error("provide at least two --point positions or use --scan")
     mesh = load_mesh(args.mesh)
@@ -138,6 +205,12 @@ def main(argv: list[str] | None = None) -> int:
             max_slope=args.max_slope,
             max_excursion_mm=args.max_excursion_mm,
             max_points=args.max_points,
+            motion_bead_area_mm2=(args.bead_area_mm2 if args.motion_plan else None),
+            motion_feed_mm_per_min=args.physical_feed_mm_per_min,
+            motion_filament_diameter_mm=args.filament_diameter_mm,
+            motion_max_e_error_fraction=args.motion_max_e_error_fraction,
+            motion_max_segments=args.motion_max_segments,
+            motion_max_volumetric_flow_mm3_s=args.motion_volumetric_limit_mm3_s,
         )
     print(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] in {"geometry_candidate_only", "geometry_candidates_only"} else 2

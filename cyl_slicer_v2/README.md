@@ -1352,3 +1352,32 @@ and real-world calibration are not checked. This is NOT wired into the
 slicer's G-code generator and MUST NOT be used by itself to authorize a
 nonplanar print. For local tip/facet contact diagnostics, the separate
 `nonplanar_clearance.probe_nozzle_ribbon` remains available.
+
+### Experimental conformal XYZ motion segmentation (issue #78)
+
+The optional `--motion-plan` mode of `nonplanar_probe` produces a
+**JSON analysis**, never G-code, for a surface ribbon sampled from the mesh:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --point 12,2 --point 48,5 \
+  --motion-plan --bead-area-mm2 0.0672 \
+  --physical-feed-mm-per-min 2700 \
+  --motion-max-e-error-fraction 0.01
+```
+
+The bead cross-section is intentionally **required**; it must be measured
+or selected deliberately, never assumed to fit every nozzle/material. The
+planner preserves the same exact native-linear X/Y/Z trajectory, splitting
+long moves where Marlin's uniform E per native planner distance would
+otherwise lead to nonuniform plastic volume per actual 3D millimeter.
+It computes each smaller segment's integrated 3D length, cumulative E,
+rotary-degree planner F bounded by maximum physical speed, and optional
+volumetric flow cap. At fixed radius, no extra splits are required.
+Failure to reach the requested accuracy within finite segment/depth
+budgets rejects the candidate instead of silently changing its tolerance.
+
+This is **not** an approved material flow profile or printable path.
+Upstream surface chord/patch verification, actual collision with the full
+head and printed material, top-shell replacement, safe travel, machine
+acceleration and live XYZ emission remain unsolved.
