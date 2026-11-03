@@ -119,6 +119,35 @@ class NonplanarProbeTests(unittest.TestCase):
             with self.subTest(args=args),self.assertRaises(SystemExit):
                 main(["unused.stl",*args])
 
+    def test_xyz_motion_preview_is_explicit_nonprinting_json(self):
+        mesh=cylindrical_shell(lambda t,x:30+.08*x,theta_segments=120)
+        out=io.StringIO()
+        with patch("cyl_slicer_v2.nonplanar_probe.load_mesh",return_value=mesh):
+            with redirect_stdout(out):
+                code=main(["unused.stl","--point","14,2","--point","24,5",
+                           "--motion-plan","--bead-area-mm2",".063",
+                           "--xyz-motion-preview","--motion-bed-radius-mm","30"])
+        self.assertEqual(code,0)
+        result=json.loads(out.getvalue())
+        self.assertEqual(result["status"],"geometry_candidate_only")
+        self.assertFalse(result["nonplanar_extrusion_enabled"])
+        raw=result["xyz_commands_preview"]
+        self.assertEqual(raw["status"],"uncertified_motion_preview_only")
+        self.assertFalse(raw["nonplanar_extrusion_enabled"])
+        self.assertEqual(raw["command_count"],sum(
+            line.startswith("G1 ") for line in raw["commands"]))
+        self.assertTrue(any(" Z" in line and " E" in line and " F" in line
+                            for line in raw["commands"]))
+        self.assertNotIn("G28",out.getvalue())
+        self.assertIn("NEVER run as printer G-code",raw["warning"])
+        self.assertAlmostEqual(raw["physical_length_mm"],
+                               result["motion_plan"]["physical_length_mm"],delta=1e-8)
+
+    def test_xyz_preview_flag_requires_explicit_3d_motion_plan(self):
+        with self.assertRaises(SystemExit):
+            main(["unused.stl","--point","10,2","--point","20,4",
+                  "--xyz-motion-preview"])
+
     def test_rejected_candidates_have_explicit_reason(self):
         mesh=cylindrical_shell(lambda theta,axial: 30+.4*axial)
         result=analyze_ribbon(mesh,[degree_point("10,1"),degree_point("10,6")],

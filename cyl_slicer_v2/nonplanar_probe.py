@@ -1,4 +1,4 @@
-"""Inspect candidate nonplanar surface ribbons without emitting machine moves.
+"""Inspect candidate nonplanar surfaces without generating printable G-code.
 
 Example:
 python -m cyl_slicer_v2.nonplanar_probe part.stl \
@@ -47,7 +47,9 @@ def analyze_ribbon(mesh: trimesh.Trimesh,
                    motion_filament_diameter_mm: float = 1.75,
                    motion_max_e_error_fraction: float = 0.01,
                    motion_max_segments: int = 8192,
-                   motion_max_volumetric_flow_mm3_s: float | None = None) -> dict:
+                   motion_max_volumetric_flow_mm3_s: float | None = None,
+                   motion_xyz_commands_preview: bool = False,
+                   motion_bed_radius_mm: float = 30.0) -> dict:
     """Produce a numerical report; never claim swept-tool clearance."""
     try:
         sampler = RadialSurfaceSampler(mesh)
@@ -101,6 +103,49 @@ def analyze_ribbon(mesh: trimesh.Trimesh,
                 "status": "rejected",
                 "reason": str(exc),
                 "nonplanar_extrusion_enabled": False,
+            }
+        if motion_xyz_commands_preview:
+            from .config import SlicerConfig
+            from .models import Toolpath
+            from .nonplanar_emission import preview_conformal_toolpath_xyz
+            config = SlicerConfig(
+                bed_radius=motion_bed_radius_mm,
+                filament_diameter=motion_filament_diameter_mm,
+                feed_mm_per_min=motion_feed_mm_per_min,
+                max_volumetric_flow_mm3_s=(
+                    motion_max_volumetric_flow_mm3_s
+                    if motion_max_volumetric_flow_mm3_s is not None else 0.0
+                ),
+            )
+            candidate = Toolpath(
+                "TOP_SKIN", ribbon[0].radius,
+                [(point.theta, point.axial) for point in ribbon],
+                point_radii=[point.radius for point in ribbon],
+                segment_areas_mm2=[motion_bead_area_mm2]*(len(ribbon)-1),
+            )
+            try:
+                commands = preview_conformal_toolpath_xyz(
+                    candidate, config,
+                    max_local_e_error_fraction=motion_max_e_error_fraction,
+                    max_segments=motion_max_segments,
+                )
+            except ValueError as exc:
+                return {
+                    "status": "rejected",
+                    "reason": str(exc),
+                    "nonplanar_extrusion_enabled": False,
+                }
+            result["xyz_commands_preview"] = {
+                "status": commands.status,
+                "nonplanar_extrusion_enabled": False,
+                "warning": "UNCERTIFIED MOTION SNIPPET: no homing, machine origin, initial travel, shell ownership, deposited-layer/mandrel/nozzle collision, retraction or finish. NEVER run as printer G-code.",
+                "command_count": commands.segment_count,
+                "source_segment_count": commands.source_segment_count,
+                "physical_length_mm": commands.exact_physical_length_mm,
+                "ideal_filament_length_mm": commands.ideal_filament_length_mm,
+                "emitted_filament_length_mm": commands.emitted_filament_length_mm,
+                "max_local_e_error_fraction": commands.maximum_local_e_error_fraction,
+                "commands": list(commands.commands),
             }
         result["motion_plan"] = {
             "status": "analysis_only_no_gcode",
@@ -167,7 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-excursion-mm", type=float, default=1.0)
     parser.add_argument("--max-points", type=int, default=4096)
     parser.add_argument("--motion-plan", action="store_true",
-                        help="Also analyze XYZ segment F/E (JSON only, never G-code).")
+                        help="Also analyze XYZ segment F/E (JSON only; never a printable job).")
+    parser.add_argument("--xyz-motion-preview", action="store_true",
+                        help="Include unexecutable G1 XYZ/E/F motion snippets in JSON for inspection (NOT printable G-code).")
+    parser.add_argument("--motion-bed-radius-mm", type=float, default=30.0,
+                        help="Build cylinder radius for non-printable XYZ preview Z coordinates.")
     parser.add_argument("--bead-area-mm2", type=float,
                         help="Required with --motion-plan; measured bead cross-section in mm².")
     parser.add_argument("--physical-feed-mm-per-min", type=float, default=2700)
@@ -186,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--motion-plan requires a specified --point ribbon, not --scan")
     if args.motion_plan and args.bead_area_mm2 is None:
         parser.error("--motion-plan requires explicit --bead-area-mm2")
+    if args.xyz_motion_preview and not args.motion_plan:
+        parser.error("--xyz-motion-preview requires --motion-plan and --bead-area-mm2")
     if args.bead_area_mm2 is not None and not args.motion_plan:
         parser.error("--bead-area-mm2 requires --motion-plan")
     if not args.scan and (not args.point or len(args.point) < 2):
@@ -238,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
             motion_max_e_error_fraction=args.motion_max_e_error_fraction,
             motion_max_segments=args.motion_max_segments,
             motion_max_volumetric_flow_mm3_s=args.motion_volumetric_limit_mm3_s,
+            motion_xyz_commands_preview=args.xyz_motion_preview,
+            motion_bed_radius_mm=args.motion_bed_radius_mm,
         )
     print(json.dumps(result, indent=2, allow_nan=False))
     return 0 if result["status"] in {"geometry_candidate_only", "geometry_candidates_only"} else 2

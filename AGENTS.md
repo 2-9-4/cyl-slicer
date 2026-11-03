@@ -23,6 +23,15 @@
   touches a cell, and join 0/2pi neighbors only for true full-turn scans.
   A finite mesh sampling grid is not a proof against every narrow occlusion,
   and the patch mask is not a collision clearance certificate.
+- Experimental Toolpath.point_radii and segment_areas_mm2 are
+  **candidate-only**: production emit_toolpath/emit_gcode must reject them
+  before printing unless exact exclusive top-shell volume ownership and
+  complete toolhead/mandrel/printed-layer clearance are implemented.
+  Isolated XYZ G1/E/F snippets are diagnostic, with no machine origin,
+  safe travel, layer schedule, acceleration or firmware rebase; they
+  must never be treated as complete G-code. Always bound native Y degrees,
+  physical polar length, E per measured bead area, quantized native XYZ/E
+  and volumetric feed, and preserve the legacy Toolpath positional API.
 - Native-linear conformal XYZ extrusion can change its physical mm per
   unit of commanded E as radial position changes during a rotary move.
   Before any live output, split exact XYZ trajectories to a bounded
