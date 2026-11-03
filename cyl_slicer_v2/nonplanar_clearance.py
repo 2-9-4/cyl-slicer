@@ -33,13 +33,17 @@ class NozzleTipProfile:
     path_step_mm: float = 0.4
     contact_allowance_mm: float = 0.025
     safety_margin_mm: float = 0.01
+    # Distinguish sub-resolution facet ridges from hard (>tol) clashes.
+    # Marginal regions are NOT certified and require finer geometry/measurement.
+    geometry_tolerance_mm: float = 0.01
     max_total_probes: int = 250_000
 
     def validate(self) -> None:
         values = (self.flat_tip_radius_mm, self.cone_half_angle_deg,
                   self.scan_radius_mm, self.neighbor_step_mm,
                   self.path_step_mm, self.contact_allowance_mm,
-                  self.safety_margin_mm)
+                  self.safety_margin_mm,
+                  self.geometry_tolerance_mm)
         if not all(math.isfinite(v) for v in values):
             raise ValueError("nozzle profile must be finite")
         if (not 0 < self.flat_tip_radius_mm < self.scan_radius_mm
@@ -48,6 +52,7 @@ class NozzleTipProfile:
                 or self.path_step_mm <= 0
                 or self.contact_allowance_mm < 0
                 or self.safety_margin_mm < 0
+                or self.geometry_tolerance_mm < 0
                 or type(self.max_total_probes) is not int
                 or self.max_total_probes < 1):
             raise ValueError("invalid nozzle footprint, angle, clearance or sample budget")
@@ -124,6 +129,7 @@ def _probe_sampled_tips(sampler: RadialSurfaceSampler,
                         tips, profile: NozzleTipProfile, rmax: float) -> dict:
     tested = 0
     unknown = 0
+    marginal = 0
     min_margin = float("inf")
     tan_cone = math.tan(math.radians(profile.cone_half_angle_deg))
     for pose_index, tip in enumerate(tips):
@@ -161,7 +167,9 @@ def _probe_sampled_tips(sampler: RadialSurfaceSampler,
                                           / tan_cone)
                     margin = lower_head_surface - radial_above_tip - profile.safety_margin_mm
                 min_margin = min(min_margin,margin)
-                if margin < -1e-8:
+                if -profile.geometry_tolerance_mm <= margin < -1e-8:
+                    marginal += 1
+                if margin < -profile.geometry_tolerance_mm - 1e-8:
                     return {
                         "status": "sampled_interference",
                         "candidate_is_collision_certified": False,
@@ -180,11 +188,14 @@ def _probe_sampled_tips(sampler: RadialSurfaceSampler,
                         },
                     }
     return {
-        "status": "unresolved_neighbors" if unknown else "no_sampled_interference",
+        "status": ("unresolved_neighbors" if unknown else
+                   "marginal_clearance" if marginal else
+                   "no_sampled_interference"),
         "candidate_is_collision_certified": False,
         "warning": "No continuous swept-tool, heater block, mandrel or printed-layer clearance proof.",
         "probes": tested,
         "path_samples": len(tips),
         "unknown_samples": unknown,
+        "marginal_samples": marginal,
         "min_sampled_clearance_mm": min_margin if math.isfinite(min_margin) else None,
     }
