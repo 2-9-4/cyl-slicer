@@ -171,14 +171,10 @@ class ConformalTopSkinOwnershipTests(unittest.TestCase):
             {"target_layer_index":1.5},
         ):
             with self.subTest(opts=opts),self.assertRaises(ValueError):
-                report=audit_conformal_top_skin_ownership(
-                    layers,generated,candidate,cfg,
-                    target_layer_index=1,**{k:v for k,v in opts.items()
-                                              if k!="target_layer_index"},
-                ) if "target_layer_index" not in opts else \
-                    audit_conformal_top_skin_ownership(
-                        layers,generated,candidate,cfg,
-                        target_layer_index=opts["target_layer_index"])
+                params={"target_layer_index":1}
+                params.update(opts)
+                audit_conformal_top_skin_ownership(
+                    layers,generated,candidate,cfg,**params)
 
 
 if __name__=="__main__":
