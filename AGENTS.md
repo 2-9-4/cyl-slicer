@@ -28,10 +28,12 @@
   SOLID_INFILL, bridge, walls or support. Require exposed surface, fully
   backed material, bounded physical radial slab extent, appropriate
   geometric centerline matching and old/new plastic volume budget.
-  Ownership reservation is READ ONLY and does not authorize nonplanar
-  G-code. Actual transfer must remove a role path atomically from both
-  paths_by_role and every island_paths alias before adding conformal
-  deposition; never duplicate or drop old material.
+  Ownership audit is READ ONLY and does not authorize nonplanar
+  G-code. Staged in-memory transfers must copy roles and island groups
+  and swap the same identity across both aliases, rejecting missing or
+  duplicate entries without mutating originals. Production emission MUST
+  still reject all variable-radius candidates; never duplicate or drop
+  old material or treat staged ownership as print approval.
 - Experimental Toolpath.point_radii and segment_areas_mm2 are
   **candidate-only**: production emit_toolpath/emit_gcode must reject them
   before printing unless exact exclusive top-shell volume ownership and
