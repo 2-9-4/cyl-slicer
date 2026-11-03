@@ -1320,3 +1320,64 @@ This does not approve live printing: dynamic Z acceleration, toolhead
 clearance, real nozzle contact, thermal effects and the replacement of
 old radial top skin still require separate validation. Existing emitted
 G-code is unchanged.
+
+### Continuous nozzle-body section sweep (experimental, issue #79)
+
+`nonplanar_sweep.audit_continuous_head_sweep(mesh, positions, sections)`
+checks a candidate machine-linear movement sequence against the **entire
+source triangle mesh**, not just periodically sampled tool poses. Each
+position is `(theta_radians, axial_X_mm, absolute_radius_mm)`.
+A `RadialHeadSection(min_height_mm, max_height_mm, radius_mm)` defines a
+**solid cylindrical body band** located at a radial height above the nozzle
+tip. Multiple sections can approximate the nozzle cone, heater block and
+other measured components. `cone_head_sections(...)` builds a conservative
+stack of cylinders that encloses a specified conical shell *above* a
+deliberately excluded tip-contact height.
+
+For each triangle and segment, a bounding box in the rotating head frame
+is expanded by the maximum angular and X/Z motion throughout the interval.
+When this inflated volume does not intersect any declared head section,
+that triangle is **provably clear** for that continuous motion interval.
+Ambiguous bounds are refined in both source-triangle geometry and time;
+recursion/node limits return `unresolved_geometry` or `budget_exceeded`,
+never a silent pass. A strictly enclosed mesh point yields
+`witnessed_interference`.
+
+`modeled_sections_clear=True` means only that these declared body bands
+cannot intersect this *provided triangle surface* during the specified
+machine-linear movements. `full_head_collision_certified` is **always
+false**: the nozzle's intentional tip contact, undeclared hotend hardware,
+actual deposited-layer ordering, support, mandrel, travel, machine limits
+and real-world calibration are not checked. This is NOT wired into the
+slicer's G-code generator and MUST NOT be used by itself to authorize a
+nonplanar print. For local tip/facet contact diagnostics, the separate
+`nonplanar_clearance.probe_nozzle_ribbon` remains available.
+
+### Experimental conformal XYZ motion segmentation (issue #78)
+
+The optional `--motion-plan` mode of `nonplanar_probe` produces a
+**JSON analysis**, never G-code, for a surface ribbon sampled from the mesh:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --point 12,2 --point 48,5 \
+  --motion-plan --bead-area-mm2 0.0672 \
+  --physical-feed-mm-per-min 2700 \
+  --motion-max-e-error-fraction 0.01
+```
+
+The bead cross-section is intentionally **required**; it must be measured
+or selected deliberately, never assumed to fit every nozzle/material. The
+planner preserves the same exact native-linear X/Y/Z trajectory, splitting
+long moves where Marlin's uniform E per native planner distance would
+otherwise lead to nonuniform plastic volume per actual 3D millimeter.
+It computes each smaller segment's integrated 3D length, cumulative E,
+rotary-degree planner F bounded by maximum physical speed, and optional
+volumetric flow cap. At fixed radius, no extra splits are required.
+Failure to reach the requested accuracy within finite segment/depth
+budgets rejects the candidate instead of silently changing its tolerance.
+
+This is **not** an approved material flow profile or printable path.
+Upstream surface chord/patch verification, actual collision with the full
+head and printed material, top-shell replacement, safe travel, machine
+acceleration and live XYZ emission remain unsolved.
