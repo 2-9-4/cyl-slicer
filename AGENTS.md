@@ -4,6 +4,11 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Candidate nonplanar surface patches must sample corners, edge midpoints
+  and centers, reject any projected open/nonmanifold/radial-crease edge that
+  touches a cell, and join 0/2pi neighbors only for true full-turn scans.
+  A finite mesh sampling grid is not a proof against every narrow occlusion,
+  and the patch mask is not a collision clearance certificate.
 - Simultaneous nonplanar XYZ moves need physical 3D polar arc integration
   with r(t), rather than a constant-radius 2D hypotenuse. Marlin Y is
   degrees, Z is radial mm: bound native F by the maximum instantaneous

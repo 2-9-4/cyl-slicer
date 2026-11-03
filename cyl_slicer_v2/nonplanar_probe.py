@@ -85,26 +85,62 @@ def main(argv: list[str] | None = None) -> int:
         description="Inspect cylindrical conformal top-surface candidates; NEVER emits G-code."
     )
     parser.add_argument("mesh", help="Input STL or supported mesh")
-    parser.add_argument("--point", action="append", type=degree_point, required=True,
+    parser.add_argument("--point", action="append", type=degree_point,
                         help="Repeat THETA_DEGREES,AXIAL_MM to define a continuous ribbon.")
+    parser.add_argument("--scan", action="store_true",
+                        help="Discover connected candidate surface patches automatically (no G-code).")
+    parser.add_argument("--theta-range-deg", nargs=2, type=float, metavar=("START", "END"),
+                        default=(0,360), help="Unwrapped angular scan interval, up to 360 degrees.")
+    parser.add_argument("--axial-range-mm", nargs=2, type=float, metavar=("START", "END"),
+                        help="Axial scan interval in physical mm; defaults to source mesh bounds.")
+    parser.add_argument("--theta-cells", type=int, default=72)
+    parser.add_argument("--axial-cells", type=int, default=32)
+    parser.add_argument("--max-cell-excursion-mm", type=float, default=0.5,
+                        help="Maximum variation of surface radius within one scan cell.")
+    parser.add_argument("--sharp-dihedral-deg", type=float, default=55.,
+                        help="Reject scan cells touched by mesh edges with sharper dihedral.")
+    parser.add_argument("--min-patch-cells", type=int, default=4)
+    parser.add_argument("--max-scan-cells", type=int, default=12000)
     parser.add_argument("--max-segment-mm", type=float, default=0.5)
     parser.add_argument("--max-chord-error-mm", type=float, default=0.015)
     parser.add_argument("--max-slope", type=float, default=0.3)
     parser.add_argument("--max-excursion-mm", type=float, default=1.0)
     parser.add_argument("--max-points", type=int, default=4096)
     args = parser.parse_args(argv)
-    if len(args.point) < 2:
-        parser.error("at least two --point positions are required")
-    result = analyze_ribbon(
-        load_mesh(args.mesh), args.point,
-        max_segment_mm=args.max_segment_mm,
-        max_chord_error_mm=args.max_chord_error_mm,
-        max_slope=args.max_slope,
-        max_excursion_mm=args.max_excursion_mm,
-        max_points=args.max_points,
-    )
+    if args.scan and args.point:
+        parser.error("--scan and --point cannot be used together")
+    if not args.scan and (not args.point or len(args.point) < 2):
+        parser.error("provide at least two --point positions or use --scan")
+    mesh = load_mesh(args.mesh)
+    if args.scan:
+        from .nonplanar_patches import scan_surface_patches
+        angular = [math.radians(v) for v in args.theta_range_deg]
+        axial = (args.axial_range_mm if args.axial_range_mm is not None
+                 else (float(mesh.vertices[:,2].min()), float(mesh.vertices[:,2].max())))
+        try:
+            result = scan_surface_patches(
+                mesh, theta_min=angular[0], theta_max=angular[1],
+                axial_min=axial[0], axial_max=axial[1],
+                theta_cells=args.theta_cells, axial_cells=args.axial_cells,
+                max_slope=args.max_slope,
+                max_chord_error_mm=args.max_chord_error_mm,
+                max_cell_excursion_mm=args.max_cell_excursion_mm,
+                sharp_dihedral_deg=args.sharp_dihedral_deg,
+                max_cells=args.max_scan_cells,
+                min_patch_cells=args.min_patch_cells,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        result = analyze_ribbon(
+            mesh, args.point, max_segment_mm=args.max_segment_mm,
+            max_chord_error_mm=args.max_chord_error_mm,
+            max_slope=args.max_slope,
+            max_excursion_mm=args.max_excursion_mm,
+            max_points=args.max_points,
+        )
     print(json.dumps(result, indent=2, allow_nan=False))
-    return 0 if result["status"] == "geometry_candidate_only" else 2
+    return 0 if result["status"] in {"geometry_candidate_only", "geometry_candidates_only"} else 2
 
 
 if __name__ == "__main__":

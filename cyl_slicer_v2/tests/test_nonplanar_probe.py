@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
+import io
+import json
 import math
+from unittest.mock import patch
 import unittest
 
-from cyl_slicer_v2.nonplanar_probe import analyze_ribbon, degree_point
+from cyl_slicer_v2.nonplanar_probe import analyze_ribbon, degree_point, main
 from cyl_slicer_v2.tests.test_nonplanar_surface import cylindrical_shell
 
 
@@ -26,6 +30,27 @@ class NonplanarProbeTests(unittest.TestCase):
         self.assertGreater(result["radial_excursion_mm"],.2)
         self.assertTrue(all("radius_mm" in p for p in result["samples"]))
         self.assertLessEqual(result["max_segment_3d_mm"],.50001)
+
+    def test_automatic_grid_cli_is_analysis_only_and_does_not_need_points(self):
+        mesh=cylindrical_shell(lambda t,x:30+.05*x,theta_segments=96)
+        output=io.StringIO()
+        with patch("cyl_slicer_v2.nonplanar_probe.load_mesh",return_value=mesh):
+            with redirect_stdout(output):
+                code=main(["unused.stl","--scan",
+                    "--axial-range-mm","1","7",
+                    "--theta-cells","16","--axial-cells","4",
+                    "--max-chord-error-mm",".06"])
+        self.assertEqual(code,0)
+        result=json.loads(output.getvalue())
+        self.assertEqual(result["status"],"geometry_candidates_only")
+        self.assertFalse(result["nonplanar_extrusion_enabled"])
+        self.assertFalse(result["collision_certified"])
+        self.assertGreater(result["accepted_cells"],0)
+        self.assertTrue(result["patches"])
+
+    def test_scan_and_explicit_ribbon_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit):
+            main(["unused.stl","--scan","--point","20,1","--point","30,2"])
 
     def test_rejected_candidates_have_explicit_reason(self):
         mesh=cylindrical_shell(lambda theta,axial: 30+.4*axial)
