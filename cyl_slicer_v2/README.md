@@ -1407,3 +1407,42 @@ candidate geometry are limited by explicit finite path/point budgets.
 This preview does **not** replace or deposit top skin, confirm nozzle and
 heater clearances, validate backing support, or plan safe retractions/travels.
 It must not be treated as a printable nonplanar finishing mode.
+
+### Variable-radius XYZ motion preview (unprintable, issue #78)
+
+Toolpath now has optional `point_radii` (one **absolute physical radius**
+per `points` position) and `segment_areas_mm2` (one explicitly selected
+bead section per consecutive pair), trailing the unchanged positional
+Toolpath API. All conventional layer and toolpath generation remains
+constant-radius. Crucially, passing these candidates into
+`gcode.emit_toolpath()` or `emit_gcode()` is an **error**: there is not
+yet any top-skin volume ownership or complete printhead/mandrel clearance,
+so conventional and conformal top skins may **not** be deposited together.
+
+To inspect a safe, standalone representation of the hypothetical
+simultaneous X/Y/Z/E/F commands, run:
+
+```bash
+.venv/bin/python -m cyl_slicer_v2.nonplanar_probe part.stl \
+  --point 14,2 --point 24,5 \
+  --motion-plan --bead-area-mm2 0.063 \
+  --xyz-motion-preview --motion-bed-radius-mm 30
+```
+
+The output is **JSON**, with an `xyz_commands_preview` field containing
+`G1 X... Y... Z... E... F...` lines and explicit warnings. These are
+**NOT PRINTABLE G-CODE**. The snippet has no valid machine origin,
+start point, homing, collision/backing/ownership approval, retracts,
+travels, fan, acceleration or layer schedule.
+
+The isolated `nonplanar_emission.preview_conformal_toolpath_xyz()`
+calculates true physical 3D path length, local E/mm-limited subdivision,
+native Y degrees and radial machine Z, optional material calibration
+and volumetric flow limits, and verifies that rounding the commanded
+XYZ/E does not create stationary extrusion or violate the rounded
+native-planner flow ceiling. The preview fails if a move exceeds the
+native 3599° rotary precision budget, rather than inventing a rebasing
+scheme. Live conformal finishing must still replace precisely owned
+conventional top-shell volume and independently certify all physical
+clearances, machine limits and timing before this path can be wired to
+production emission.
