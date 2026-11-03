@@ -15,7 +15,7 @@ wrong interference near the rotating cylinder's tangent plane.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import math
 from typing import Sequence
 
@@ -86,7 +86,6 @@ def probe_nozzle_ribbon(
         raise ValueError("candidate centerline positions must be finite")
     rmax = _sampler_max_radius(sampler)
     tips = []
-    total_probe_estimate = 0
     for index, position in enumerate(positions):
         hit = sampler.sample(*position)
         if hit is None:
@@ -118,9 +117,6 @@ def probe_nozzle_ribbon(
                 tips.append(middle)
         else:
             tips.append(hit)
-    # The loop above cannot use tips[-1] after append inside interpolation
-    # as its fixed segment start; use the previous *input* point instead.
-    # The interpolation helper below therefore builds each path independently.
     return _probe_sampled_tips(sampler, tips, profile, rmax)
 
 
