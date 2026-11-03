@@ -20,10 +20,11 @@ def scan(mesh, *, theta_min=0.,theta_max=TAU,theta_cells=12,
 
 
 def rasters(mesh, report, **kwargs):
-    return propose_axial_conformal_rasters(
-        mesh,report,nominal_surface_pitch_mm=4.,
-        edge_inset_mm=.1,min_path_length_mm=.5,
-        max_segment_mm=.5,max_radial_chord_error_mm=.02,**kwargs)
+    settings=dict(nominal_surface_pitch_mm=4.,
+                  edge_inset_mm=.1,min_path_length_mm=.5,
+                  max_segment_mm=.5,max_radial_chord_error_mm=.02)
+    settings.update(kwargs)
+    return propose_axial_conformal_rasters(mesh,report,**settings)
 
 
 class CandidateAxialRasterTests(unittest.TestCase):
