@@ -12,11 +12,24 @@
   undeclared heater-block/gantry shapes remain unresolved. Fail closed on
   ambiguous intervals and subdivision/node budgets, never promote the
   analytic body-section test to full XYZ extrusion authorization.
+- Experimental conformal finish raster previews must use one globally
+  registered angular track lattice and clip each axial run to contiguous
+  accepted patch-grid cells; rejected/ambiguous cells must break paths.
+  The preview may report topology-clipped XYZ centerlines but must not
+  imply surface-metric bead coverage, material ownership, support, clearance,
+  or printability, and must NEVER be emitted as printer G-code by default.
 - Candidate nonplanar surface patches must sample corners, edge midpoints
   and centers, reject any projected open/nonmanifold/radial-crease edge that
   touches a cell, and join 0/2pi neighbors only for true full-turn scans.
   A finite mesh sampling grid is not a proof against every narrow occlusion,
   and the patch mask is not a collision clearance certificate.
+- Native-linear conformal XYZ extrusion can change its physical mm per
+  unit of commanded E as radial position changes during a rotary move.
+  Before any live output, split exact XYZ trajectories to a bounded
+  local plastic-volume/physical-distance error, preserving 3D integrated
+  length and total bead-area E; fail on recursion/segment limits rather
+  than silently allowing an oversize radius change. Preview JSON is
+  analysis-only, never hardware print authorization.
 - Simultaneous nonplanar XYZ moves need physical 3D polar arc integration
   with r(t), rather than a constant-radius 2D hypotenuse. Marlin Y is
   degrees, Z is radial mm: bound native F by the maximum instantaneous
