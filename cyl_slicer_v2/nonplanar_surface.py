@@ -70,6 +70,36 @@ class RadialSurfaceSampler:
         self.min_radial_normal = min_radial_normal
         self.radius_merge_tolerance_mm = radius_merge_tolerance_mm
 
+        # Optional conservative axial sweep index. Repeated surface-grid
+        # probes should not rescan every triangle in a long machine-X part.
+        # Each triangle belongs to EVERY bin its axial interval touches,
+        # padded for barycentric tolerance; never drop a possible hit.
+        # Limit memory if giant faces span the entire job length.
+        self._axial_bins = None
+        if len(self.face_indices) >= 256:
+            minimum = float(np.min(self.axial_lo))
+            maximum = float(np.max(self.axial_hi))
+            if maximum - minimum > 1e-6:
+                bins = min(128, max(8, int(math.sqrt(len(self.face_indices)))))
+                scale = bins / (maximum - minimum)
+                entries: list[list[int]] = [[] for _ in range(bins)]
+                total = 0
+                for index, (lo, hi) in enumerate(zip(self.axial_lo, self.axial_hi)):
+                    first = max(0, min(bins-1, int(math.floor((lo-1e-8-minimum)*scale))))
+                    last = max(0, min(bins-1, int(math.floor((hi+1e-8-minimum)*scale))))
+                    total += last - first + 1
+                    if total > 2_000_000:
+                        entries = []
+                        break
+                    for bin_index in range(first, last + 1):
+                        entries[bin_index].append(index)
+                if entries:
+                    self._axial_bins = tuple(np.asarray(items, dtype=np.intp)
+                                             for items in entries)
+                    self._axial_min = minimum
+                    self._axial_max = maximum
+                    self._axial_scale = scale
+
     def sample(self, theta: float, axial: float) -> RadialSurfaceSample | None:
         """Return an unambiguous, outward-facing outer radial surface hit.
 
@@ -80,11 +110,22 @@ class RadialSurfaceSampler:
         if not (math.isfinite(theta) and math.isfinite(axial)):
             raise ValueError("sample coordinates must be finite")
         c, s = math.cos(theta), math.sin(theta)
-        mask = ((axial >= self.axial_lo - 1e-9)
-                & (axial <= self.axial_hi + 1e-9))
-        if not np.any(mask):
+        if self._axial_bins is not None:
+            if axial < self._axial_min - 1e-9 or axial > self._axial_max + 1e-9:
+                return None
+            bin_index = max(0, min(len(self._axial_bins)-1,
+                                   int(math.floor((axial-self._axial_min)
+                                                  * self._axial_scale))))
+            possible = self._axial_bins[bin_index]
+            mask = ((axial >= self.axial_lo[possible] - 1e-9)
+                    & (axial <= self.axial_hi[possible] + 1e-9))
+            indices = possible[mask]
+        else:
+            mask = ((axial >= self.axial_lo - 1e-9)
+                    & (axial <= self.axial_hi + 1e-9))
+            indices = np.flatnonzero(mask)
+        if not len(indices):
             return None
-        indices = np.flatnonzero(mask)
         n = self.normal[indices]
         dot = n[:, 0] * c + n[:, 1] * s
         valid = np.abs(dot) >= self.min_radial_normal

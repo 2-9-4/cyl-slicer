@@ -4,6 +4,11 @@
   The CLI must resolve unspecified settings from it; don't recreate
   divergent or outdated defaults in argparse. Keep explicit CLI overrides,
   quality/legacy profiles, and default-vs-explicit regression tests aligned.
+- Candidate nonplanar surface patches must sample corners, edge midpoints
+  and centers, reject any projected open/nonmanifold/radial-crease edge that
+  touches a cell, and join 0/2pi neighbors only for true full-turn scans.
+  A finite mesh sampling grid is not a proof against every narrow occlusion,
+  and the patch mask is not a collision clearance certificate.
 - Nonplanar topography inspection is analysis-only: do not emit true X/Y/Z
   extrusion from radial sampling until conformal shell ownership, full
   swept printhead/mandrel clearance, machine Z limits, local bead packing
